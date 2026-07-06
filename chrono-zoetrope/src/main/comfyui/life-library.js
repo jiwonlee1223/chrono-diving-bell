@@ -117,7 +117,14 @@ export async function generateLifeLibrary(profile, opts = {}) {
       // 생성된 포트레이트를 입력으로 재업로드해 이 단계의 레퍼런스로 삼는다
       const uploaded = await client.uploadImage(images[0].data, `${pid}-age-${item.age}.png`)
       stageRefs.set(item.stageIndex, uploaded.name)
-      manifest.agePortraits.push({ age: item.age, prompt, seed, promptId, file: `age-${item.age}.png` })
+      manifest.agePortraits.push({
+        age: item.age,
+        prompt,
+        seed,
+        promptId,
+        file: `age-${item.age}.png`,
+        status: 'pending' // 검토 상태: pending → approved | rejected (admin 페이지에서 판정)
+      })
       await writeManifest()
       onProgress({ type: 'portrait-done', age: item.age, file: localFile })
       return uploaded.name
@@ -159,7 +166,8 @@ export async function generateLifeLibrary(profile, opts = {}) {
         seed,
         promptId,
         file: `${item.id}.png`,
-        elapsedMs: Date.now() - t0
+        elapsedMs: Date.now() - t0,
+        status: 'pending' // 검토 상태: pending → approved | rejected. 노출은 approved만.
       })
       await writeManifest() // 장마다 기록 — 중단돼도 진행분은 남는다
       onProgress({ type: 'image-done', done: i + 1, total: plan.length, item, file: localFile })

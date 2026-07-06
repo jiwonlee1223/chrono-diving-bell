@@ -1,0 +1,13 @@
+{
+  "name": "profile-collector",
+  "version": "1.0.0",
+  "description": "주마등 프로필 수집 앱 — 모바일 웹, Firebase 저장, Railway 배포 (chrono-zoetrope 생성 파이프라인의 입력단)",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

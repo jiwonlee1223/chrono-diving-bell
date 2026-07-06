@@ -5,3 +5,6 @@ out
 .eslintcache
 *.log*
 library/
+secrets/
+serviceAccountKey.json
+*.serviceaccount.json

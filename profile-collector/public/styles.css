@@ -1,0 +1,111 @@
+/* 주마등 프로필 수집 — 모바일 우선. 어두운 웜톤(설치의 톤과 맞춤). */
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+:root {
+  --bg: #0d0d0f;
+  --card: #17171a;
+  --line: rgba(255, 255, 255, 0.10);
+  --text: #efe9e2;
+  --muted: rgba(239, 233, 226, 0.55);
+  --warm: #e8c89a;
+  --accent: #e8c89a;
+  --danger: #ff8585;
+}
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, "Segoe UI", Roboto, "Apple SD Gothic Neo", sans-serif;
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+}
+body {
+  min-height: 100dvh;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+/* 뷰 전환 */
+.view { display: none; min-height: 100dvh; }
+.view.show { display: block; }
+
+/* 시작 / 완료 화면 */
+.start-inner {
+  min-height: 100dvh;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; padding: 32px 26px; gap: 18px;
+}
+.mark { font-size: 14px; letter-spacing: 0.5em; color: var(--warm); text-indent: 0.5em; }
+.mark.small { letter-spacing: 0.3em; font-size: 12px; }
+.start-inner h1 { font-size: 27px; line-height: 1.4; font-weight: 600; letter-spacing: 0.01em; }
+.lead { color: var(--muted); font-size: 15px; line-height: 1.7; }
+.fine { color: rgba(239, 233, 226, 0.4); font-size: 12.5px; line-height: 1.6; margin-top: 4px; }
+.check { font-size: 44px; color: var(--warm); border: 2px solid var(--warm); width: 78px; height: 78px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
+
+/* 버튼 */
+.btn {
+  appearance: none; border: none; cursor: pointer;
+  font-size: 16px; font-weight: 600; letter-spacing: 0.02em;
+  border-radius: 14px; padding: 16px 22px; width: 100%;
+  transition: transform 0.08s ease, opacity 0.2s ease;
+}
+.btn:active { transform: scale(0.98); }
+.btn.primary { background: var(--warm); color: #1a1305; }
+.btn.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.start-inner .btn { max-width: 340px; margin-top: 8px; }
+
+/* 상단바 */
+.topbar {
+  position: sticky; top: 0; z-index: 5;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 22px; background: rgba(13, 13, 15, 0.92); backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line);
+}
+.topbar .step { font-size: 13px; color: var(--muted); }
+
+/* 폼 */
+form { padding: 22px 22px 60px; display: flex; flex-direction: column; gap: 22px; max-width: 520px; margin: 0 auto; }
+.field { display: flex; flex-direction: column; gap: 8px; }
+.label { font-size: 14px; font-weight: 600; }
+.label em { color: var(--warm); font-style: normal; font-weight: 500; }
+.hint { font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+
+input[type="text"], input[type="date"] {
+  width: 100%; font-size: 16px; color: var(--text);
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  padding: 15px 15px; outline: none;
+}
+input:focus { border-color: var(--warm); }
+input::placeholder { color: rgba(239, 233, 226, 0.35); }
+/* iOS date input 정렬 */
+input[type="date"] { min-height: 52px; -webkit-appearance: none; appearance: none; }
+
+/* 사진 그리드 */
+.photos { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.photos:empty { display: none; }
+.thumb { position: relative; aspect-ratio: 1; border-radius: 12px; overflow: hidden; background: #000; border: 1px solid var(--line); }
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb .rm {
+  position: absolute; top: 5px; right: 5px; width: 26px; height: 26px; border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6); color: #fff; border: none; font-size: 15px; line-height: 1; cursor: pointer;
+}
+#add-photo { margin-top: 4px; }
+#add-photo:disabled { display: none; }
+
+.error { color: var(--danger); font-size: 13.5px; line-height: 1.5; }
+
+/* 로딩 오버레이 */
+.overlay {
+  position: fixed; inset: 0; z-index: 20; background: rgba(9, 9, 11, 0.86);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+  backdrop-filter: blur(4px); color: var(--text);
+}
+.overlay[hidden] { display: none; }
+.spinner {
+  width: 42px; height: 42px; border-radius: 50%;
+  border: 3px solid rgba(232, 200, 154, 0.25); border-top-color: var(--warm);
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+#overlay-text { font-size: 14px; color: var(--muted); }

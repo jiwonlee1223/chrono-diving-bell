@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0d0d0f" />
+  <title>주마등 — 프로필 등록</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <!-- 시작(로그인) 화면 — 원탭 익명 인증 -->
+  <section class="view show" id="view-start">
+    <div class="start-inner">
+      <div class="mark">주마등</div>
+      <h1>당신의 생애를<br />흘려보내기 위해</h1>
+      <p class="lead">이름과 생년월일, 그리고 얼굴 한 장이 필요합니다.<br />몇 분이면 됩니다.</p>
+      <button class="btn primary" id="start-btn">시작하기</button>
+      <p class="fine" id="start-note">버튼을 누르면 익명으로 시작합니다. 계정 가입은 없습니다.</p>
+    </div>
+  </section>
+
+  <!-- 입력 화면 -->
+  <section class="view" id="view-form">
+    <header class="topbar">
+      <span class="mark small">주마등</span>
+      <span class="step">프로필 등록</span>
+    </header>
+
+    <form id="profile-form" novalidate>
+      <label class="field">
+        <span class="label">이름</span>
+        <input type="text" id="name" name="name" autocomplete="name" placeholder="홍길동" required />
+      </label>
+
+      <label class="field">
+        <span class="label">생년월일</span>
+        <input type="date" id="birthDate" name="birthDate" required />
+      </label>
+
+      <label class="field">
+        <span class="label">직업</span>
+        <input type="text" id="occupation" name="occupation" placeholder="예: 목수, 교사, 학생" required />
+        <span class="hint">영어로 적으면 생성 품질이 더 좋습니다 (예: carpenter).</span>
+      </label>
+
+      <div class="field">
+        <span class="label">얼굴 사진 <em>1~3장</em></span>
+        <span class="hint">정면·자연광 셀카가 가장 좋습니다. 촬영하거나 앨범에서 고를 수 있습니다.</span>
+        <div class="photos" id="photos"></div>
+        <button type="button" class="btn ghost" id="add-photo">＋ 사진 추가</button>
+        <input type="file" id="photo-input" accept="image/*" multiple hidden />
+      </div>
+
+      <p class="error" id="form-error" hidden></p>
+      <button type="submit" class="btn primary" id="submit-btn">제출하기</button>
+    </form>
+  </section>
+
+  <!-- 완료 화면 -->
+  <section class="view" id="view-done">
+    <div class="start-inner">
+      <div class="check">✓</div>
+      <h1>등록되었습니다</h1>
+      <p class="lead" id="done-note">당신의 생애가 곧 흘러갑니다.</p>
+      <button class="btn ghost" id="again-btn">다른 사람 등록하기</button>
+    </div>
+  </section>
+
+  <div class="overlay" id="overlay" hidden>
+    <div class="spinner"></div>
+    <p id="overlay-text">제출 중…</p>
+  </div>
+
+  <script src="/env.js"></script>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

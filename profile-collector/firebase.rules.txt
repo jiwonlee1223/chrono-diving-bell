@@ -1,0 +1,48 @@
+주마등 프로필 수집 앱 — Firebase 보안 규칙
+=============================================
+
+이 앱은 브라우저에서 직접 Firestore·Storage에 쓴다. 따라서 보안은 전적으로 아래 규칙이 담당한다.
+익명 인증 사용자(request.auth != null)만 쓰기를 허용하고, 조회는 서버(Admin SDK)만 하도록 닫아 둔다.
+
+
+── Firestore 규칙 (콘솔 → Firestore Database → 규칙) ──────────────────
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /profiles/{personaId} {
+      // 수집 앱은 쓰기 전용. 조회는 생성/어드민 쪽 Admin SDK(서비스 계정)로만 한다.
+      allow read: if false;
+      allow create, update: if request.auth != null
+        && request.resource.data.name is string
+        && request.resource.data.birthDate is string
+        && request.resource.data.occupation is string
+        && request.resource.data.photoURLs is list;
+      allow delete: if false;
+    }
+  }
+}
+
+
+── Storage 규칙 (콘솔 → Storage → 규칙) ─────────────────────────────
+
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /profile-photos/{personaId}/{fileName} {
+      // 규칙상 읽기는 닫혀 있지만, Firestore에 저장된 다운로드 URL(토큰 포함)로는
+      // 생성 파이프라인이 이미지를 가져올 수 있다(토큰 URL은 규칙을 우회). → 얼굴 사진 비공개 유지.
+      allow read: if false;
+      allow write: if request.auth != null
+        && request.resource.size < 15 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+    }
+  }
+}
+
+
+── 콘솔에서 켜야 할 것 ──────────────────────────────────────────────
+
+1. Authentication → 로그인 방법 → '익명' 사용 설정.
+2. Firestore Database 생성(프로덕션 모드) 후 위 규칙 붙여넣기.
+3. Storage 생성 후 위 규칙 붙여넣기.

@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>주마등 — 생애 라이브러리 검토</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0d0d0f;
+      color: #e8e6e3;
+      font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+      font-size: 14px;
+    }
+
+    header {
+      position: sticky; top: 0; z-index: 10;
+      display: flex; align-items: center; gap: 16px;
+      padding: 14px 22px;
+      background: rgba(13, 13, 15, 0.92);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    header h1 { font-size: 15px; font-weight: 600; letter-spacing: 0.02em; }
+    header select {
+      background: #1a1a1e; color: #e8e6e3;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 8px; padding: 6px 10px; font-size: 13px;
+    }
+    .tabs { display: flex; gap: 6px; margin-left: auto; }
+    .tabs button {
+      background: transparent; color: rgba(255, 255, 255, 0.65);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 8px; padding: 6px 12px; font-size: 12.5px; cursor: pointer;
+    }
+    .tabs button.active { background: #e8e6e3; color: #111; border-color: #e8e6e3; }
+    .counts { font-size: 12.5px; color: rgba(255, 255, 255, 0.55); }
+    .counts b { color: #e8e6e3; }
+
+    main { padding: 20px 22px 60px; }
+    .stage { margin-bottom: 30px; }
+    .stage h2 {
+      font-size: 13px; font-weight: 600; color: rgba(255, 255, 255, 0.6);
+      letter-spacing: 0.06em; margin-bottom: 10px;
+    }
+    .row { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
+
+    .card {
+      background: #17171a; border: 1px solid rgba(255, 255, 255, 0.07);
+      border-radius: 12px; overflow: hidden; width: 340px; flex: none;
+      transition: opacity 0.2s ease;
+    }
+    .card.portrait { width: 200px; }
+    .card img { display: block; width: 100%; aspect-ratio: 1344 / 768; object-fit: cover; background: #000; cursor: zoom-in; }
+    .card.portrait img { aspect-ratio: 832 / 1152; }
+    .card .meta { display: flex; align-items: center; gap: 8px; padding: 9px 11px; }
+    .card .meta .id { font-size: 12.5px; font-weight: 600; }
+    .card .meta .sub { font-size: 11.5px; color: rgba(255, 255, 255, 0.45); }
+    .badge {
+      margin-left: auto; font-size: 11px; font-weight: 600;
+      padding: 3px 8px; border-radius: 999px;
+    }
+    .badge.pending  { background: rgba(255, 190, 80, 0.16); color: #ffc466; }
+    .badge.approved { background: rgba(110, 220, 130, 0.16); color: #7de08c; }
+    .badge.rejected { background: rgba(255, 110, 110, 0.16); color: #ff8585; }
+
+    .actions { display: flex; gap: 6px; padding: 0 11px 11px; }
+    .actions button {
+      flex: 1; padding: 7px 0; font-size: 12.5px; font-weight: 600;
+      border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.13);
+      background: transparent; color: rgba(255, 255, 255, 0.8); cursor: pointer;
+    }
+    .actions button:hover { border-color: rgba(255, 255, 255, 0.4); }
+    .actions button.ok.on { background: rgba(110, 220, 130, 0.9); color: #0b0b0c; border-color: transparent; }
+    .actions button.no.on { background: rgba(255, 110, 110, 0.9); color: #0b0b0c; border-color: transparent; }
+    .actions button:disabled { opacity: 0.4; cursor: default; }
+
+    .hidden { display: none; }
+    #status { position: fixed; right: 18px; bottom: 14px; font-size: 12px; color: rgba(255, 255, 255, 0.5); }
+
+    /* 확대 보기 */
+    #zoom {
+      position: fixed; inset: 0; background: rgba(0, 0, 0, 0.92);
+      display: none; align-items: center; justify-content: center; z-index: 50; cursor: zoom-out;
+    }
+    #zoom.show { display: flex; }
+    #zoom img { max-width: 94vw; max-height: 90vh; }
+    #zoom .cap { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); font-size: 12px; color: rgba(255,255,255,0.7); max-width: 90vw; text-align: center; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>생애 라이브러리 검토</h1>
+    <select id="persona"></select>
+    <span class="counts" id="counts"></span>
+    <div class="tabs" id="tabs">
+      <button data-f="all" class="active">전체</button>
+      <button data-f="pending">대기</button>
+      <button data-f="approved">승인</button>
+      <button data-f="rejected">반려</button>
+    </div>
+  </header>
+  <main id="main"></main>
+  <div id="status"></div>
+  <div id="zoom"><img /><div class="cap"></div></div>
+
+  <script>
+    const $ = (s, el = document) => el.querySelector(s)
+    let pid = null
+    let manifest = null
+    let filter = 'all'
+
+    const api = (p, opts) => fetch(p, opts).then(async (r) => {
+      const j = await r.json()
+      if (!r.ok) throw new Error(j.error || r.status)
+      return j
+    })
+    const imgUrl = (e) => `/img/${pid}/${e.file}?rev=${e.rev || 0}`
+    const setStatus = (t) => { $('#status').textContent = t }
+
+    async function loadPersonas() {
+      const list = await api('/api/personas')
+      const sel = $('#persona')
+      sel.innerHTML = list.map((p) =>
+        `<option value="${p.personaId}">${p.name || p.personaId} — ${p.approved}/${p.total} 승인</option>`).join('')
+      if (list.length === 0) { $('#main').innerHTML = '<p style="color:#888">라이브러리가 비어 있습니다. 먼저 생성하세요: npm run gen:library</p>'; return }
+      pid = list[0].personaId
+      sel.value = pid
+      await loadManifest()
+    }
+
+    async function loadManifest() {
+      manifest = await api(`/api/personas/${pid}`)
+      render()
+    }
+
+    function counts() {
+      const c = { pending: 0, approved: 0, rejected: 0 }
+      manifest.images.forEach((i) => c[i.status]++)
+      $('#counts').innerHTML = `대기 <b>${c.pending}</b> · 승인 <b>${c.approved}</b> · 반려 <b>${c.rejected}</b> / ${manifest.images.length}장`
+    }
+
+    function card(entry, kind) {
+      const div = document.createElement('div')
+      div.className = 'card' + (kind === 'portrait' ? ' portrait' : '')
+      div.dataset.status = entry.status
+      const idLabel = kind === 'portrait' ? `age ${entry.age}` : entry.id
+      const sub = kind === 'portrait' ? '포트레이트 (내부 자산)' : `${entry.age}살 · ${entry.year}${entry.isPast ? '' : ' (미래)'}`
+      div.innerHTML = `
+        <img src="${imgUrl(entry)}" loading="lazy" title="${entry.prompt.replaceAll('"', '&quot;')}" />
+        <div class="meta"><span class="id">${idLabel}</span><span class="sub">${sub}</span>
+          <span class="badge ${entry.status}">${{ pending: '대기', approved: '승인', rejected: '반려' }[entry.status]}</span></div>
+        <div class="actions">
+          <button class="ok ${entry.status === 'approved' ? 'on' : ''}">승인</button>
+          <button class="no ${entry.status === 'rejected' ? 'on' : ''}">반려</button>
+          <button class="re">재생성</button>
+        </div>`
+      const id = kind === 'portrait' ? entry.age : entry.id
+
+      $('img', div).addEventListener('click', () => {
+        $('#zoom img').src = imgUrl(entry)
+        $('#zoom .cap').textContent = `${idLabel} — ${entry.prompt}`
+        $('#zoom').classList.add('show')
+      })
+      const review = async (status) => {
+        // 같은 버튼 다시 누르면 대기로 되돌림
+        const next = entry.status === status ? 'pending' : status
+        await api(`/api/personas/${pid}/review`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ kind, id, status: next })
+        })
+        entry.status = next
+        render()
+      }
+      $('.ok', div).addEventListener('click', () => review('approved'))
+      $('.no', div).addEventListener('click', () => review('rejected'))
+      $('.re', div).addEventListener('click', async () => {
+        const btn = $('.re', div)
+        btn.disabled = true
+        btn.textContent = '생성 중…'
+        setStatus(`${idLabel} 재생성 중 (~15초)`)
+        try {
+          const out = await api(`/api/personas/${pid}/regen`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ kind, id })
+          })
+          Object.assign(entry, out.entry)
+          setStatus(out.note || `${idLabel} 재생성 완료`)
+          render()
+        } catch (e) {
+          setStatus(`재생성 실패: ${e.message}`)
+          btn.disabled = false
+          btn.textContent = '재생성'
+        }
+      })
+      return div
+    }
+
+    function render() {
+      counts()
+      const main = $('#main')
+      main.innerHTML = ''
+      // 단계(stageIndex)별로 묶기: 포트레이트 1 + 장면들
+      const stages = new Map()
+      manifest.images.forEach((img) => {
+        if (!stages.has(img.stageIndex)) stages.set(img.stageIndex, [])
+        stages.get(img.stageIndex).push(img)
+      })
+      for (const [si, scenes] of [...stages.entries()].sort((a, b) => a[0] - b[0])) {
+        const age = scenes[0].age
+        const section = document.createElement('section')
+        section.className = 'stage'
+        section.innerHTML = `<h2>단계 ${si} — ${age}살 (${scenes[0].year}${scenes[0].isPast ? '' : ', 미래'})</h2>`
+        const row = document.createElement('div')
+        row.className = 'row'
+        const portrait = (manifest.agePortraits || []).find((p) => p.age === age)
+        if (portrait && (filter === 'all' || portrait.status === filter)) row.appendChild(card(portrait, 'portrait'))
+        scenes.forEach((s) => { if (filter === 'all' || s.status === filter) row.appendChild(card(s, 'scene')) })
+        if (row.children.length > 0) { section.appendChild(row); main.appendChild(section) }
+      }
+    }
+
+    $('#persona').addEventListener('change', (e) => { pid = e.target.value; loadManifest() })
+    $('#tabs').addEventListener('click', (e) => {
+      if (e.target.tagName !== 'BUTTON') return
+      filter = e.target.dataset.f
+      document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('active', b === e.target))
+      render()
+    })
+    $('#zoom').addEventListener('click', () => $('#zoom').classList.remove('show'))
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $('#zoom').classList.remove('show') })
+
+    loadPersonas()
+  </script>
+</body>
+</html>

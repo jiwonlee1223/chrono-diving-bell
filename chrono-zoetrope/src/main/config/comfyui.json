@@ -4,5 +4,11 @@
   "image": { "width": 1344, "height": 768 },
   "perStage": 3,
   "outDir": "library",
-  "timeoutMs": 300000
+  "timeoutMs": 300000,
+  "firebase": {
+    "serviceAccountPath": "./secrets/serviceAccountKey.json",
+    "projectId": "",
+    "pollIntervalMs": 15000,
+    "batchLimit": 5
+  }
 }
