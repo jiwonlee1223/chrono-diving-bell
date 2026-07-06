@@ -1,0 +1,8 @@
+{
+  "host": "http://143.248.107.38:8188",
+  "workflow": "auto",
+  "image": { "width": 1344, "height": 768 },
+  "perStage": 3,
+  "outDir": "library",
+  "timeoutMs": 300000
+}

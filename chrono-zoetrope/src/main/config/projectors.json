@@ -1,0 +1,45 @@
+{
+  "$comment": "프로젝터 4대 캘리브레이션. 각 항목이 담당 프로젝터의 가상 카메라 포즈/렌즈를 정의한다 (CLAUDE.md §4.1). 캘리브레이션 = 이 파일 편집. 코드 변경 없음.",
+  "projectors": [
+    {
+      "id": "P0",
+      "displayIndex": 0,
+      "azimuthDeg": 0,
+      "distance": 2.0,
+      "heightOffset": 0.0,
+      "fov": 57,
+      "lensOffset": { "x": 0.0, "y": 0.0 },
+      "blendFraction": { "left": 0.12, "right": 0.12 }
+    },
+    {
+      "id": "P1",
+      "displayIndex": 1,
+      "azimuthDeg": 90,
+      "distance": 2.0,
+      "heightOffset": 0.0,
+      "fov": 57,
+      "lensOffset": { "x": 0.0, "y": 0.0 },
+      "blendFraction": { "left": 0.12, "right": 0.12 }
+    },
+    {
+      "id": "P2",
+      "displayIndex": 2,
+      "azimuthDeg": 180,
+      "distance": 2.0,
+      "heightOffset": 0.0,
+      "fov": 57,
+      "lensOffset": { "x": 0.0, "y": 0.0 },
+      "blendFraction": { "left": 0.12, "right": 0.12 }
+    },
+    {
+      "id": "P3",
+      "displayIndex": 3,
+      "azimuthDeg": 270,
+      "distance": 2.0,
+      "heightOffset": 0.0,
+      "fov": 57,
+      "lensOffset": { "x": 0.0, "y": 0.0 },
+      "blendFraction": { "left": 0.12, "right": 0.12 }
+    }
+  ]
+}

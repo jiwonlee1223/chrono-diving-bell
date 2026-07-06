@@ -1,0 +1,32 @@
+{
+  "$comment": "설치물 물리·광학 파라미터. CLAUDE.md §2 확정값. 단위: 미터(씬 좌표계와 동일).",
+  "cylinder": {
+    "radius": 0.7,
+    "height": 1.4,
+    "radialSegments": 256
+  },
+  "panorama": {
+    "sourceWidth": 8192,
+    "sourceHeight": 4096,
+    "testWidth": 4096,
+    "testHeight": 2048
+  },
+  "thread": {
+    "$comment": "생애의 실타래(hybrid warm threads) 연출. turns=주 가닥 감김 바퀴, turns2=반대로 감기는 촘촘한 가닥, period=둘레 주기(seamless의 열쇠, 반드시 정수), speed=감김 드리프트 속도, reveal=빛 임계(0..1, 높을수록 검정이 많음).",
+    "turns": 2.5,
+    "turns2": 4.0,
+    "period": 6,
+    "speed": 1.0,
+    "reveal": 0.55
+  },
+  "rise": {
+    "$comment": "가끔 아래→위로 감겨 오르는 '한 생애' 사건(§9 수직=타임라인 읽기를 잠깐 실어 보냄). periodSec마다 한 번, travelSec 동안 head가 바닥→꼭대기로 통과. 나머지 시간은 앰비언트(사건 없음).",
+    "periodSec": 48,
+    "travelSec": 16
+  },
+  "backProjection": true,
+  "blend": {
+    "$comment": "인접 프로젝터 담당 90° 호가 겹치는 폭(도). 좌/우 밴드 페더링에 사용.",
+    "overlapDeg": 10
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "cdb-root",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix chrono-zoetrope run dev",
+    "start": "npm --prefix chrono-zoetrope run start",
+    "build": "npm --prefix chrono-zoetrope run build",
+    "build:mac": "npm --prefix chrono-zoetrope run build:mac",
+    "build:win": "npm --prefix chrono-zoetrope run build:win",
+    "build:linux": "npm --prefix chrono-zoetrope run build:linux"
+  }
+}

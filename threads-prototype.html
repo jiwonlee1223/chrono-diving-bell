@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>주마등 — Warm Threads Prototype</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  #app { position: fixed; inset: 0; }
+  canvas { display: block; }
+
+  .ui {
+    position: fixed; left: 18px; bottom: 16px;
+    font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
+    color: rgba(255,240,225,0.72); font-size: 12px; letter-spacing: 0.04em;
+    line-height: 1.7; user-select: none; pointer-events: none;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.85);
+  }
+  .ui b { color: rgba(255,245,230,0.95); font-weight: 600; }
+
+  .caption {
+    position: fixed; right: 18px; top: 16px;
+    font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
+    color: rgba(255,235,215,0.55); font-size: 11px; letter-spacing: 0.14em;
+    text-transform: uppercase; user-select: none; pointer-events: none;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.85);
+  }
+
+  .hint {
+    position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%);
+    font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
+    color: rgba(255,240,225,0.85); font-size: 13px; letter-spacing: 0.06em;
+    user-select: none; pointer-events: none; text-align: center;
+    transition: opacity 1.2s ease; text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+  }
+  .hint.hide { opacity: 0; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<div class="caption" id="caption">INSIDE — 주마등 내부</div>
+<div class="hint" id="hint">타고 오르는 번개를 보세요 · 드래그로 둘러보기 · <b>V</b> 뷰 전환</div>
+<div class="ui">
+  <div>드래그 <b>둘러보기</b> &nbsp;·&nbsp; <b>V</b> 내부 / 펼친 파노라마 &nbsp;·&nbsp; <b>↑↓</b> 상승 속도 &nbsp;·&nbsp; <b>Space</b> 시선 자동회전</div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ---------------------------------------------------------------------------
+// 주마등 — WARM THREADS
+// 폭풍의 구름 난류(웜톤) + 위로 타고 오르는 흰 선 "BOLT".
+// BOLT = 태풍 속 번개처럼 흐릿한 아웃라인(boltGlow)과 밝은 심(boltCore)의
+// 두 겹. 능선 노이즈 거리 필드를 도메인 워프(wob/jag)로 비정형으로 꺾어
+// 위로 스크롤시킨다. 나선 감김(twist)은 제거했다 — 실타래가 아니라 번개.
+// 두 가닥을 반대 방향으로 흘려 밀도를 낸다. 둘레 방향은 주기 노이즈로 seamless.
+// ---------------------------------------------------------------------------
+
+const CYL_RADIUS = 70;
+const CYL_HEIGHT = 140;
+
+const app = document.getElementById('app');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+app.appendChild(renderer.domElement);
+
+const uniforms = {
+  uTime:      { value: 0 },
+  uSpeed:     { value: 1.0 },   // 실타래 감김 속도
+  uIntensity: { value: 1.0 },
+  uPeriod:    { value: 6.0 },   // 둘레 주기 (seamless의 열쇠)
+};
+
+const VERT = `
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+const FRAG = `
+  precision highp float;
+  varying vec2 vUv;
+  uniform float uTime;
+  uniform float uSpeed;
+  uniform float uIntensity;
+  uniform float uPeriod;
+
+  float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
+
+  float pnoise(vec2 p, float period){
+    vec2 i = floor(p); vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    float x0 = mod(i.x, period);
+    float x1 = mod(i.x + 1.0, period);
+    float a = hash(vec2(x0, i.y));
+    float b = hash(vec2(x1, i.y));
+    float c = hash(vec2(x0, i.y + 1.0));
+    float d = hash(vec2(x1, i.y + 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+  }
+
+  float fbm(vec2 p, float period){
+    float v = 0.0, amp = 0.5, per = period;
+    for (int i = 0; i < 5; i++){
+      v += amp * pnoise(p, per);
+      p *= 2.0; per *= 2.0; amp *= 0.5;
+    }
+    return v;
+  }
+
+  void main(){
+    vec2 uv = vUv;
+    float t = uTime;
+    float P = uPeriod;
+
+    // 느린 흔들림 (구름 속에 있는 듯한)
+    float sway = 0.06 * sin(uv.y * 3.0 + t * 0.6)
+               + 0.05 * fbm(vec2(uv.y * 2.0, t * 0.2), P);
+
+    // --- 따뜻한 구름 베이스 (난류를 웜톤으로) ---
+    vec2 cp = vec2(uv.x * P + sway, uv.y * 2.4 - t * 0.10);
+    vec2 q  = vec2(fbm(cp + vec2(0.0, t * 0.15), P),
+                   fbm(cp + vec2(4.3, 1.2), P));
+    float clouds = fbm(cp + 3.0 * q, P);
+
+    // -----------------------------------------------------------------
+    // BOLT — 위로 타고 오르는 흰 선의 이름.
+    // 태풍 속 번개: 거리 필드(d)에서 두 겹을 뽑는다.
+    //   boltGlow = 넓고 흐릿한 아웃라인 (낮은 지수)
+    //   boltCore = 가늘고 밝은 심 (높은 지수)
+    // 도메인 워프 2단(wob 큰 굽이 + jag 잔 지그재그)으로 비정형으로 꺾고,
+    // pulse로 가닥을 따라 끊겼다 이어지게 명멸시킨다.
+    // -----------------------------------------------------------------
+    float wob = fbm(vec2(uv.y * 3.0 - t * 0.25 * uSpeed, uv.x * P), P) - 0.5;        // 큰 굽이
+    float jag = fbm(vec2(uv.y * 9.0 - t * 1.10 * uSpeed, uv.x * P + 7.7), P) - 0.5;  // 잔 지그재그
+
+    // --- 가닥 1: 위로 타고 오르는 주 가닥 (감김 없음, 워프로만 꺾임) ---
+    float ang   = uv.x + t * 0.08 * uSpeed + wob * 0.7 + jag * 0.35;
+    vec2  tp    = vec2(ang * P, uv.y * 7.0 - t * 0.95 * uSpeed + sway * 2.0);
+    float d1    = abs(2.0 * fbm(tp, P) - 1.0);         // 가닥까지의 거리
+
+    // --- 가닥 2: 반대 방향으로 흐르는 보조 가닥 ---
+    float ang2   = uv.x - t * 0.05 * uSpeed - wob * 1.0 - jag * 0.5;
+    vec2  tp2    = vec2(ang2 * P, uv.y * 11.0 - t * 0.60 * uSpeed);
+    float d2     = abs(2.0 * fbm(tp2, P) - 1.0);
+
+    // 번개처럼 끊겼다 이어지는 강약 (x축 주기 P*0.5로 seamless 유지)
+    float pulse  = 0.40 + 0.60 * fbm(vec2(ang  * P * 0.5,       uv.y * 2.0 - t * 0.80 * uSpeed), P * 0.5);
+    float pulse2 = 0.40 + 0.60 * fbm(vec2(ang2 * P * 0.5 + 3.1, uv.y * 2.0 - t * 0.50 * uSpeed), P * 0.5);
+
+    float boltGlow = pow(clamp(1.0 - d1, 0.0, 1.0), 1.3) * 0.55 * pulse
+                   + pow(clamp(1.0 - d2, 0.0, 1.0), 1.6) * 0.35 * pulse2;
+    float boltCore = pow(clamp(1.0 - d1, 0.0, 1.0), 7.0) * pulse
+                   + pow(clamp(1.0 - d2, 0.0, 1.0), 9.0) * pulse2;
+
+    // --- 웜톤 팔레트 (주마등 조명) ---
+    float flame = 0.90 + 0.10 * fbm(vec2(t * 3.0, 5.0), P);
+    vec3 warmDark = vec3(0.10, 0.045, 0.02);
+    vec3 warm     = vec3(0.55, 0.26, 0.10);
+    vec3 warmHi   = vec3(1.00, 0.72, 0.38);
+
+    vec3 col = mix(warmDark, warm, clamp(clouds * 1.5, 0.0, 1.0));
+    col = mix(col, warmHi, clamp(pow(clouds, 2.5) * 0.5, 0.0, 1.0));
+
+    // BOLT 채색: 흐릿한 헤일로(약간 푸른 흰색) + 밝은 심. 태풍 구름 속 번개.
+    col += vec3(0.80, 0.86, 1.00) * boltGlow * (0.55 + 0.45 * clouds);
+    col += vec3(0.97, 0.98, 1.00) * boltCore * (0.80 + 0.40 * clouds);
+
+    col *= flame;
+
+    // 세로 감쇠
+    float vig = smoothstep(0.0, 0.10, uv.y) * smoothstep(1.0, 0.90, uv.y);
+    col *= mix(0.18, 1.0, vig);
+
+    // 종이 질감 (seamless)
+    float gf = P * 50.0;
+    float grain = pnoise(vec2(uv.x * gf, uv.y * 150.0), gf);
+    col *= 0.95 + 0.05 * grain;
+
+    col *= uIntensity;
+    gl_FragColor = vec4(col, 1.0);
+  }
+`;
+
+// ---- 씬 -----------------------------------------------------------------
+const insideScene = new THREE.Scene();
+const insideCam = new THREE.PerspectiveCamera(95, window.innerWidth / window.innerHeight, 0.1, 2000);
+insideCam.rotation.order = 'YXZ';
+
+const cylMat = new THREE.ShaderMaterial({ uniforms, vertexShader: VERT, fragmentShader: FRAG, side: THREE.BackSide });
+const cylinder = new THREE.Mesh(new THREE.CylinderGeometry(CYL_RADIUS, CYL_RADIUS, CYL_HEIGHT, 220, 1, true), cylMat);
+insideScene.add(cylinder);
+
+const flatScene = new THREE.Scene();
+const flatCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 10);
+flatCam.position.z = 1;
+const flatMat = new THREE.ShaderMaterial({ uniforms, vertexShader: VERT, fragmentShader: FRAG, side: THREE.DoubleSide });
+flatScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), flatMat));
+
+// ---- 인터랙션 -----------------------------------------------------------
+let yaw = 0, pitch = 0, autoRotate = false;
+let dragging = false, lastX = 0, lastY = 0, insideView = true;
+
+const dom = renderer.domElement;
+dom.addEventListener('pointerdown', (e) => { dragging = true; lastX = e.clientX; lastY = e.clientY; autoRotate = false; });
+window.addEventListener('pointerup', () => { dragging = false; });
+window.addEventListener('pointermove', (e) => {
+  if (!dragging) return;
+  yaw   -= (e.clientX - lastX) * 0.005;
+  pitch -= (e.clientY - lastY) * 0.005;
+  pitch = Math.max(-1.2, Math.min(1.2, pitch));
+  lastX = e.clientX; lastY = e.clientY;
+});
+
+const caption = document.getElementById('caption');
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'v' || e.key === 'V') {
+    insideView = !insideView;
+    caption.textContent = insideView ? 'INSIDE — 주마등 내부' : 'UNWRAPPED — 등장방형 소스';
+  } else if (e.key === ' ') {
+    autoRotate = !autoRotate; e.preventDefault();
+  } else if (e.key === 'ArrowUp') {
+    uniforms.uSpeed.value = Math.min(4.0, uniforms.uSpeed.value + 0.2);
+  } else if (e.key === 'ArrowDown') {
+    uniforms.uSpeed.value = Math.max(0.0, uniforms.uSpeed.value - 0.2);
+  }
+});
+
+setTimeout(() => document.getElementById('hint').classList.add('hide'), 4600);
+
+window.addEventListener('resize', () => {
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  insideCam.aspect = window.innerWidth / window.innerHeight;
+  insideCam.updateProjectionMatrix();
+});
+
+// ---- 루프 ---------------------------------------------------------------
+const clock = new THREE.Clock();
+function animate(){
+  requestAnimationFrame(animate);
+  uniforms.uTime.value += clock.getDelta();
+  if (autoRotate) yaw += 0.0006;
+  insideCam.rotation.y = yaw;
+  insideCam.rotation.x = pitch;
+  if (insideView) renderer.render(insideScene, insideCam);
+  else            renderer.render(flatScene, flatCam);
+}
+animate();
+</script>
+</body>
+</html>
