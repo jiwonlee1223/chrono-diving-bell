@@ -1,10 +1,17 @@
 {
   "host": "http://143.248.107.38:8188",
-  "workflow": "auto",
+  "workflow": "gemini",
   "image": { "width": 1344, "height": 768 },
   "perStage": 3,
   "outDir": "library",
   "timeoutMs": 300000,
+  "gemini": {
+    "model": "gemini-3-pro-image",
+    "sceneModel": "gemini-3.1-flash-image",
+    "textModel": "gemini-2.5-flash",
+    "apiKeyPath": "./secrets/gemini-api-key.txt",
+    "imageSize": "2K"
+  },
   "firebase": {
     "serviceAccountPath": "./secrets/serviceAccountKey.json",
     "projectId": "",

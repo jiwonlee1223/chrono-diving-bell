@@ -1,8 +1,8 @@
 // 프로필 수집 앱 로직 (브라우저 ES 모듈).
 // Firebase 익명 인증 → 이름/생년월일/직업/사진 입력 → Storage 업로드 + Firestore 저장.
 //
-// 저장 문서 ID = personaId. chrono-zoetrope 생성 파이프라인이 만드는 라이브러리 폴더명과
-// 동일한 해시라서, profiles/{personaId} ↔ library/{personaId} 가 1:1로 연결된다.
+// 저장 문서 ID = personaId (이름_YYMMDD). chrono-zoetrope 생성 파이프라인은 이 값을
+// 재계산하지 않고 Firestore doc.id 를 그대로 써서 library/{personaId} 폴더로 연결한다.
 
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js'
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js'
@@ -25,17 +25,14 @@ if (configured) {
   showStartError('서버에 Firebase 설정이 없습니다. 관리자에게 문의하세요. (환경변수 미설정)')
 }
 
-// ── personaId — 생성 파이프라인의 해시와 정확히 동일해야 한다 ─────────
-function hashString(s) {
-  let h = 2166136261
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i)
-    h = Math.imul(h, 16777619)
-  }
-  return h >>> 0
-}
+// ── personaId — Firestore 문서 ID이자 Storage 경로 조각이 된다.
+// 사람이 알아볼 수 있게 `이름_YYMMDD` 형식. 생성 파이프라인은 이 값을 재계산하지 않고
+// Firestore doc.id 를 그대로 소비하므로, 형식은 이 함수 하나가 단독으로 정한다.
+// 이름의 위험 문자(공백, / . # $ [ ])는 제거한다 — Firestore ID/Storage 경로 안전용.
 function personaId(name, birthDate) {
-  return 'p-' + hashString(`${name}|${birthDate}`).toString(16).padStart(8, '0')
+  const safeName = name.trim().replace(/[\s/.#$[\]]+/g, '')
+  const ymd = birthDate.replace(/-/g, '').slice(2) // 'YYYY-MM-DD' → 'YYMMDD'
+  return `${safeName}_${ymd}`
 }
 
 // ── 뷰 전환 ───────────────────────────────────────────────────────

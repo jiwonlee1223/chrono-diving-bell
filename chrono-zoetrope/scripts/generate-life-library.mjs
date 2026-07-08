@@ -5,6 +5,8 @@
 //   node scripts/generate-life-library.mjs --profile ... --limit 2                          # 앞 2장만
 //   node scripts/generate-life-library.mjs --profile ... --dry-run                          # 플랜만 출력
 //   node scripts/generate-life-library.mjs --profile ... --workflow sdxl                    # 폴백 강제
+//   node scripts/generate-life-library.mjs --profile ... --workflow gemini                  # 전부 Gemini
+//   node scripts/generate-life-library.mjs --profile ... --workflow hybrid                  # 포트레이트만 Gemini, 장면은 kontext
 //
 // 옵션: --host URL, --out DIR, --per-stage N (config/comfyui.json 기본값을 덮어쓴다)
 
@@ -12,7 +14,14 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { generateLifeLibrary } from '../src/main/comfyui/life-library.js'
-import { buildScenePlan, composeKontextPrompt, composeSdxlPrompt, personaId } from '../src/main/comfyui/prompt-builder.js'
+import { resolveGeminiConfig } from '../src/main/comfyui/gemini-client.js'
+import {
+  buildScenePlan,
+  composeGeminiScenePrompt,
+  composeKontextPrompt,
+  composeSdxlPrompt,
+  personaId
+} from '../src/main/comfyui/prompt-builder.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -28,7 +37,7 @@ function parseArgs(argv) {
 
 const args = parseArgs(process.argv.slice(2))
 if (!args.profile) {
-  console.error('사용법: node scripts/generate-life-library.mjs --profile <profile.json> [--limit N] [--dry-run] [--workflow auto|kontext|sdxl]')
+  console.error('사용법: node scripts/generate-life-library.mjs --profile <profile.json> [--limit N] [--dry-run] [--workflow auto|kontext|sdxl|gemini|hybrid]')
   process.exit(1)
 }
 
@@ -46,7 +55,12 @@ if (args.dryRun) {
   const mode = workflow === 'auto' ? (profile.photos.length ? 'kontext' : 'sdxl') : workflow
   console.log(`persona: ${personaId(profile)}  workflow: ${mode}  total: ${plan.length}장\n`)
   for (const item of plan) {
-    const prompt = mode === 'kontext' ? composeKontextPrompt(profile, item) : composeSdxlPrompt(profile, item)
+    const prompt =
+      mode === 'sdxl'
+        ? composeSdxlPrompt(profile, item)
+        : mode === 'gemini'
+          ? composeGeminiScenePrompt(profile, item)
+          : composeKontextPrompt(profile, item)
     console.log(`[${item.id}] age ${item.age} (${item.year}${item.isPast ? '' : ', 미래'})\n  ${prompt}\n`)
   }
   process.exit(0)
@@ -61,9 +75,13 @@ const result = await generateLifeLibrary(profile, {
   limit: args.limit ? parseInt(args.limit, 10) : Infinity,
   image: config.image,
   timeoutMs: config.timeoutMs,
+  gemini: resolveGeminiConfig(config.gemini, root),
   onProgress: (e) => {
     if (e.type === 'plan') console.log(`플랜 ${e.total}장 생성 시작`)
     else if (e.type === 'upload') console.log(`레퍼런스 업로드 완료: ${e.file}`)
+    else if (e.type === 'gender-start') console.log('성별 자동감지 중...')
+    else if (e.type === 'gender-done')
+      console.log(`성별 자동감지: ${e.gender || '판별 불가'}${e.error ? ` (오류: ${e.error})` : ''}`)
     else if (e.type === 'portrait-start') console.log(`  age ${e.age} 포트레이트 생성 중...`)
     else if (e.type === 'portrait-done') console.log(`  age ${e.age} 포트레이트 저장: ${e.file}`)
     else if (e.type === 'image-start') console.log(`[${e.item.id}] age ${e.item.age} 생성 중... (${e.done + 1}/${e.total})`)

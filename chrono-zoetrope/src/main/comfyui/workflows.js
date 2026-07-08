@@ -132,6 +132,83 @@ export function buildKontextWorkflow({
 }
 
 /**
+ * DeepDanbooru 태거: 업로드된 사진 → 태그 문자열 ("1girl, solo, ..." / "1boy, ...").
+ * 성별 자동 감지(gender-detect.js)의 기본 백엔드 — 실서버 검증 결과 유일하게 동작
+ * (Florence-2·BLIP·QWen 노드는 transformers 버전 문제로 깨져 있음, 2026-07 기준).
+ * ShowText|pysssss가 output 노드라 태그가 /history의 outputs.text로 나온다.
+ */
+export function buildDeepDanbooruCaptionWorkflow({ referenceImage, threshold = 0.5 }) {
+  return {
+    1: {
+      class_type: 'LoadImage',
+      inputs: { image: referenceImage },
+      _meta: { title: 'Reference Photo' }
+    },
+    2: {
+      class_type: 'DeepDanbooruCaption',
+      inputs: {
+        image: ['1', 0],
+        threshold,
+        sort_alpha: true,
+        use_spaces: true,
+        escape: true,
+        filter_tags: 'blacklist'
+      },
+      _meta: { title: 'Tagger' }
+    },
+    3: {
+      class_type: 'ShowText|pysssss',
+      inputs: { text: ['2', 0] },
+      _meta: { title: 'Tags Output' }
+    }
+  }
+}
+
+/**
+ * Florence-2 이미지 캡션: 업로드된 사진 → 서술 텍스트.
+ * 성별 감지의 폴백 백엔드 — 현재 서버에선 로더가 깨져 있지만, 노드가 수리되면
+ * DeepDanbooru 실패 시 자동으로 이 경로를 탄다.
+ *
+ * @param {object} p
+ * @param {string} p.referenceImage  업로드된 입력 이미지 이름
+ * @param {string} p.task            'caption' | 'detailed_caption' | ...
+ */
+export function buildFlorenceCaptionWorkflow({
+  referenceImage,
+  task = 'caption',
+  model = 'microsoft/Florence-2-base'
+}) {
+  return {
+    1: {
+      class_type: 'LoadImage',
+      inputs: { image: referenceImage },
+      _meta: { title: 'Reference Photo' }
+    },
+    2: {
+      class_type: 'DownloadAndLoadFlorence2Model',
+      inputs: { model, precision: 'fp16', attention: 'sdpa' },
+      _meta: { title: 'Load Florence-2' }
+    },
+    3: {
+      class_type: 'Florence2Run',
+      inputs: {
+        image: ['1', 0],
+        florence2_model: ['2', 0],
+        text_input: '',
+        task,
+        fill_mask: true
+      },
+      _meta: { title: 'Caption' }
+    },
+    4: {
+      class_type: 'ShowText|pysssss',
+      inputs: { text: ['3', 2] },
+      _meta: { title: 'Caption Output' }
+    }
+  }
+}
+
+/**
  * SDXL Lightning txt2img. 레퍼런스 사진이 없을 때의 폴백 — 인물 일관성은 없다.
  * realvisxl Lightning 권장값: steps 5~6, cfg 1.5, dpmpp_sde/karras.
  */

@@ -37,10 +37,17 @@ mkdir -p secrets     # 여기에 serviceAccountKey.json 배치
 
 ```bash
 npm run gen:firestore                 # 대기분(submitted) 한 배치 처리 후 종료
-npm run worker                        # 폴링 루프 (전시 중 상시 구동)
+npm run worker:listen                 # 실시간 리스너 — 제출 즉시 생성 시작 (전시 중 상시 구동, 권장)
+npm run worker                        # 폴링 루프 (15초 간격, 대안)
 node scripts/generate-from-firestore.mjs --once --limit 1
 node scripts/generate-from-firestore.mjs --once --include-errors   # 실패분 재시도
 ```
+
+**전시 중 권장 구동 방식**: 생성 머신(ComfyUI가 있는 머신)이 전시 내내 켜져 인터넷에
+연결돼 있다면 `npm run worker:listen`을 띄워둔다. 관람객이 폰에서 "제출하기"를 누르는 순간
+Firestore 문서가 써지고, 이 리스너가 폴링 지연 없이(수백 ms 내) 감지해 바로 생성을 시작한다.
+리스너는 생성 머신 → Firestore 방향의 아웃바운드 연결만 유지하므로 별도 포트포워딩·방화벽
+설정이 필요 없다. `npm run worker`(폴링)는 리스너 연결이 불안정한 환경을 위한 대안으로 남겨둔다.
 
 ## status 생명주기
 

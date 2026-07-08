@@ -10,7 +10,8 @@
 // 프로필 스키마 (수집 앱은 별도 — todo):
 //   { name: string, birthDate: 'YYYY-MM-DD', occupation: string,
 //     photos: string[]            — 로컬 파일 경로 2~3장 (첫 장을 레퍼런스로 사용),
-//     gender?: string, descriptors?: string[]  — 향후 더 descriptive한 입력 확장 지점 }
+//     gender?: 'male'|'female',   — 없으면 레퍼런스 사진에서 자동 감지(gender-detect.js)
+//     descriptors?: string[]      — 향후 더 descriptive한 입력 확장 지점 }
 
 // 라이브러리 전체의 시각적 톤 통일 (Flash Back 자산의 필름 사진 톤을 따른다).
 export const STYLE =
@@ -195,20 +196,36 @@ export function buildScenePlan(profile, { perStage = 3, now = new Date() } = {})
   return plan
 }
 
+// 나이에 맞는 성별 명사. gender가 없으면 중립 표현으로 폴백한다.
+export function subjectNoun(age, gender) {
+  const child = age <= 14
+  if (gender === 'male') return child ? 'boy' : 'man'
+  if (gender === 'female') return child ? 'girl' : 'woman'
+  return child ? 'child' : 'person'
+}
+
 // 나이대별 구체적 신체 묘사. "나이를 바꿔라"라는 추상 지시는 Kontext가 무시하므로
 // (정체성 보존이 이겨버린다) 바뀌어야 할 물리적 특징을 직접 나열한다. 실서버 검증 결과.
-function ageTraits(age) {
+// 성별 명사를 박아 큰 나이 점프에서 성별이 드리프트하는 것도 같이 막는다.
+function ageTraits(age, gender) {
+  // 아동 명사(boy/girl/child)와 성인 명사(man/woman/person)
+  const c = gender === 'male' ? 'boy' : gender === 'female' ? 'girl' : 'child'
+  const a = gender === 'male' ? 'man' : gender === 'female' ? 'woman' : 'person'
   if (age <= 4)
-    return 'a toddler with a round baby face, chubby cheeks, large eyes, a tiny nose, a completely smooth face without any facial hair, wispy baby hair'
+    return `a toddler ${c === 'child' ? '' : `${c} `}with a round baby face, chubby cheeks, large eyes, a tiny nose, a completely smooth face without any facial hair, wispy baby hair`
   if (age <= 10)
-    return 'a young child with a round face, bright eyes, a completely smooth face without any facial hair'
-  if (age <= 16) return 'an adolescent with youthful smooth skin, no facial hair, soft features'
-  if (age <= 22) return 'a teenager with smooth youthful skin and a slim face'
-  if (age <= 40) return 'a young adult'
-  if (age <= 50) return 'a middle-aged person with faint wrinkles and mature features'
-  if (age <= 60) return 'a middle-aged person with visible wrinkles and graying hair'
-  if (age <= 75) return 'an elderly person with wrinkles and gray hair'
-  return 'a very old person with deep wrinkles, thin white hair, and age spots'
+    return `a young ${c} with a round face, bright eyes, a completely smooth face without any facial hair`
+  if (age <= 16)
+    return `an adolescent ${c === 'child' ? '' : `${c} `}with youthful smooth skin, no facial hair, soft features`
+  if (age <= 22)
+    return c === 'child'
+      ? 'a teenager with smooth youthful skin and a slim face'
+      : `a teenage ${c} with smooth youthful skin and a slim face`
+  if (age <= 40) return `a young ${a === 'person' ? 'adult' : a}`
+  if (age <= 50) return `a middle-aged ${a} with faint wrinkles and mature features`
+  if (age <= 60) return `a middle-aged ${a} with visible wrinkles and graying hair`
+  if (age <= 75) return `an elderly ${a} with wrinkles and gray hair`
+  return `a very old ${a} with deep wrinkles, thin white hair, and age spots`
 }
 
 /**
@@ -218,7 +235,7 @@ function ageTraits(age) {
  */
 export function composeAgePortraitPrompt(profile, age) {
   return (
-    `Replace the person with a ${age}-year-old version of the same person: ${ageTraits(age)},` +
+    `Replace the person with a ${age}-year-old version of the same person: ${ageTraits(age, profile.gender)},` +
     ` wearing a plain white t-shirt. Keep the same facial identity recognizable.` +
     ` A neutral studio portrait photograph, plain light gray background, facing the camera,` +
     ` natural expression, soft even light, photorealistic. no text, no watermark`
@@ -228,17 +245,42 @@ export function composeAgePortraitPrompt(profile, age) {
 /** Kontext용 장면 프롬프트(2단계) — 나이별 포트레이트의 인물을 장면에 배치. */
 export function composeKontextPrompt(profile, item) {
   const extra = (profile.descriptors || []).join(', ')
+  const who = profile.gender ? `${subjectNoun(item.age, profile.gender)}` : ''
   return (
-    `Place this person, a ${item.age}-year-old, in a new scene: ${item.scene}.` +
+    `Place this person, a ${item.age}-year-old${who ? ` ${who}` : ''}, in a new scene: ${item.scene}.` +
     ` Keep the same facial identity. Full scene visible, person within the environment.` +
     (extra ? ` ${extra}.` : '') +
     ` ${STYLE}`
   )
 }
 
+/**
+ * Gemini 장면 프롬프트(2단계) — 나이별 포트레이트의 인물을 장면에 배치.
+ * Kontext보다 지시 이해력이 좋으므로, 얼굴 정체성은 유지하되 헤어·복장·차림새를
+ * 장면 맥락(나이·시대·상황)에 맞게 바꾸라는 지시를 함께 준다 —
+ * 포트레이트의 흰 티·스튜디오 배경이 장면으로 새는 것을 막는다.
+ * 미래 단계는 "그럴듯한 미래의 한 순간"으로만 힌트 — 감정·의미 서술은 넣지 않는다(§1).
+ */
+export function composeGeminiScenePrompt(profile, item) {
+  const who = `${item.age}-year-old ${subjectNoun(item.age, profile.gender)}`
+  const extra = (profile.descriptors || []).join(', ')
+  const future = item.isPast
+    ? ''
+    : ` This is an imagined moment further along in this person's life — keep the appearance a plausible continuation of the reference.`
+  return (
+    `Using the person in the reference image, create a new photograph of the same person as a ${who} in this scene: ${item.scene}.` +
+    ` Keep the same facial identity and features recognizable.` +
+    ` Change the hairstyle, clothing, and grooming so they naturally fit the scene, the person's age, and the era —` +
+    ` do not keep the plain white t-shirt or the studio background from the reference.` +
+    future +
+    (extra ? ` ${extra}.` : '') +
+    ` Full scene visible, person within the environment. ${STYLE}`
+  )
+}
+
 /** SDXL 폴백용 서술형 프롬프트 — 인물 일관성 없음. */
 export function composeSdxlPrompt(profile, item) {
-  const who = `a ${item.age}-year-old Korean ${profile.gender || 'person'}`
+  const who = `a ${item.age}-year-old Korean ${subjectNoun(item.age, profile.gender)}`
   const extra = (profile.descriptors || []).join(', ')
   return `${who}, ${item.scene}${extra ? `, ${extra}` : ''}, ${STYLE}`
 }

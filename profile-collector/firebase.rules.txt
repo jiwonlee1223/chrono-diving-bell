@@ -30,9 +30,11 @@ rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
     match /profile-photos/{personaId}/{fileName} {
-      // 규칙상 읽기는 닫혀 있지만, Firestore에 저장된 다운로드 URL(토큰 포함)로는
-      // 생성 파이프라인이 이미지를 가져올 수 있다(토큰 URL은 규칙을 우회). → 얼굴 사진 비공개 유지.
-      allow read: if false;
+      // 읽기는 인증 사용자에게만 연다. 수집 앱이 업로드 직후 getDownloadURL()로
+      // 토큰 URL을 얻으려면 read 권한이 필요하기 때문(getDownloadURL은 객체 메타데이터를
+      // GET으로 읽는다 → read:false면 403). 공개는 아니므로 얼굴 사진은 여전히 비공개.
+      // Firestore에 저장된 토큰 URL은 이후 생성 파이프라인에서 규칙과 무관하게 작동.
+      allow read: if request.auth != null;
       allow write: if request.auth != null
         && request.resource.size < 15 * 1024 * 1024
         && request.resource.contentType.matches('image/.*');

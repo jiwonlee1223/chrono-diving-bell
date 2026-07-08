@@ -189,6 +189,23 @@ export class ComfyUIClient {
     return { promptId, images }
   }
 
+  /**
+   * 원샷 헬퍼: 큐잉 → 완료 대기 → 텍스트 출력 수집 (ShowText 등 output 노드의 text).
+   * @returns {{ promptId: string, text: string }}
+   */
+  async generateText(workflow, { onProgress } = {}) {
+    const promptId = await this.queuePrompt(workflow)
+    const hist = await this.waitForPrompt(promptId, { onProgress })
+    const texts = []
+    for (const nodeOutput of Object.values(hist.outputs)) {
+      for (const t of nodeOutput.text || []) if (t) texts.push(String(t))
+    }
+    if (texts.length === 0) {
+      throw new Error(`ComfyUI 출력에 텍스트가 없음: ${promptId} outputs=${JSON.stringify(Object.keys(hist.outputs))}`)
+    }
+    return { promptId, text: texts.join('\n') }
+  }
+
   close() {
     if (this.ws) {
       try {

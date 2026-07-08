@@ -1,0 +1,14 @@
+[
+  {
+    "origin": ["http://localhost:3000", "https://*.railway.app"],
+    "method": ["GET", "PUT", "POST", "HEAD"],
+    "responseHeader": [
+      "Content-Type",
+      "Authorization",
+      "Content-Length",
+      "User-Agent",
+      "x-goog-resumable"
+    ],
+    "maxAgeSeconds": 3600
+  }
+]

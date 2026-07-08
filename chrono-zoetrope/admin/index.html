@@ -1,152 +1,453 @@
 <!doctype html>
 <html lang="ko">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>주마등 — 생애 라이브러리 검토</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      background: #0d0d0f;
-      color: #e8e6e3;
-      font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
-      font-size: 14px;
-    }
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CDB admin</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        background: #0d0d0f;
+        color: #e8e6e3;
+        font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
+        font-size: 14px;
+      }
 
-    header {
-      position: sticky; top: 0; z-index: 10;
-      display: flex; align-items: center; gap: 16px;
-      padding: 14px 22px;
-      background: rgba(13, 13, 15, 0.92);
-      backdrop-filter: blur(10px);
-      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-    }
-    header h1 { font-size: 15px; font-weight: 600; letter-spacing: 0.02em; }
-    header select {
-      background: #1a1a1e; color: #e8e6e3;
-      border: 1px solid rgba(255, 255, 255, 0.14);
-      border-radius: 8px; padding: 6px 10px; font-size: 13px;
-    }
-    .tabs { display: flex; gap: 6px; margin-left: auto; }
-    .tabs button {
-      background: transparent; color: rgba(255, 255, 255, 0.65);
-      border: 1px solid rgba(255, 255, 255, 0.14);
-      border-radius: 8px; padding: 6px 12px; font-size: 12.5px; cursor: pointer;
-    }
-    .tabs button.active { background: #e8e6e3; color: #111; border-color: #e8e6e3; }
-    .counts { font-size: 12.5px; color: rgba(255, 255, 255, 0.55); }
-    .counts b { color: #e8e6e3; }
+      header {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 14px 22px;
+        background: rgba(13, 13, 15, 0.92);
+        backdrop-filter: blur(10px);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      header h1 {
+        font-size: 15px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+      header select {
+        background: #1a1a1e;
+        color: #e8e6e3;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 8px;
+        padding: 6px 10px;
+        font-size: 13px;
+      }
+      .tabs {
+        display: flex;
+        gap: 6px;
+        margin-left: auto;
+      }
+      .tabs button {
+        background: transparent;
+        color: rgba(255, 255, 255, 0.65);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 8px;
+        padding: 6px 12px;
+        font-size: 12.5px;
+        cursor: pointer;
+      }
+      .tabs button.active {
+        background: #e8e6e3;
+        color: #111;
+        border-color: #e8e6e3;
+      }
+      .counts {
+        font-size: 12.5px;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .counts b {
+        color: #e8e6e3;
+      }
+      .gender-ctl {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 12.5px;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .gender-ctl .gsrc {
+        font-size: 11px;
+        color: rgba(255, 255, 255, 0.4);
+      }
 
-    main { padding: 20px 22px 60px; }
-    .stage { margin-bottom: 30px; }
-    .stage h2 {
-      font-size: 13px; font-weight: 600; color: rgba(255, 255, 255, 0.6);
-      letter-spacing: 0.06em; margin-bottom: 10px;
-    }
-    .row { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
+      main {
+        padding: 20px 22px 60px;
+      }
+      .stage {
+        margin-bottom: 30px;
+      }
+      .stage h2 {
+        font-size: 13px;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.6);
+        letter-spacing: 0.06em;
+        margin-bottom: 10px;
+      }
+      .row {
+        display: flex;
+        gap: 14px;
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
 
-    .card {
-      background: #17171a; border: 1px solid rgba(255, 255, 255, 0.07);
-      border-radius: 12px; overflow: hidden; width: 340px; flex: none;
-      transition: opacity 0.2s ease;
-    }
-    .card.portrait { width: 200px; }
-    .card img { display: block; width: 100%; aspect-ratio: 1344 / 768; object-fit: cover; background: #000; cursor: zoom-in; }
-    .card.portrait img { aspect-ratio: 832 / 1152; }
-    .card .meta { display: flex; align-items: center; gap: 8px; padding: 9px 11px; }
-    .card .meta .id { font-size: 12.5px; font-weight: 600; }
-    .card .meta .sub { font-size: 11.5px; color: rgba(255, 255, 255, 0.45); }
-    .badge {
-      margin-left: auto; font-size: 11px; font-weight: 600;
-      padding: 3px 8px; border-radius: 999px;
-    }
-    .badge.pending  { background: rgba(255, 190, 80, 0.16); color: #ffc466; }
-    .badge.approved { background: rgba(110, 220, 130, 0.16); color: #7de08c; }
-    .badge.rejected { background: rgba(255, 110, 110, 0.16); color: #ff8585; }
+      .card {
+        background: #17171a;
+        border: 1px solid rgba(255, 255, 255, 0.07);
+        border-radius: 12px;
+        overflow: hidden;
+        width: 340px;
+        flex: none;
+        transition: opacity 0.2s ease;
+      }
+      .card.portrait {
+        width: 200px;
+      }
+      .card img {
+        display: block;
+        width: 100%;
+        aspect-ratio: 1344 / 768;
+        object-fit: cover;
+        background: #000;
+        cursor: zoom-in;
+      }
+      .card.portrait img {
+        aspect-ratio: 832 / 1152;
+      }
+      .card .meta {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 9px 11px;
+      }
+      .card .meta .id {
+        font-size: 12.5px;
+        font-weight: 600;
+      }
+      .card .meta .sub {
+        font-size: 11.5px;
+        color: rgba(255, 255, 255, 0.45);
+      }
+      .badge {
+        margin-left: auto;
+        font-size: 11px;
+        font-weight: 600;
+        padding: 3px 8px;
+        border-radius: 999px;
+      }
+      .badge.pending {
+        background: rgba(255, 190, 80, 0.16);
+        color: #ffc466;
+      }
+      .badge.approved {
+        background: rgba(110, 220, 130, 0.16);
+        color: #7de08c;
+      }
+      .badge.rejected {
+        background: rgba(255, 110, 110, 0.16);
+        color: #ff8585;
+      }
 
-    .actions { display: flex; gap: 6px; padding: 0 11px 11px; }
-    .actions button {
-      flex: 1; padding: 7px 0; font-size: 12.5px; font-weight: 600;
-      border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.13);
-      background: transparent; color: rgba(255, 255, 255, 0.8); cursor: pointer;
-    }
-    .actions button:hover { border-color: rgba(255, 255, 255, 0.4); }
-    .actions button.ok.on { background: rgba(110, 220, 130, 0.9); color: #0b0b0c; border-color: transparent; }
-    .actions button.no.on { background: rgba(255, 110, 110, 0.9); color: #0b0b0c; border-color: transparent; }
-    .actions button:disabled { opacity: 0.4; cursor: default; }
+      .actions {
+        display: flex;
+        gap: 6px;
+        padding: 0 11px 11px;
+      }
+      .actions button {
+        flex: 1;
+        padding: 7px 0;
+        font-size: 12.5px;
+        font-weight: 600;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.13);
+        background: transparent;
+        color: rgba(255, 255, 255, 0.8);
+        cursor: pointer;
+      }
+      .actions button:hover {
+        border-color: rgba(255, 255, 255, 0.4);
+      }
+      .actions button.ok.on {
+        background: rgba(110, 220, 130, 0.9);
+        color: #0b0b0c;
+        border-color: transparent;
+      }
+      .actions button.no.on {
+        background: rgba(255, 110, 110, 0.9);
+        color: #0b0b0c;
+        border-color: transparent;
+      }
+      .actions button:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
 
-    .hidden { display: none; }
-    #status { position: fixed; right: 18px; bottom: 14px; font-size: 12px; color: rgba(255, 255, 255, 0.5); }
+      .hidden {
+        display: none;
+      }
+      #status {
+        position: fixed;
+        right: 18px;
+        bottom: 14px;
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.5);
+      }
 
-    /* 확대 보기 */
-    #zoom {
-      position: fixed; inset: 0; background: rgba(0, 0, 0, 0.92);
-      display: none; align-items: center; justify-content: center; z-index: 50; cursor: zoom-out;
-    }
-    #zoom.show { display: flex; }
-    #zoom img { max-width: 94vw; max-height: 90vh; }
-    #zoom .cap { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); font-size: 12px; color: rgba(255,255,255,0.7); max-width: 90vw; text-align: center; }
-  </style>
-</head>
-<body>
-  <header>
-    <h1>생애 라이브러리 검토</h1>
-    <select id="persona"></select>
-    <span class="counts" id="counts"></span>
-    <div class="tabs" id="tabs">
-      <button data-f="all" class="active">전체</button>
-      <button data-f="pending">대기</button>
-      <button data-f="approved">승인</button>
-      <button data-f="rejected">반려</button>
+      /* 생성 큐 (collector 제출 → 자동 생성) */
+      #queue-panel {
+        padding: 12px 22px;
+        background: rgba(255, 255, 255, 0.025);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .qhead {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 10px;
+      }
+      .qhead h2 {
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        color: rgba(255, 255, 255, 0.7);
+      }
+      .qhead .now {
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .qhead .now b {
+        color: #ffc466;
+      }
+      .qhead .now button {
+        margin-left: 8px;
+        font-size: 11.5px;
+        font-weight: 600;
+        cursor: pointer;
+        padding: 3px 10px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 190, 80, 0.5);
+        background: transparent;
+        color: #ffc466;
+      }
+      .qhead .now button:hover {
+        background: rgba(255, 190, 80, 0.16);
+      }
+      #auto-toggle {
+        margin-left: auto;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        padding: 6px 13px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        background: transparent;
+        color: rgba(255, 255, 255, 0.7);
+      }
+      #auto-toggle.on {
+        background: rgba(110, 220, 130, 0.9);
+        color: #0b0b0c;
+        border-color: transparent;
+      }
+      #auto-toggle.off {
+        background: rgba(255, 190, 80, 0.16);
+        color: #ffc466;
+      }
+      .qlist {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .qitem {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        padding: 6px 10px;
+        border-radius: 8px;
+        background: #17171a;
+        border: 1px solid rgba(255, 255, 255, 0.07);
+      }
+      .qitem .qid {
+        color: rgba(255, 255, 255, 0.85);
+        font-weight: 600;
+      }
+      .qitem .badge {
+        margin-left: 0;
+      }
+      .badge.submitted {
+        background: rgba(150, 170, 255, 0.16);
+        color: #a9b8ff;
+      }
+      .badge.generating {
+        background: rgba(255, 190, 80, 0.18);
+        color: #ffc466;
+      }
+      .badge.done {
+        background: rgba(110, 220, 130, 0.16);
+        color: #7de08c;
+      }
+      .badge.error {
+        background: rgba(255, 110, 110, 0.16);
+        color: #ff8585;
+      }
+      .qempty {
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.4);
+      }
+
+      /* 확대 보기 */
+      #zoom {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.92);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 50;
+        cursor: zoom-out;
+      }
+      #zoom.show {
+        display: flex;
+      }
+      #zoom img {
+        max-width: 94vw;
+        max-height: 90vh;
+      }
+      #zoom .cap {
+        position: fixed;
+        bottom: 16px;
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.7);
+        max-width: 90vw;
+        text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>생애 라이브러리 검토</h1>
+      <select id="persona"></select>
+      <span class="counts" id="counts"></span>
+      <span class="gender-ctl" id="gender-ctl">
+        <label for="gender">성별</label>
+        <select id="gender">
+          <option value="">미지정</option>
+          <option value="male">남성</option>
+          <option value="female">여성</option>
+        </select>
+        <span class="gsrc" id="gender-src"></span>
+      </span>
+      <div class="tabs" id="tabs">
+        <button data-f="all" class="active">전체</button>
+        <button data-f="pending">대기</button>
+        <button data-f="approved">승인</button>
+        <button data-f="rejected">반려</button>
+      </div>
+    </header>
+    <section id="queue-panel" class="hidden">
+      <div class="qhead">
+        <h2>생성 큐</h2>
+        <span class="now" id="queue-now"></span>
+        <button id="auto-toggle"></button>
+      </div>
+      <div class="qlist" id="queue-list"></div>
+    </section>
+    <main id="main"></main>
+    <div id="status"></div>
+    <div id="zoom">
+      <img />
+      <div class="cap"></div>
     </div>
-  </header>
-  <main id="main"></main>
-  <div id="status"></div>
-  <div id="zoom"><img /><div class="cap"></div></div>
 
-  <script>
-    const $ = (s, el = document) => el.querySelector(s)
-    let pid = null
-    let manifest = null
-    let filter = 'all'
+    <script>
+      const $ = (s, el = document) => el.querySelector(s)
+      let pid = null
+      let manifest = null
+      let filter = 'all'
 
-    const api = (p, opts) => fetch(p, opts).then(async (r) => {
-      const j = await r.json()
-      if (!r.ok) throw new Error(j.error || r.status)
-      return j
-    })
-    const imgUrl = (e) => `/img/${pid}/${e.file}?rev=${e.rev || 0}`
-    const setStatus = (t) => { $('#status').textContent = t }
+      const api = (p, opts) =>
+        fetch(p, opts).then(async (r) => {
+          const j = await r.json()
+          if (!r.ok) throw new Error(j.error || r.status)
+          return j
+        })
+      const imgUrl = (e) => `/img/${pid}/${e.file}?rev=${e.rev || 0}`
+      const setStatus = (t) => {
+        $('#status').textContent = t
+      }
 
-    async function loadPersonas() {
-      const list = await api('/api/personas')
-      const sel = $('#persona')
-      sel.innerHTML = list.map((p) =>
-        `<option value="${p.personaId}">${p.name || p.personaId} — ${p.approved}/${p.total} 승인</option>`).join('')
-      if (list.length === 0) { $('#main').innerHTML = '<p style="color:#888">라이브러리가 비어 있습니다. 먼저 생성하세요: npm run gen:library</p>'; return }
-      pid = list[0].personaId
-      sel.value = pid
-      await loadManifest()
-    }
+      // keep=true면 현재 보고 있던 persona 선택을 유지한 채 목록만 갱신한다
+      // (자동 생성 완료로 새 persona가 들어와도 검토 중이던 화면이 튀지 않도록).
+      async function loadPersonas({ keep = false } = {}) {
+        const list = await api('/api/personas')
+        const sel = $('#persona')
+        const prev = pid
+        sel.innerHTML = list
+          .map(
+            (p) =>
+              `<option value="${p.personaId}">${p.name || p.personaId} — ${p.approved}/${p.total} 승인</option>`
+          )
+          .join('')
+        if (list.length === 0) {
+          pid = null
+          $('#main').innerHTML =
+            '<p style="color:#888">라이브러리가 비어 있습니다. 제출을 기다리거나 npm run gen:library 로 생성하세요.</p>'
+          return
+        }
+        if (keep && prev && list.some((p) => p.personaId === prev)) {
+          pid = prev
+          sel.value = pid
+          return // 선택 유지, manifest 재로딩 생략
+        }
+        pid = list[0].personaId
+        sel.value = pid
+        await loadManifest()
+      }
 
-    async function loadManifest() {
-      manifest = await api(`/api/personas/${pid}`)
-      render()
-    }
+      async function loadManifest() {
+        manifest = await api(`/api/personas/${pid}`)
+        render()
+      }
 
-    function counts() {
-      const c = { pending: 0, approved: 0, rejected: 0 }
-      manifest.images.forEach((i) => c[i.status]++)
-      $('#counts').innerHTML = `대기 <b>${c.pending}</b> · 승인 <b>${c.approved}</b> · 반려 <b>${c.rejected}</b> / ${manifest.images.length}장`
-    }
+      // 성별 표시: 자동 감지값 + 근거 캡션(툴팁). 수정하면 프롬프트가 갱신되고
+      // 이후 재생성부터 반영된다 (기존 이미지는 그대로).
+      function renderGender() {
+        const g = manifest?.profile?.gender || ''
+        $('#gender').value = g
+        const src = manifest?.gender?.source
+        $('#gender-src').textContent =
+          src === 'auto' ? '자동감지' : src === 'manual' ? '수동' : src === 'profile' ? '제출값' : ''
+        $('#gender-ctl').title = manifest?.gender?.caption || ''
+      }
 
-    function card(entry, kind) {
-      const div = document.createElement('div')
-      div.className = 'card' + (kind === 'portrait' ? ' portrait' : '')
-      div.dataset.status = entry.status
-      const idLabel = kind === 'portrait' ? `age ${entry.age}` : entry.id
-      const sub = kind === 'portrait' ? '포트레이트 (내부 자산)' : `${entry.age}살 · ${entry.year}${entry.isPast ? '' : ' (미래)'}`
-      div.innerHTML = `
+      function counts() {
+        const c = { pending: 0, approved: 0, rejected: 0 }
+        manifest.images.forEach((i) => c[i.status]++)
+        $('#counts').innerHTML =
+          `대기 <b>${c.pending}</b> · 승인 <b>${c.approved}</b> · 반려 <b>${c.rejected}</b> / ${manifest.images.length}장`
+      }
+
+      function card(entry, kind) {
+        const div = document.createElement('div')
+        div.className = 'card' + (kind === 'portrait' ? ' portrait' : '')
+        div.dataset.status = entry.status
+        const idLabel = kind === 'portrait' ? `age ${entry.age}` : entry.id
+        const sub =
+          kind === 'portrait'
+            ? '포트레이트 (내부 자산)'
+            : `${entry.age}살 · ${entry.year}${entry.isPast ? '' : ' (미래)'}`
+        div.innerHTML = `
         <img src="${imgUrl(entry)}" loading="lazy" title="${entry.prompt.replaceAll('"', '&quot;')}" />
         <div class="meta"><span class="id">${idLabel}</span><span class="sub">${sub}</span>
           <span class="badge ${entry.status}">${{ pending: '대기', approved: '승인', rejected: '반려' }[entry.status]}</span></div>
@@ -155,82 +456,227 @@
           <button class="no ${entry.status === 'rejected' ? 'on' : ''}">반려</button>
           <button class="re">재생성</button>
         </div>`
-      const id = kind === 'portrait' ? entry.age : entry.id
+        const id = kind === 'portrait' ? entry.age : entry.id
 
-      $('img', div).addEventListener('click', () => {
-        $('#zoom img').src = imgUrl(entry)
-        $('#zoom .cap').textContent = `${idLabel} — ${entry.prompt}`
-        $('#zoom').classList.add('show')
-      })
-      const review = async (status) => {
-        // 같은 버튼 다시 누르면 대기로 되돌림
-        const next = entry.status === status ? 'pending' : status
-        await api(`/api/personas/${pid}/review`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ kind, id, status: next })
+        $('img', div).addEventListener('click', () => {
+          $('#zoom img').src = imgUrl(entry)
+          $('#zoom .cap').textContent = `${idLabel} — ${entry.prompt}`
+          $('#zoom').classList.add('show')
         })
-        entry.status = next
-        render()
-      }
-      $('.ok', div).addEventListener('click', () => review('approved'))
-      $('.no', div).addEventListener('click', () => review('rejected'))
-      $('.re', div).addEventListener('click', async () => {
-        const btn = $('.re', div)
-        btn.disabled = true
-        btn.textContent = '생성 중…'
-        setStatus(`${idLabel} 재생성 중 (~15초)`)
-        try {
-          const out = await api(`/api/personas/${pid}/regen`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ kind, id })
+        const review = async (status) => {
+          // 같은 버튼 다시 누르면 대기로 되돌림
+          const next = entry.status === status ? 'pending' : status
+          await api(`/api/personas/${pid}/review`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ kind, id, status: next })
           })
-          Object.assign(entry, out.entry)
-          setStatus(out.note || `${idLabel} 재생성 완료`)
+          entry.status = next
           render()
-        } catch (e) {
-          setStatus(`재생성 실패: ${e.message}`)
-          btn.disabled = false
-          btn.textContent = '재생성'
+        }
+        $('.ok', div).addEventListener('click', () => review('approved'))
+        $('.no', div).addEventListener('click', () => review('rejected'))
+        $('.re', div).addEventListener('click', async () => {
+          const btn = $('.re', div)
+          btn.disabled = true
+          btn.textContent = '생성 중…'
+          setStatus(`${idLabel} 재생성 중 (~15초)`)
+          try {
+            const out = await api(`/api/personas/${pid}/regen`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ kind, id })
+            })
+            Object.assign(entry, out.entry)
+            setStatus(out.note || `${idLabel} 재생성 완료`)
+            render()
+          } catch (e) {
+            setStatus(`재생성 실패: ${e.message}`)
+            btn.disabled = false
+            btn.textContent = '재생성'
+          }
+        })
+        return div
+      }
+
+      function render() {
+        counts()
+        renderGender()
+        const main = $('#main')
+        main.innerHTML = ''
+        // 단계(stageIndex)별로 묶기: 포트레이트 1 + 장면들
+        const stages = new Map()
+        manifest.images.forEach((img) => {
+          if (!stages.has(img.stageIndex)) stages.set(img.stageIndex, [])
+          stages.get(img.stageIndex).push(img)
+        })
+        for (const [si, scenes] of [...stages.entries()].sort((a, b) => a[0] - b[0])) {
+          const age = scenes[0].age
+          const section = document.createElement('section')
+          section.className = 'stage'
+          section.innerHTML = `<h2>단계 ${si} — ${age}살 (${scenes[0].year}${scenes[0].isPast ? '' : ', 미래'})</h2>`
+          const row = document.createElement('div')
+          row.className = 'row'
+          const portrait = (manifest.agePortraits || []).find((p) => p.age === age)
+          if (portrait && (filter === 'all' || portrait.status === filter))
+            row.appendChild(card(portrait, 'portrait'))
+          scenes.forEach((s) => {
+            if (filter === 'all' || s.status === filter) row.appendChild(card(s, 'scene'))
+          })
+          if (row.children.length > 0) {
+            section.appendChild(row)
+            main.appendChild(section)
+          }
+        }
+      }
+
+      $('#persona').addEventListener('change', (e) => {
+        pid = e.target.value
+        loadManifest()
+      })
+      $('#gender').addEventListener('change', async (e) => {
+        if (!pid || !manifest) return
+        try {
+          const out = await api(`/api/personas/${pid}/gender`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ gender: e.target.value || null })
+          })
+          setStatus(out.note)
+          await loadManifest()
+        } catch (err) {
+          setStatus(`성별 수정 실패: ${err.message}`)
+          renderGender() // 실패 시 원래 값으로 되돌림
         }
       })
-      return div
-    }
-
-    function render() {
-      counts()
-      const main = $('#main')
-      main.innerHTML = ''
-      // 단계(stageIndex)별로 묶기: 포트레이트 1 + 장면들
-      const stages = new Map()
-      manifest.images.forEach((img) => {
-        if (!stages.has(img.stageIndex)) stages.set(img.stageIndex, [])
-        stages.get(img.stageIndex).push(img)
+      $('#tabs').addEventListener('click', (e) => {
+        if (e.target.tagName !== 'BUTTON') return
+        filter = e.target.dataset.f
+        document
+          .querySelectorAll('#tabs button')
+          .forEach((b) => b.classList.toggle('active', b === e.target))
+        render()
       })
-      for (const [si, scenes] of [...stages.entries()].sort((a, b) => a[0] - b[0])) {
-        const age = scenes[0].age
-        const section = document.createElement('section')
-        section.className = 'stage'
-        section.innerHTML = `<h2>단계 ${si} — ${age}살 (${scenes[0].year}${scenes[0].isPast ? '' : ', 미래'})</h2>`
-        const row = document.createElement('div')
-        row.className = 'row'
-        const portrait = (manifest.agePortraits || []).find((p) => p.age === age)
-        if (portrait && (filter === 'all' || portrait.status === filter)) row.appendChild(card(portrait, 'portrait'))
-        scenes.forEach((s) => { if (filter === 'all' || s.status === filter) row.appendChild(card(s, 'scene')) })
-        if (row.children.length > 0) { section.appendChild(row); main.appendChild(section) }
+      $('#zoom').addEventListener('click', () => $('#zoom').classList.remove('show'))
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') $('#zoom').classList.remove('show')
+      })
+
+      // ── 생성 큐 (collector 제출 → admin 자동 생성) ────────────────────
+      let autoOn = true
+      let lastCompletionAt = 0
+      let liveSig = '' // 실시간 보기: 마지막으로 그린 manifest의 (포트레이트/장면) 수 — 바뀔 때만 재렌더
+      const QLABEL = { submitted: '대기', generating: '생성중', error: '실패' }
+
+      async function pollQueue() {
+        let data
+        try {
+          data = await api('/api/queue')
+        } catch {
+          return
+        }
+        const panel = $('#queue-panel')
+        // Firebase 미연결이면 큐 패널 숨김 (검토 기능만 사용)
+        if (!data.firebaseReady) {
+          panel.classList.add('hidden')
+          return
+        }
+        panel.classList.remove('hidden')
+
+        autoOn = data.autoOn
+        const tgl = $('#auto-toggle')
+        if (data.viewOnly) {
+          // 뷰어 모드: 생성은 별도 워커(worker:listen) 담당 — 토글 비활성.
+          tgl.textContent = '뷰어 모드'
+          tgl.className = 'off'
+          tgl.disabled = true
+          tgl.title = '생성은 워커 프로세스가 담당합니다 (npm run worker:listen)'
+        } else {
+          tgl.textContent = autoOn ? '자동생성 ON' : '일시정지됨'
+          tgl.className = autoOn ? 'on' : 'off'
+          tgl.disabled = false
+        }
+
+        const now = $('#queue-now')
+        const ci = data.currentInfo
+        if (ci) {
+          const parts = []
+          if (ci.portraits) parts.push(`포트레이트 ${ci.portraits}`)
+          if (ci.total) parts.push(`장면 ${ci.done}/${ci.total}`)
+          const prog = parts.length ? ` — ${parts.join(' · ')}` : ''
+          const watching = ci.personaId && pid === ci.personaId
+          now.innerHTML =
+            `생성 중 <b>${ci.name || ci.pid}</b>${prog}` +
+            (watching ? '' : ci.personaId ? ` <button id="follow-live">실시간 보기</button>` : '')
+          const fl = $('#follow-live')
+          if (fl)
+            fl.onclick = async () => {
+              pid = ci.personaId
+              if ($('#persona').querySelector(`option[value="${pid}"]`)) $('#persona').value = pid
+              liveSig = ''
+              await loadManifest().catch(() => setStatus('아직 첫 장 생성 전입니다 — 곧 나타납니다.'))
+            }
+        } else {
+          now.textContent = data.queue.some((q) => q.status === 'submitted') ? '대기 중…' : '유휴'
+        }
+
+        // 실시간 보기: 생성 중인 persona를 보고 있으면 새 장이 저장될 때마다 그리드 갱신.
+        // manifest는 장마다 즉시 기록되므로(life-library의 중단 대비 writeManifest)
+        // 폴링 주기(2초) 안에 새 포트레이트/장면이 바로 떠오른다.
+        if (ci?.personaId && pid === ci.personaId) {
+          api(`/api/personas/${pid}`)
+            .then((m) => {
+              const sig = `${(m.agePortraits || []).length}/${m.images.length}`
+              if (sig !== liveSig) {
+                liveSig = sig
+                manifest = m
+                render()
+              }
+            })
+            .catch(() => {}) // 생성 극초반엔 manifest가 아직 없다 — 다음 폴링에서 재시도
+          // 새 persona가 셀렉터에 아직 없으면 목록에 흡수 (검토 중인 선택은 유지)
+          if (!$('#persona').querySelector(`option[value="${ci.personaId}"]`))
+            loadPersonas({ keep: true }).catch(() => {})
+        }
+
+        const list = $('#queue-list')
+        if (data.queue.length === 0) {
+          list.innerHTML = '<span class="qempty">큐가 비어 있습니다.</span>'
+        } else {
+          list.innerHTML = data.queue
+            .map(
+              (q) =>
+                `<div class="qitem" title="${q.error ? q.error.replaceAll('"', '&quot;') : q.id}">` +
+                `<span class="qid">${q.name || q.id}</span>` +
+                `<span class="badge ${q.status}">${QLABEL[q.status] || q.status}</span></div>`
+            )
+            .join('')
+        }
+
+        // 새 완료 감지 → 검토 목록만 갱신(선택 유지). 새 persona가 셀렉터에 등장한다.
+        if (data.lastResult && data.lastResult.ok && data.lastResult.at > lastCompletionAt) {
+          lastCompletionAt = data.lastResult.at
+          loadPersonas({ keep: true }).catch(() => {})
+        }
       }
-    }
 
-    $('#persona').addEventListener('change', (e) => { pid = e.target.value; loadManifest() })
-    $('#tabs').addEventListener('click', (e) => {
-      if (e.target.tagName !== 'BUTTON') return
-      filter = e.target.dataset.f
-      document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('active', b === e.target))
-      render()
-    })
-    $('#zoom').addEventListener('click', () => $('#zoom').classList.remove('show'))
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $('#zoom').classList.remove('show') })
+      $('#auto-toggle').addEventListener('click', async () => {
+        try {
+          const r = await api('/api/autogen', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ on: !autoOn })
+          })
+          autoOn = r.autoOn
+          pollQueue()
+        } catch (e) {
+          setStatus(`자동생성 토글 실패: ${e.message}`)
+        }
+      })
 
-    loadPersonas()
-  </script>
-</body>
+      loadPersonas()
+      pollQueue()
+      setInterval(pollQueue, 2000)
+    </script>
+  </body>
 </html>
