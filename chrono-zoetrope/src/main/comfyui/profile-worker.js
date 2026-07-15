@@ -57,6 +57,7 @@ export async function processProfile(
       workflow: config.workflow,
       perStage: config.perStage,
       image: config.image,
+      panorama: config.panorama, // seamfix(B안) 파노라마 크기 override (없으면 2048×1024 기본)
       timeoutMs: config.timeoutMs,
       sceneRetries: config.sceneRetries, // 장면 실패 시 재시도 횟수 (undefined면 기본 1)
       signal, // 중지 버튼 신호

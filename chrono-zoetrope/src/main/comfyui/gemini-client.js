@@ -46,6 +46,33 @@ export async function resolveGeminiApiKey({ apiKey, apiKeyPath } = {}) {
   )
 }
 
+// Gemini 이미지 생성이 허용하는 aspectRatio 목록(2026-07 실측, 그 외는 HTTP 400).
+// 파노라마용 초광각 4:1·8:1 포함. 넓은 seamfix 파노라마는 여기서 비율을 고른다.
+const GEMINI_ASPECTS = [
+  ['1:8', 1 / 8], ['1:4', 1 / 4], ['9:16', 9 / 16], ['2:3', 2 / 3], ['3:4', 3 / 4], ['4:5', 4 / 5],
+  ['1:1', 1],
+  ['5:4', 5 / 4], ['4:3', 4 / 3], ['3:2', 3 / 2], ['16:9', 16 / 9], ['21:9', 21 / 9], ['4:1', 4], ['8:1', 8]
+]
+
+/**
+ * 목표 크기(width×height)에 가장 가까운, Gemini가 허용하는 aspectRatio 라벨을 고른다.
+ * seamfix 파노라마 폭을 바꿀 때 aspectRatio를 하드코딩하지 않고 여기서 유도한다
+ * (예: 4096×1024 → '4:1', 2048×1024 → '16:9'/'21:9' 중 가까운 쪽, 1344×768 → '16:9').
+ */
+export function nearestGeminiAspect(width, height) {
+  const target = width / height
+  let best = '1:1'
+  let bestDiff = Infinity
+  for (const [label, val] of GEMINI_ASPECTS) {
+    const diff = Math.abs(val - target)
+    if (diff < bestDiff) {
+      bestDiff = diff
+      best = label
+    }
+  }
+  return best
+}
+
 function sniffMime(buffer) {
   if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8) return 'image/jpeg'
   if (buffer.length >= 4 && buffer[0] === 0x89 && buffer[1] === 0x50) return 'image/png'

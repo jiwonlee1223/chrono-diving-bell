@@ -31,7 +31,11 @@ export const Channels = Object.freeze({
   // IMMERSION 영상 배리어 (§7 FREEZE 배리어와 같은 패턴 — 4창이 같은 순간에 재생을 시작해야 한다).
   VIDEO_PREPARE: 'zoetrope:video-prepare', // main → renderer: { url, imageId } — 프리로드 지시
   VIDEO_READY: 'zoetrope:video-ready', //     renderer → main: { projectorIndex } — 재생 가능 보고
-  VIDEO_COMMIT: 'zoetrope:video-commit' //    main → renderer: { startAtMs } — 벽시계 기준 동시 시작
+  VIDEO_COMMIT: 'zoetrope:video-commit', //   main → renderer: { startAtMs } — 벽시계 기준 동시 시작
+
+  // 서버 → 페이지: 참가자(페르소나) 교체 등으로 재생목록이 바뀌었으니 페이지를 새로 부트스트랩하라.
+  // Electron에서는 webContents.reload()였다. 웹앱에선 SSE로 알려 페이지가 location.reload().
+  RELOAD: 'zoetrope:reload'
 })
 
 export const InputAction = Object.freeze({

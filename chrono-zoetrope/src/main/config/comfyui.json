@@ -1,7 +1,10 @@
 {
   "host": "http://143.248.107.38:8188",
-  "workflow": "gemini",
+  "workflow": "seamfix",
   "image": { "width": 1344, "height": 768 },
+  "$workflow": "seamfix(B안): Gemini 1인칭 360° 파노라마 생성 + ComfyUI Flux Fill 이음매 보정. panorama 크기는 아래 override(없으면 2048×1024).",
+  "$panorama": "seamfix 파노라마 크기. 비율에 맞는 Gemini aspectRatio가 자동 선택된다(4096×1024→4:1). 넓히려면 여기만 조정.",
+  "panorama": { "width": 4096, "height": 1024 },
   "perStage": 3,
   "outDir": "library",
   "timeoutMs": 300000,

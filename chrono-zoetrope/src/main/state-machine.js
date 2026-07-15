@@ -15,23 +15,23 @@
 import { State, Transitions } from '../shared/states.js'
 import { Channels } from '../shared/channels.js'
 
-const PROJECTOR_COUNT = 4
-
 export class ZoetropeStateMachine {
   /**
    * @param {object} p
-   * @param {(channel: string, payload: object) => void} p.broadcast 4창 송신
+   * @param {(channel: string, payload: object) => void} p.broadcast 렌더 클라이언트 송신
    * @param {Array<{id, absPath, scene}>} p.playlist  몽타주 재생 목록 (시간순)
    * @param {object} p.montage    montage.json (frameDurationMs, regen.minWaitMs 등)
    * @param {(image) => string|null} p.regenerate 사전 생성된 클립 경로 조회 (null = 캐시 없음 → 정지 이미지 폴백). 전시 중 생성은 없다.
-   * @param {(absPath: string) => string} p.toMediaUrl 절대 경로 → renderer가 로드할 zoe:// URL
+   * @param {(absPath: string) => string} p.toMediaUrl 절대 경로 → renderer가 로드할 미디어 URL
+   * @param {number} [p.projectorCount] VIDEO 배리어가 기다리는 준비 보고 수. Electron(4창)=4, 웹앱(1페이지 4타일)=1.
    */
-  constructor({ broadcast, playlist, montage, regenerate, toMediaUrl }) {
+  constructor({ broadcast, playlist, montage, regenerate, toMediaUrl, projectorCount = 4 }) {
     this.broadcast = broadcast
     this.playlist = playlist
     this.montage = montage
     this.regenerate = regenerate
     this.toMediaUrl = toMediaUrl
+    this.projectorCount = projectorCount
 
     this.state = State.IDLE
     // 유효 시간 모델 (기존 index.js의 play 모델을 이관).
@@ -177,7 +177,7 @@ export class ZoetropeStateMachine {
     return new Promise((resolve) => {
       const timeout = setTimeout(() => {
         console.warn(
-          `[sm] VIDEO_READY 타임아웃 (${this.videoReadySet.size}/${PROJECTOR_COUNT}) — 폴백`
+          `[sm] VIDEO_READY 타임아웃 (${this.videoReadySet.size}/${this.projectorCount}) — 폴백`
         )
         this.videoBarrier = null
         resolve(false)
@@ -185,7 +185,7 @@ export class ZoetropeStateMachine {
 
       this.videoBarrier = {
         onReady: () => {
-          if (this.videoReadySet.size < PROJECTOR_COUNT) return
+          if (this.videoReadySet.size < this.projectorCount) return
           clearTimeout(timeout)
           this.videoBarrier = null
           // 250ms 뒤 벽시계 시각에 동시 시작 — IPC 전파 지연을 흡수한다.

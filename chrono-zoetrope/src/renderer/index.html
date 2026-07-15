@@ -4,10 +4,11 @@
     <meta charset="UTF-8" />
     <title>CDB</title>
     <!-- https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP -->
-    <!-- zoe: = main이 서빙하는 라이브러리 미디어 프로토콜 (몽타주 이미지 img-src, 재생성 영상 media-src) -->
+    <!-- 웹앱: 라이브러리 미디어는 서버 동일 오리진 /media/* 로 서빙(과거 zoe: 프로토콜 대체).
+         connect-src 'self' = /api/events(SSE)·/api/*(fetch). 프리로드 영상은 blob 없이 직접 src. -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: zoe:; media-src 'self' zoe:"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'"
     />
     <style>
       html,

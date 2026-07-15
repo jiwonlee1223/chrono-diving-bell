@@ -20,6 +20,13 @@
 export const STYLE =
   'candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, shallow depth of field with gentle swirly bokeh, photorealistic, no text, no watermark'
 
+// §1(해석적 자율성)·라인6: 이미지 안에 글자·숫자가 생기면 direct delivery가 된다. Gemini는
+// 태그("no text")보다 지시형 문장에 강하게 반응하므로, 프롬프트 끝에 명시적 금지문을 붙인다.
+// 간판·표지판·시계·책 등도 글자 없이 빈 채로 두게 한다.
+export const NO_TEXT_DIRECTIVE =
+  ' Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image.' +
+  ' Any signs, posters, books, screens or clocks must be blank and free of writing or digits.'
+
 // 생애 10단계. Flash Back의 Age Profiles(3~82살)와 같은 골격.
 // {occ}는 직업, 장면 문구는 장소·빛·사물만 — 감정 서술 금지.
 const STAGES = [
@@ -266,7 +273,8 @@ export function composeGeminiScenePrompt(profile, item) {
     ` like a face erased from memory.` +
     future +
     (extra ? ` ${extra}.` : '') +
-    ` ${STYLE}`
+    ` ${STYLE}` +
+    NO_TEXT_DIRECTIVE
   )
 }
 
@@ -275,4 +283,61 @@ export function composeSdxlPrompt(profile, item) {
   const who = `a ${item.age}-year-old Korean ${subjectNoun(item.age, profile.gender)}`
   const extra = (profile.descriptors || []).join(', ')
   return `strong high angle shot, elevated camera raised well above and tilted downward looking down on the scene, third person view seen from above, floor and ground filling much of the frame, observing a memory from outside, ${who} as the central subject clearly visible with their own face in focus, ${item.scene}, all other people with faces smeared and wiped away like erased brushstrokes, featureless indistinct smudged faces, not distorted, not grotesque${extra ? `, ${extra}` : ''}, ${STYLE}`
+}
+
+/**
+ * 파노라마(A안 seamless) 장면 프롬프트 — 1인칭 360° 몰입 환경 (§4.1 실린더 둘러쌈).
+ *
+ * 3인칭 부감(위에서 내려다봄)과 달리, 관람객이 그 순간의 '안에' 서서 사방을 둘러본다.
+ * 가로로 이어지는 equirectangular 파노라마라 실린더 둘레에 그대로 감긴다. 이 구도 전환은
+ * seamless 파노라마의 필연(360°를 위에서 내려다볼 수 없음)이며, 07-08 몽타주 1인칭 POV
+ * 결정과도 정합한다.
+ *
+ * §1 유지: 미래·과거의 의미나 감정을 서술하지 않는다. 장소·빛·사물만. 주인공 외 인물의
+ * 얼굴은 붓으로 지운 자국(smear)으로 뭉갠다 — 특징 없는 얼룩, 기형·그로테스크가 아니다.
+ */
+/**
+ * 이음매 밴드 inpaint 전용 프롬프트 (B안 seamfix wrap 보정).
+ *
+ * 장면 프롬프트(인물·얼굴 서술 포함)를 좁은 이음매 띠에 쓰면 Flux Fill이 그 띠 안에 인물을
+ * 그려 넣어 유령 같은 신체·얼굴 조각으로 기괴해진다(실측 2026-07-15). 그래서 밴드에는 인물을
+ * 일절 언급하지 않고 '이어지는 배경'만 지시한다 — Flux Fill은 주변 픽셀에 조건화되므로 벽·바닥
+ * 등 배경은 자연히 맞춰지고, 프롬프트는 사람이 끼어들지 않게만 하면 된다.
+ */
+export const SEAM_BAND_PROMPT =
+  'seamless continuous background environment, empty, no people, no person, no face, no figure, ' +
+  'plain surfaces and furnishings flowing together, soft warm natural light, 35mm film grain, ' +
+  'muted colors, photorealistic, no text'
+
+/**
+ * mode별 장면 프롬프트 선택 — 여러 호출처(life-library 생성, admin 재생성·성별수정)의
+ * 4-way 분기 중복을 한 곳으로 모은다. 새 mode를 추가할 때 여기만 고치면 된다.
+ *   sdxl → 3인칭 부감 태그형 / gemini → 3인칭 부감 서술형 /
+ *   seamfix → 1인칭 360° 파노라마(B안) / 그 외(kontext, 구 hybrid) → 편집형 부감
+ */
+export function composeScenePromptFor(mode, profile, item) {
+  if (mode === 'sdxl') return composeSdxlPrompt(profile, item)
+  if (mode === 'gemini') return composeGeminiScenePrompt(profile, item)
+  if (mode === 'seamfix') return composePanoramaScenePrompt(profile, item)
+  return composeKontextPrompt(profile, item)
+}
+
+export function composePanoramaScenePrompt(profile, item) {
+  const who = `a ${item.age}-year-old ${subjectNoun(item.age, profile.gender)}`
+  const extra = (profile.descriptors || []).join(', ')
+  const future = item.isPast ? '' : ` An imagined moment further along in this life.`
+  // 파노라마 선언(360°·equirectangular·seamless wrap)을 맨 앞에 — 카메라/투영을 먼저 확정한다.
+  return (
+    `360 degree equirectangular panorama, seamless horizontal wrap, first-person immersive view:` +
+    ` standing inside the scene and surrounded by it on every side, the place of this memory wrapping all the way around the viewer.` +
+    ` The surrounding environment, seen from within: ${item.scene}.` +
+    ` ${who} is present in this moment, seen from inside the scene; every other person's face is wiped away like a smear of paint —` +
+    ` smooth, soft, featureless and blurred, painterly, not distorted, not grotesque, simply an indistinct smudge where the face would be,` +
+    ` like a face erased from memory.` +
+    ` One continuous unbroken environment with no visible seam, edge or border; the far left and far right flow into one another.` +
+    future +
+    (extra ? ` ${extra}.` : '') +
+    ` ${STYLE}` +
+    NO_TEXT_DIRECTIVE
+  )
 }

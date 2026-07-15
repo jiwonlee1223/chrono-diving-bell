@@ -19,24 +19,25 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { ComfyUIClient } from './client.js'
-import { GeminiClient, resolveGeminiApiKey } from './gemini-client.js'
-import { buildKontextWorkflow, buildSdxlWorkflow, randomSeed } from './workflows.js'
-import { detectGender, detectGenderWithGemini } from './gender-detect.js'
+import { GeminiClient, resolveGeminiApiKey, nearestGeminiAspect } from './gemini-client.js'
 import {
-  buildScenePlan,
-  composeGeminiScenePrompt,
-  composeKontextPrompt,
-  composeSdxlPrompt,
-  personaId
-} from './prompt-builder.js'
+  buildKontextWorkflow,
+  buildSdxlWorkflow,
+  buildGeminiSeamFixWorkflow,
+  randomSeed
+} from './workflows.js'
+import { detectGender, detectGenderWithGemini } from './gender-detect.js'
+import { buildScenePlan, composeScenePromptFor, personaId, SEAM_BAND_PROMPT } from './prompt-builder.js'
 
 /**
  * @param {object} profile  prompt-builder.js 상단의 스키마 참조
  * @param {object} opts
  * @param {string}  opts.host       ComfyUI 주소 (workflow가 gemini면 사용하지 않음)
  * @param {string}  opts.outDir     라이브러리 루트 (personaId 하위 디렉토리가 생긴다)
- * @param {string}  opts.workflow   'auto' | 'kontext' | 'sdxl' | 'gemini' — auto는 사진 있으면 kontext.
+ * @param {string}  opts.workflow   'auto' | 'kontext' | 'sdxl' | 'gemini' | 'seamfix' — auto는 사진 있으면 kontext.
  *   ('hybrid'는 포트레이트 단계 제거로 kontext와 동일해져 kontext로 정규화한다.)
+ *   'seamfix'(B안): Gemini로 1인칭 360° 파노라마 생성 후 ComfyUI Flux Fill로 좌우 이음매를 보정한다.
+ * @param {object}  opts.panorama   seamfix 소스 크기 { width, height } — 360° 둘레라 2:1 와이드. 기본 2048×1024.
  * @param {object}  opts.gemini     { model, textModel, sceneModel?, apiKey?, apiKeyPath?, imageSize } — gemini용.
  *   apiKeyPath는 호출자가 절대경로로 넘긴다 (resolveGeminiApiKey 참조).
  * @param {number}  opts.perStage   단계당 장면 수 (기본 3 → 총 30)
@@ -75,10 +76,14 @@ export async function generateLifeLibrary(profile, opts = {}) {
     throw new Error(`${mode} 워크플로우에는 profile.photos 레퍼런스 사진이 최소 1장 필요하다`)
   }
   const isGemini = mode === 'gemini'
-  const useComfy = !isGemini // kontext·sdxl
-  // Gemini는 픽셀 크기 대신 종횡비로 지정한다 — 현재 규격(장면 1344×768)에
-  // 가장 가까운 비율로 고정 매핑. imageSize 2K면 약 2048×1152가 나온다.
-  const geminiAspect = '16:9'
+  const isSeamfix = mode === 'seamfix' // B안: Gemini 파노라마 생성 + ComfyUI Flux Fill 이음매 보정
+  const useGeminiScene = isGemini || isSeamfix // 장면 픽셀을 Gemini가 만든다(seamfix는 그 뒤 보정)
+  const useComfy = !isGemini // kontext·sdxl·seamfix (seamfix는 보정에 ComfyUI 사용)
+  // seamfix 소스는 360° 둘레라 2:1 와이드가 필요하다 → 라이브러리 기본 16:9 대신 파노라마 크기 사용.
+  const effImage = isSeamfix ? opts.panorama || { width: 2048, height: 1024 } : image
+  // Gemini는 픽셀 크기 대신 종횡비로 지정한다 — 실제 출력 크기(effImage)에 가장 가까운
+  // 지원 비율을 고른다. gemini(1344×768)→'16:9', seamfix 파노라마(4096×1024)→'4:1'.
+  const geminiAspect = nearestGeminiAspect(effImage.width, effImage.height)
   const imageSize = gemini.imageSize || '2K'
   // 장면 모델: gemini.sceneModel(기본 flash — 장당 비용 절감), 없으면 gemini.model.
   const sceneModel = gemini.sceneModel || gemini.model
@@ -106,7 +111,7 @@ export async function generateLifeLibrary(profile, opts = {}) {
   onProgress({ type: 'plan', total: plan.length })
 
   const client = useComfy ? new ComfyUIClient({ host, timeoutMs }) : null
-  const gclient = isGemini
+  const gclient = useGeminiScene
     ? new GeminiClient({
         apiKey: await resolveGeminiApiKey(gemini),
         model: gemini.model,
@@ -118,8 +123,9 @@ export async function generateLifeLibrary(profile, opts = {}) {
     personaId: pid,
     createdAt: new Date().toISOString(),
     workflow: mode,
-    image,
-    ...(isGemini ? { gemini: { model: gclient.model, sceneModel, imageSize } } : {}),
+    image: effImage,
+    ...(useGeminiScene ? { gemini: { model: gclient.model, sceneModel, imageSize } } : {}),
+    ...(isSeamfix ? { seamfix: { bandModel: 'flux-fill' } } : {}),
     // 사진 바이너리는 제외하고 경로만 기록
     profile: { ...profile, photos: profile.photos || [] },
     images: []
@@ -128,7 +134,7 @@ export async function generateLifeLibrary(profile, opts = {}) {
 
   try {
     if (useComfy) await client.ping()
-    if (isGemini) await gclient.ping()
+    if (useGeminiScene) await gclient.ping()
 
     // 레퍼런스 사진 준비 (첫 장 사용). 3인칭 부감 구도에서의 역할:
     // gemini → 성별 자동 감지 전용(장면 생성에는 넣지 않음), kontext → 편집 입력.
@@ -138,8 +144,9 @@ export async function generateLifeLibrary(profile, opts = {}) {
       const photoPath = profile.photos[0]
       const buf = await fs.readFile(photoPath)
       manifest.referenceImage = { local: photoPath }
-      if (isGemini) referenceBuffer = buf
-      if (useComfy) {
+      // gemini·seamfix: 사진은 성별 자동 감지에만(장면 생성엔 넣지 않음). kontext: 편집 입력으로 업로드.
+      if (useGeminiScene) referenceBuffer = buf
+      if (mode === 'kontext') {
         const uploaded = await client.uploadImage(buf, `${pid}-ref${path.extname(photoPath) || '.png'}`)
         referenceImage = uploaded.name
         manifest.referenceImage.uploaded = uploaded.name
@@ -161,7 +168,7 @@ export async function generateLifeLibrary(profile, opts = {}) {
     } else if (mode !== 'sdxl') {
       onProgress({ type: 'gender-start' })
       try {
-        const det = isGemini
+        const det = useGeminiScene
           ? await detectGenderWithGemini(gclient, referenceBuffer)
           : await detectGender(client, referenceImage)
         profile.gender = det.gender || undefined
@@ -178,13 +185,9 @@ export async function generateLifeLibrary(profile, opts = {}) {
     for (let i = 0; i < plan.length; i++) {
       if (signal?.aborted) break // 중지 요청 — 진행분은 finally가 저장, 남은 장은 나중에 재개
       const item = plan[i]
+      // gemini는 시드 개념이 없다. seamfix는 보정 단계(ComfyUI)에 시드가 필요하므로 발급한다.
       const seed = isGemini ? null : randomSeed()
-      const prompt =
-        mode === 'sdxl'
-          ? composeSdxlPrompt(profile, item)
-          : isGemini
-            ? composeGeminiScenePrompt(profile, item)
-            : composeKontextPrompt(profile, item)
+      const prompt = composeScenePromptFor(mode, profile, item)
       const localFile = path.join(dir, `${item.id}.png`)
 
       // 재개: 이전 실행에서 성공한 장면은 건너뛴다. failed 표시된 장은 다시 시도한다.
@@ -203,6 +206,7 @@ export async function generateLifeLibrary(profile, opts = {}) {
       // (한 장 때문에 30장 전체가 무너지지 않게. 건너뛴 장은 manifest에 failed로 남겨
       //  admin에서 그 장만 재생성할 수 있다.) IMAGE_SAFETY는 gclient 내부에서 이미 1회 재시도.
       let promptId = null
+      let srcFile = null // seamfix: 보관한 Gemini 원본 파일명(edge 재연결용)
       let ok = false
       let lastErr = null
       let cancelled = false
@@ -223,21 +227,52 @@ export async function generateLifeLibrary(profile, opts = {}) {
               signal
             })
             await fs.writeFile(localFile, data)
+          } else if (isSeamfix) {
+            // B안: Gemini로 1인칭 360° 파노라마 생성 → ComfyUI Flux Fill로 좌우 이음매 보정.
+            const data = await gclient.generateImage({
+              prompt,
+              references: [],
+              aspectRatio: geminiAspect, // 파노라마 비율로 자동 선택(4096×1024→'4:1')
+              imageSize,
+              model: sceneModel,
+              signal
+            })
+            // Gemini 원본 보관 — admin "edge 재연결"이 재생성 없이 이 원본으로 이음매만 다시 보정한다.
+            srcFile = `${item.id}.src.png`
+            await fs.writeFile(path.join(dir, srcFile), data)
+            const uploaded = await client.uploadImage(data, `${pid}-${item.id}-src.png`)
+            const wf = buildGeminiSeamFixWorkflow({
+              referenceImage: uploaded.name,
+              prompt,
+              bandPrompt: SEAM_BAND_PROMPT, // 이음매 띠에 인물 안 그리게(기괴함 방지)
+              width: effImage.width,
+              height: effImage.height,
+              bandModel: 'flux-fill',
+              seed,
+              filenamePrefix: `chrono-zoetrope/${pid}/${item.id}`
+            })
+            const out = await client.generate(wf, {
+              onProgress: (p) => onProgress({ type: 'image-progress', item, ...p })
+            })
+            promptId = out.promptId
+            // 워크플로우는 보정본(-pano)과 원본(-raw)을 저장한다 — 보정본을 장면 파일로 쓴다.
+            const corrected = out.images.find((im) => /-pano_/.test(im.filename)) || out.images[0]
+            await fs.writeFile(localFile, corrected.data)
           } else {
             const wf =
               mode === 'kontext'
                 ? buildKontextWorkflow({
                     prompt,
                     referenceImage,
-                    width: image.width,
-                    height: image.height,
+                    width: effImage.width,
+                    height: effImage.height,
                     seed,
                     filenamePrefix: `chrono-zoetrope/${pid}/${item.id}`
                   })
                 : buildSdxlWorkflow({
                     prompt,
-                    width: image.width,
-                    height: image.height,
+                    width: effImage.width,
+                    height: effImage.height,
                     seed,
                     filenamePrefix: `chrono-zoetrope/${pid}/${item.id}`
                   })
@@ -272,6 +307,7 @@ export async function generateLifeLibrary(profile, opts = {}) {
           seed,
           promptId,
           file: `${item.id}.png`,
+          ...(srcFile ? { srcFile } : {}), // seamfix 원본 — edge 재연결이 재사용
           elapsedMs: Date.now() - t0
         })
         await writeManifest() // 장마다 기록 — 중단돼도 진행분은 남는다

@@ -26,11 +26,13 @@ import { ComfyUIClient } from '../src/main/comfyui/client.js'
 import {
   GeminiClient,
   resolveGeminiApiKey,
-  resolveGeminiConfig
+  resolveGeminiConfig,
+  nearestGeminiAspect
 } from '../src/main/comfyui/gemini-client.js'
 import {
   buildKontextWorkflow,
   buildSdxlWorkflow,
+  buildGeminiSeamFixWorkflow,
   randomSeed
 } from '../src/main/comfyui/workflows.js'
 import {
@@ -40,12 +42,7 @@ import {
   updateProfileFields
 } from '../src/main/comfyui/firestore-source.js'
 import { processProfile } from '../src/main/comfyui/profile-worker.js'
-import {
-  composeGeminiScenePrompt,
-  composeKontextPrompt,
-  composeSdxlPrompt,
-  personaId
-} from '../src/main/comfyui/prompt-builder.js'
+import { composeScenePromptFor, personaId, SEAM_BAND_PROMPT } from '../src/main/comfyui/prompt-builder.js'
 import { readSession, writeSession } from '../src/main/session-pointer.js'
 import { VideoRegenerator } from '../src/main/comfyui/video-cache.js'
 import { ReelBuilder } from '../src/main/comfyui/reel-builder.js'
@@ -92,14 +89,10 @@ async function regenerate(pid, id) {
   if (!entry) throw new Error(`항목 없음: ${id}`)
 
   const wf = manifest.workflow
-  entry.prompt =
-    wf === 'sdxl'
-      ? composeSdxlPrompt(manifest.profile, entry)
-      : wf === 'gemini'
-        ? composeGeminiScenePrompt(manifest.profile, entry)
-        : composeKontextPrompt(manifest.profile, entry) // kontext (구 hybrid 포함)
+  entry.prompt = composeScenePromptFor(wf, manifest.profile, entry)
 
   if (wf === 'gemini') return regenerateGemini(pid, manifest, entry)
+  if (wf === 'seamfix') return regenerateSeamfix(pid, manifest, entry)
 
   const client = new ComfyUIClient({ host: config.host, timeoutMs: config.timeoutMs })
   try {
@@ -157,7 +150,7 @@ async function regenerateGemini(pid, manifest, entry) {
   const data = await gclient.generateImage({
     prompt: entry.prompt,
     references: [],
-    aspectRatio: '16:9', // life-library.js의 geminiAspect와 동일 매핑
+    aspectRatio: nearestGeminiAspect(manifest.image.width, manifest.image.height),
     imageSize: manifest.gemini?.imageSize || config.gemini?.imageSize || '2K',
     model: manifest.gemini?.sceneModel || config.gemini?.sceneModel || undefined
   })
@@ -170,6 +163,97 @@ async function regenerateGemini(pid, manifest, entry) {
   delete entry.failed // 재생성 성공 → failed 해제
   await writeManifest(pid, manifest)
   return { entry }
+}
+
+// seamfix 이음매 보정 단계만 — 주어진 Gemini 원본 버퍼를 업로드해 Flux Fill 워크플로우를 돌리고
+// 보정본(-pano)을 장면 파일로 저장한다. regenerateSeamfix(재생성)와 reseam(재연결)이 공유한다.
+async function applySeamFix(pid, manifest, entry, srcBuffer, client) {
+  const uploaded = await client.uploadImage(srcBuffer, `${pid}-${entry.id}-src.png`)
+  const seed = randomSeed()
+  const graph = buildGeminiSeamFixWorkflow({
+    referenceImage: uploaded.name,
+    prompt: entry.prompt,
+    bandPrompt: SEAM_BAND_PROMPT, // 이음매 띠에 인물 안 그리게(기괴함 방지)
+    width: manifest.image.width,
+    height: manifest.image.height,
+    bandModel: manifest.seamfix?.bandModel || 'flux-fill',
+    seed,
+    filenamePrefix: `chrono-zoetrope/${pid}/${path.basename(entry.file, '.png')}`
+  })
+  const { promptId, images } = await client.generate(graph)
+  const corrected = images.find((im) => /-pano_/.test(im.filename)) || images[0]
+  await fs.writeFile(path.join(LIBRARY, pid, entry.file), corrected.data)
+  return { promptId, seed }
+}
+
+// B안(seamfix) 재생성 — Gemini로 파노라마를 다시 뽑고(→ 원본 보관) Flux Fill로 이음매를 보정한다.
+// (life-library.js seamfix 경로와 동일한 2단계. 보정본을 장면 파일로 교체한다.)
+async function regenerateSeamfix(pid, manifest, entry) {
+  const gclient = new GeminiClient({
+    apiKey: await resolveGeminiApiKey(config.gemini),
+    model: manifest.gemini?.model || config.gemini?.model,
+    textModel: config.gemini?.textModel,
+    timeoutMs: config.timeoutMs
+  })
+  const client = new ComfyUIClient({ host: config.host, timeoutMs: config.timeoutMs })
+  try {
+    const t0 = Date.now()
+    const data = await gclient.generateImage({
+      prompt: entry.prompt,
+      references: [],
+      // 파노라마 폭(manifest.image)에 맞는 Gemini 비율 — 4096×1024면 '4:1'. 보정 워크플로우가 그 크기로 정규화.
+      aspectRatio: nearestGeminiAspect(manifest.image.width, manifest.image.height),
+      imageSize: manifest.gemini?.imageSize || config.gemini?.imageSize || '2K',
+      model: manifest.gemini?.sceneModel || config.gemini?.sceneModel || undefined
+    })
+    // 새 Gemini 원본 보관 → 이후 edge 재연결이 재생성 없이 이 원본으로 이음매만 다시 보정한다.
+    const srcFile = `${path.basename(entry.file, '.png')}.src.png`
+    await fs.writeFile(path.join(LIBRARY, pid, srcFile), data)
+    entry.srcFile = srcFile
+
+    const { promptId, seed } = await applySeamFix(pid, manifest, entry, data, client)
+    entry.seed = seed
+    entry.promptId = promptId
+    entry.elapsedMs = Date.now() - t0
+    entry.rev = (entry.rev || 0) + 1 // 클라이언트 캐시 버스팅용
+    delete entry.failed // 재생성 성공 → failed 해제
+    await writeManifest(pid, manifest)
+    return { entry }
+  } finally {
+    client.close()
+  }
+}
+
+// edge 재연결(seamfix 전용) — Gemini는 다시 만들지 않고, 보관된 원본으로 이음매 보정만 재실행한다.
+// "Gemini는 만족스러운데 seamless 연결만 문제"일 때 값싸게(재과금 없이) 다시 붙인다.
+async function reseam(pid, id) {
+  const manifest = await readManifest(pid)
+  const entry = (manifest.images || []).find((img) => img.id === id)
+  if (!entry) throw new Error(`항목 없음: ${id}`)
+  if (manifest.workflow !== 'seamfix')
+    throw new Error('edge 재연결은 seamfix 워크플로우에서만 가능합니다')
+  if (!entry.srcFile)
+    throw new Error('보관된 Gemini 원본이 없습니다 (이 장 이전 버전) — 전체 재생성이 필요합니다')
+  let srcBuffer
+  try {
+    srcBuffer = await fs.readFile(path.join(LIBRARY, pid, entry.srcFile))
+  } catch {
+    throw new Error('Gemini 원본 파일을 찾을 수 없습니다 — 전체 재생성이 필요합니다')
+  }
+  const client = new ComfyUIClient({ host: config.host, timeoutMs: config.timeoutMs })
+  try {
+    const t0 = Date.now()
+    const { promptId, seed } = await applySeamFix(pid, manifest, entry, srcBuffer, client)
+    entry.seed = seed
+    entry.promptId = promptId
+    entry.elapsedMs = Date.now() - t0
+    entry.rev = (entry.rev || 0) + 1 // 클라이언트 캐시 버스팅용
+    delete entry.failed
+    await writeManifest(pid, manifest)
+    return { entry }
+  } finally {
+    client.close()
+  }
 }
 
 // ── HTTP 서버 ─────────────────────────────────────────────────────
@@ -662,12 +746,7 @@ const server = http.createServer(async (req, res) => {
         manifest.profile = { ...(manifest.profile || {}), gender }
         manifest.gender = { ...(manifest.gender || {}), value: gender, source: 'manual' }
         for (const img of manifest.images || [])
-          img.prompt =
-            manifest.workflow === 'sdxl'
-              ? composeSdxlPrompt(manifest.profile, img)
-              : manifest.workflow === 'gemini'
-                ? composeGeminiScenePrompt(manifest.profile, img)
-                : composeKontextPrompt(manifest.profile, img) // kontext (구 hybrid 포함)
+          img.prompt = composeScenePromptFor(manifest.workflow, manifest.profile, img)
         await writeManifest(pid, manifest)
         if (firebaseReady && manifest.profile.id) {
           await updateProfileFields(manifest.profile.id, { gender }).catch((err) =>
@@ -690,6 +769,17 @@ const server = http.createServer(async (req, res) => {
         const result = await regenerate(pid, id)
         logAction(
           `${pid}  ↻ 재생성 완료  장면 ${id}  (${(result.entry.elapsedMs / 1000).toFixed(1)}s${result.entry.seed != null ? `, seed ${result.entry.seed}` : ''})`
+        )
+        return send(res, 200, result)
+      }
+
+      // edge 재연결: { id } — Gemini 원본 재사용, 이음매 보정만 다시 (seamfix 전용, 재과금 없음)
+      if (req.method === 'POST' && parts[3] === 'reseam') {
+        const { id } = await readBody(req)
+        logAction(`${pid}  ⟚ edge 재연결 시작  장면 ${id}`)
+        const result = await reseam(pid, id)
+        logAction(
+          `${pid}  ⟚ edge 재연결 완료  장면 ${id}  (${(result.entry.elapsedMs / 1000).toFixed(1)}s)`
         )
         return send(res, 200, result)
       }
@@ -718,7 +808,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(
     `[admin] http://localhost:${PORT}  (library: ${LIBRARY}, workflow: ${config.workflow}` +
-      `${['gemini', 'hybrid'].includes(config.workflow) ? `, gemini: ${config.gemini?.model}` : ''}` +
+      `${['gemini', 'hybrid', 'seamfix'].includes(config.workflow) ? `, gemini: ${config.gemini?.model}` : ''}` +
       `${config.workflow === 'gemini' ? '' : `, comfyui: ${config.host}`})`
   )
 })

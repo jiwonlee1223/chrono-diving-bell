@@ -708,14 +708,20 @@
         const div = document.createElement('div')
         div.className = 'card' + (entry.failed ? ' failed' : '')
         const sub = `${entry.age}살 · ${entry.year}${entry.isPast ? '' : ' (미래)'}`
+        // 카드 썸네일 비율을 실제 생성 크기에 맞춘다(파노라마 4:1 등이 잘리지 않게).
+        const im = manifest && manifest.image
+        const ar = im && im.width && im.height ? `${im.width} / ${im.height}` : '1344 / 768'
         const media = entry.failed
-          ? `<div class="card-failed">생성 실패 — 재생성 필요</div>`
-          : `<img src="${imgUrl(entry)}" loading="lazy" title="${entry.prompt.replaceAll('"', '&quot;')}" />`
+          ? `<div class="card-failed" style="aspect-ratio:${ar}">생성 실패 — 재생성 필요</div>`
+          : `<img src="${imgUrl(entry)}" loading="lazy" style="aspect-ratio:${ar}" title="${entry.prompt.replaceAll('"', '&quot;')}" />`
+        // edge 재연결: seamfix 워크플로우 + 보관된 Gemini 원본(srcFile)이 있을 때만.
+        const canReseam = manifest && manifest.workflow === 'seamfix' && entry.srcFile && !entry.failed
         div.innerHTML = `
         ${media}
         <div class="meta"><span class="id">${entry.id}</span><span class="sub">${sub}</span>${entry.failed ? '<span class="badge error">실패</span>' : ''}</div>
         <div class="actions">
-          <button class="re">재생성</button>
+          <button class="re" title="Gemini부터 전체 다시 생성">재생성</button>
+          ${canReseam ? '<button class="reseam" title="Gemini 원본은 두고 seamless 이음매만 다시 붙임 (재과금 없음)">edge 재연결</button>' : ''}
         </div>`
 
         const imgEl = $('img', div)
@@ -727,7 +733,9 @@
           })
         $('.re', div).addEventListener('click', async () => {
           const btn = $('.re', div)
+          const other = $('.reseam', div)
           btn.disabled = true
+          if (other) other.disabled = true
           btn.textContent = '생성 중…'
           setStatus(`${entry.id} 재생성 중 (~15초)`)
           try {
@@ -744,8 +752,33 @@
             setStatus(`재생성 실패: ${e.message}`)
             btn.disabled = false
             btn.textContent = '재생성'
+            if (other) other.disabled = false
           }
         })
+        const reseamBtn = $('.reseam', div)
+        if (reseamBtn)
+          reseamBtn.addEventListener('click', async () => {
+            const re = $('.re', div)
+            reseamBtn.disabled = true
+            if (re) re.disabled = true
+            reseamBtn.textContent = '재연결 중…'
+            setStatus(`${entry.id} edge 재연결 중 (~60초, Gemini 재생성 없음)`)
+            try {
+              const out = await api(`/api/personas/${pid}/reseam`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: entry.id })
+              })
+              Object.assign(entry, out.entry)
+              setStatus(`${entry.id} edge 재연결 완료`)
+              render()
+            } catch (e) {
+              setStatus(`edge 재연결 실패: ${e.message}`)
+              reseamBtn.disabled = false
+              reseamBtn.textContent = 'edge 재연결'
+              if (re) re.disabled = false
+            }
+          })
         return div
       }
 

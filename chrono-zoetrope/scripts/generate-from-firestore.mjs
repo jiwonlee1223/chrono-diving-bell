@@ -59,7 +59,7 @@ try {
 }
 log(
   `Firebase 연결됨. library=${OUT_DIR}, workflow=${config.workflow}` +
-    (config.workflow === 'gemini' ? ` gemini=${config.gemini?.model}` : '') +
+    (['gemini', 'seamfix'].includes(config.workflow) ? ` gemini=${config.gemini?.model}` : '') +
     (config.workflow === 'gemini' ? '' : ` comfyui=${config.host}`)
 )
 

@@ -50,12 +50,13 @@
 
 ## 3. 개발 스택 (확정)
 
-웹 스택으로 통일한다. Unreal / nDisplay는 채택하지 않는다. 실시간 3D 물리나 형태 변형 액추에이터가 없고, 하는 일은 파노라마를 실린더에 재투영하고 컨트롤러 입력으로 상태를 전환하는 것이라 웹이 더 단순하다.
+웹 스택으로 통일한다. Unreal / nDisplay는 채택하지 않는다. 실시간 3D 물리나 형태 변형 액추에이터가 없고, 하는 일은 파노라마를 실린더에 재투영하고 컨트롤러 입력으로 상태를 전환하는 것이라 웹이 더 단순하다. (2026-07 Electron → 순수 Node.js 웹앱으로 전환. Electron이 하던 멀티 디스플레이 자동 풀스크린은 단일 창 4타일로 대체됐다.)
 
-- 런타임 셸: **Electron** (멀티 디스플레이 풀스크린 제어)
-- 백엔드 로직: **Node.js** (상태 기계, ComfyUI 클라이언트, IPC 허브)
-- 렌더러: **Three.js** (WebGL, 실린더 재투영, 후면 투사 반전, 블렌딩 셰이더)
-- 입력: **Gamepad API** (Xbox Wireless Controller, USB-C 유선)
+- 런타임 셸: **Node.js HTTP 서버 + 브라우저**. 서버(`server/index.mjs`)가 상태 기계·미디어·SSE를 소유하고, 브라우저 페이지 한 개가 4개 프로젝터 뷰를 한 캔버스에 2×2 타일로 렌더한다.
+- 백엔드 로직: **Node.js** (상태 기계, ComfyUI 클라이언트, 상태 허브). main↔renderer IPC는 SSE(`/api/events`, server→page) + HTTP POST(page→server)로 대체.
+- 미디어 서빙: 과거 `zoe://` Electron 프로토콜 → 서버 동일 오리진 **`GET /media/*`** (CORS·Range).
+- 렌더러: **Three.js** (WebGL, 실린더 재투영, 후면 투사 반전, 블렌딩 셰이더). 빌드는 **Vite**(`npm run build` → `dist/`, 서버가 정적 서빙; dev는 `npm run dev` = 서버 + vite HMR 프록시).
+- 입력: **Gamepad API** (Xbox Wireless Controller, USB-C 유선) + 페이지 keyboard(Enter/V/Space). 단일 창이라 Electron globalShortcut 불필요.
 - AI 서버: 로컬 **ComfyUI** (`http://143.248.107.38:8188/`)
 - 이미지 생성: **SDXL + ControlNet(depth)** 파노라마
 
@@ -63,8 +64,13 @@
 
 개발과 실행 머신이 다르다. 개발은 macOS(§11), **설치 구동은 Windows 노트북**에서 한다.
 아래 MST·GPU 출력 한계·USB-C DP 동작은 전부 이 Windows 런타임 머신 고유 특성이다.
-디스플레이 출력 코드(멀티 윈도우 풀스크린, 후면 투사 반전, 창-디스플레이 배정)는
+디스플레이 출력 코드(후면 투사 반전, 4타일 배치·프로젝터 배정)는
 반드시 이 런타임 머신에서 검증한다. Mac에서의 동작은 참고용일 뿐이다.
+
+**웹앱 전환 후 운용**: 단일 브라우저 창(권장: Chrome `--kiosk`)을 열어 `http://<서버>:8788` 에 접속하면
+한 화면에 4타일(P0|P1 위, P2|P3 아래)이 렌더된다. 각 프로젝터에는 이 창의 해당 사분면이 나가도록
+디스플레이/미러링을 배치한다. Electron이 하던 창-디스플레이 자동 배정이 없으므로 이 매핑은 OS 디스플레이
+설정(확장/미러)으로 잡는다.
 
 ### 런타임 머신 (확정)
 - 기종: ASUS TUF Gaming A14 (FA401UM), Windows 11
