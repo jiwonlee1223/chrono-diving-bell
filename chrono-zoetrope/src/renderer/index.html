@@ -4,9 +4,10 @@
     <meta charset="UTF-8" />
     <title>CDB</title>
     <!-- https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP -->
+    <!-- zoe: = main이 서빙하는 라이브러리 미디어 프로토콜 (몽타주 이미지 img-src, 재생성 영상 media-src) -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: zoe:; media-src 'self' zoe:"
     />
     <style>
       html,

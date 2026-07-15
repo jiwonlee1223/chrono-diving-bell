@@ -11,15 +11,15 @@
 // 역할:
 //   - admin/index.html 검토 UI 서빙
 //   - 라이브러리 이미지·manifest 조회 API
-//   - 장별 승인/반려 판정 저장 (manifest.json의 status 필드)
-//   - 반려 장 재생성 (manifest에 기록된 프롬프트 + 새 시드로 ComfyUI 재호출)
-//   - 승인된 장면 피드 제공 (/api/personas/{pid}/approved) —
-//     threads-prototype 등 노출 단이 이 피드만 소비하면 미검토 이미지가 새어나가지 않는다.
+//   - 문제 장 재생성 (현재 prompt-builder로 프롬프트를 재조립해 다시 생성)
+//   - 장면 피드 제공 (/api/personas/{pid}/approved) — 노출 단(threads-prototype 등)이 소비.
 //
-// 검토 상태 모델: pending(기본) → approved | rejected. 재생성하면 pending으로 복귀.
+// 검토 모델: 별도 승인 절차 없음 — 생성된 장은 전부 기본 노출이고,
+// 문제가 있는 장만 어드민에서 재생성해 그 자리에서 교체한다.
 
 import http from 'node:http'
 import fs from 'node:fs/promises'
+import { createReadStream, existsSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ComfyUIClient } from '../src/main/comfyui/client.js'
@@ -41,18 +41,28 @@ import {
 } from '../src/main/comfyui/firestore-source.js'
 import { processProfile } from '../src/main/comfyui/profile-worker.js'
 import {
-  composeAgePortraitPrompt,
   composeGeminiScenePrompt,
   composeKontextPrompt,
   composeSdxlPrompt,
   personaId
 } from '../src/main/comfyui/prompt-builder.js'
+import { readSession, writeSession } from '../src/main/session-pointer.js'
+import { VideoRegenerator } from '../src/main/comfyui/video-cache.js'
+import { ReelBuilder } from '../src/main/comfyui/reel-builder.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const config = JSON.parse(
   await fs.readFile(path.join(root, 'src/main/config/comfyui.json'), 'utf-8')
 )
 config.gemini = resolveGeminiConfig(config.gemini, root) // apiKeyPath를 절대경로로
+// 몽타주/릴/영상 재생성 설정 (릴 빌드가 쓴다).
+const montage = JSON.parse(
+  await fs.readFile(path.join(root, 'src/main/config/montage.json'), 'utf-8')
+)
+// Seedance(API 노드) 키 — seedance-flf 모드에서 클립 생성에 필요. 없으면 생성 시 에러로 안내.
+const COMFY_API_KEY = montage.regen?.seedance?.apiKeyPath
+  ? await fs.readFile(path.resolve(root, montage.regen.seedance.apiKeyPath), 'utf-8').then((s) => s.trim()).catch(() => null)
+  : null
 
 const args = process.argv.slice(2)
 const argOf = (name, fallback) => {
@@ -66,54 +76,49 @@ const VIEW_ONLY = args.includes('--view-only')
 // ── manifest 입출력 ────────────────────────────────────────────────
 async function readManifest(pid) {
   const p = path.join(LIBRARY, pid, 'manifest.json')
-  const m = JSON.parse(await fs.readFile(p, 'utf-8'))
-  // 구버전 manifest(status 없음) 정규화
-  for (const img of m.images || []) if (!img.status) img.status = 'pending'
-  for (const pt of m.agePortraits || []) if (!pt.status) pt.status = 'pending'
-  return m
+  return JSON.parse(await fs.readFile(p, 'utf-8'))
 }
 async function writeManifest(pid, manifest) {
   await fs.writeFile(path.join(LIBRARY, pid, 'manifest.json'), JSON.stringify(manifest, null, 2))
 }
-function findEntry(manifest, kind, id) {
-  if (kind === 'portrait')
-    return (manifest.agePortraits || []).find((p) => String(p.age) === String(id))
-  return (manifest.images || []).find((img) => img.id === id)
-}
 
-// ── 재생성: manifest에 기록된 프롬프트를 그대로 쓰고 시드만 새로 뽑는다 ──
-// (장면 문구를 바꾸는 건 프롬프트 풀 수정의 영역 — 여기서는 확률만 다시 굴린다.)
-async function regenerate(pid, kind, id) {
+// ── 재생성: 현재 prompt-builder 기준으로 프롬프트를 재조립해 다시 굴린다 ──
+// (프롬프트 풀이 개편되면 재생성부터 바로 반영된다. 장면 문구(item.scene)는
+//  플랜 시드에 고정된 재료라 그대로 쓴다. 구버전 manifest — 포트레이트 2단계 시절 —
+//  의 장도 같은 규칙으로 원본 레퍼런스 기준 뒷모습 프롬프트로 재생성된다.)
+async function regenerate(pid, id) {
   const manifest = await readManifest(pid)
-  const entry = findEntry(manifest, kind, id)
-  if (!entry) throw new Error(`항목 없음: ${kind} ${id}`)
+  const entry = (manifest.images || []).find((img) => img.id === id)
+  if (!entry) throw new Error(`항목 없음: ${id}`)
 
-  // gemini는 전 항목, hybrid는 포트레이트만 Gemini로 재생성 (장면은 kontext — 생성 때와 동일 분담)
-  if (manifest.workflow === 'gemini' || (manifest.workflow === 'hybrid' && kind === 'portrait'))
-    return regenerateGemini(pid, kind, manifest, entry)
+  const wf = manifest.workflow
+  entry.prompt =
+    wf === 'sdxl'
+      ? composeSdxlPrompt(manifest.profile, entry)
+      : wf === 'gemini'
+        ? composeGeminiScenePrompt(manifest.profile, entry)
+        : composeKontextPrompt(manifest.profile, entry) // kontext (구 hybrid 포함)
+
+  if (wf === 'gemini') return regenerateGemini(pid, manifest, entry)
 
   const client = new ComfyUIClient({ host: config.host, timeoutMs: config.timeoutMs })
   try {
     const seed = randomSeed()
-    let wf
-    if (manifest.workflow !== 'sdxl') {
-      // kontext·hybrid(장면). 레퍼런스: 장면이면 그 단계의 나이 포트레이트, 포트레이트면 원본 프로필 사진.
-      const refLocal =
-        kind === 'portrait'
-          ? manifest.referenceImage.local
-          : path.join(LIBRARY, pid, `age-${entry.age}.png`)
-      const buf = await fs.readFile(refLocal)
+    let graph
+    if (wf !== 'sdxl') {
+      // kontext — 레퍼런스는 원본 프로필 사진 (뒷모습 구도라 포트레이트 단계가 없다)
+      const buf = await fs.readFile(manifest.referenceImage.local)
       const uploaded = await client.uploadImage(buf, `${pid}-regen-ref.png`)
-      wf = buildKontextWorkflow({
+      graph = buildKontextWorkflow({
         prompt: entry.prompt,
         referenceImage: uploaded.name,
-        width: kind === 'portrait' ? 832 : manifest.image.width,
-        height: kind === 'portrait' ? 1152 : manifest.image.height,
+        width: manifest.image.width,
+        height: manifest.image.height,
         seed,
         filenamePrefix: `chrono-zoetrope/${pid}/${path.basename(entry.file, '.png')}`
       })
     } else {
-      wf = buildSdxlWorkflow({
+      graph = buildSdxlWorkflow({
         prompt: entry.prompt,
         width: manifest.image.width,
         height: manifest.image.height,
@@ -123,69 +128,48 @@ async function regenerate(pid, kind, id) {
     }
 
     const t0 = Date.now()
-    const { promptId, images } = await client.generate(wf)
+    const { promptId, images } = await client.generate(graph)
     await fs.writeFile(path.join(LIBRARY, pid, entry.file), images[0].data)
 
     entry.seed = seed
     entry.promptId = promptId
     entry.elapsedMs = Date.now() - t0
-    entry.status = 'pending'
     entry.rev = (entry.rev || 0) + 1 // 클라이언트 캐시 버스팅용
+    delete entry.failed // 재생성 성공 → failed 해제
     await writeManifest(pid, manifest)
-    return {
-      entry,
-      note:
-        kind === 'portrait'
-          ? '포트레이트가 바뀌었습니다. 이 단계의 장면들은 옛 포트레이트 기준이므로 필요하면 장면도 재생성하세요.'
-          : null
-    }
+    return { entry }
   } finally {
     client.close()
   }
 }
 
-// Gemini 백엔드 재생성 — 시드 개념이 없어 같은 프롬프트로 확률만 다시 굴린다.
-// 레퍼런스는 ComfyUI 경로와 동일한 규칙: 장면 → 그 단계의 나이 포트레이트, 포트레이트 → 원본 프로필 사진.
-async function regenerateGemini(pid, kind, manifest, entry) {
+// Gemini 백엔드 재생성 — 시드 개념이 없어 확률만 다시 굴린다.
+// 3인칭 부감 장면은 생성 때와 동일하게 레퍼런스 없이 순수 텍스트→이미지 (prompt-builder 주석 참조).
+async function regenerateGemini(pid, manifest, entry) {
   const gclient = new GeminiClient({
     apiKey: await resolveGeminiApiKey(config.gemini),
     model: manifest.gemini?.model || config.gemini?.model,
     textModel: config.gemini?.textModel,
     timeoutMs: config.timeoutMs
   })
-  const refLocal =
-    kind === 'portrait'
-      ? manifest.referenceImage.local
-      : path.join(LIBRARY, pid, `age-${entry.age}.png`)
-  const reference = await fs.readFile(refLocal)
 
   const t0 = Date.now()
   const data = await gclient.generateImage({
     prompt: entry.prompt,
-    references: [reference],
-    aspectRatio: kind === 'portrait' ? '3:4' : '16:9', // life-library.js의 geminiAspect와 동일 매핑
+    references: [],
+    aspectRatio: '16:9', // life-library.js의 geminiAspect와 동일 매핑
     imageSize: manifest.gemini?.imageSize || config.gemini?.imageSize || '2K',
-    // 생성 때와 같은 역할별 모델: 포트레이트 pro, 장면 sceneModel(flash)
-    model:
-      kind === 'portrait'
-        ? undefined // gclient 기본값(manifest.gemini.model)
-        : manifest.gemini?.sceneModel || config.gemini?.sceneModel || undefined
+    model: manifest.gemini?.sceneModel || config.gemini?.sceneModel || undefined
   })
   await fs.writeFile(path.join(LIBRARY, pid, entry.file), data)
 
   entry.seed = null
   entry.promptId = null
   entry.elapsedMs = Date.now() - t0
-  entry.status = 'pending'
   entry.rev = (entry.rev || 0) + 1 // 클라이언트 캐시 버스팅용
+  delete entry.failed // 재생성 성공 → failed 해제
   await writeManifest(pid, manifest)
-  return {
-    entry,
-    note:
-      kind === 'portrait'
-        ? '포트레이트가 바뀌었습니다. 이 단계의 장면들은 옛 포트레이트 기준이므로 필요하면 장면도 재생성하세요.'
-        : null
-  }
+  return { entry }
 }
 
 // ── HTTP 서버 ─────────────────────────────────────────────────────
@@ -193,7 +177,8 @@ const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
-  '.json': 'application/json'
+  '.json': 'application/json',
+  '.mp4': 'video/mp4'
 }
 
 function send(res, status, body, type = 'application/json') {
@@ -201,15 +186,39 @@ function send(res, status, body, type = 'application/json') {
   res.writeHead(status, { 'Content-Type': type, 'Access-Control-Allow-Origin': '*' })
   res.end(data)
 }
+
+// 영상 스트리밍 (Range 지원 — <video> 시킹). reel.mp4·videos/<id>.mp4 서빙에 쓴다.
+async function serveFile(req, res, absPath, mime) {
+  let stat
+  try {
+    stat = await fs.stat(absPath)
+  } catch {
+    return send(res, 404, { error: 'not found' })
+  }
+  const range = req.headers.range
+  const base = { 'Content-Type': mime, 'Accept-Ranges': 'bytes', 'Access-Control-Allow-Origin': '*' }
+  if (range) {
+    const m = /bytes=(\d*)-(\d*)/.exec(range)
+    const start = m && m[1] ? parseInt(m[1], 10) : 0
+    const end = m && m[2] ? parseInt(m[2], 10) : stat.size - 1
+    if (start > end || start >= stat.size) {
+      res.writeHead(416, { 'Content-Range': `bytes */${stat.size}` })
+      return res.end()
+    }
+    res.writeHead(206, { ...base, 'Content-Range': `bytes ${start}-${end}/${stat.size}`, 'Content-Length': end - start + 1 })
+    return createReadStream(absPath, { start, end }).pipe(res)
+  }
+  res.writeHead(200, { ...base, 'Content-Length': stat.size })
+  createReadStream(absPath).pipe(res)
+}
 async function readBody(req) {
   const chunks = []
   for await (const c of req) chunks.push(c)
   return JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}')
 }
 
-// 검토 액션 로그 — 어떤 장을 언제 승인/반려/재생성했는지 터미널에 남긴다.
+// 액션 로그 — 어떤 장을 언제 재생성했는지 터미널에 남긴다.
 const HHMMSS = () => new Date().toTimeString().slice(0, 8)
-const ACTION_LABEL = { approved: '✓ 승인', rejected: '✗ 반려', pending: '· 대기' }
 function logAction(text) {
   console.log(`[${HHMMSS()}] ${text}`)
 }
@@ -228,8 +237,128 @@ let autoOn = !VIEW_ONLY // 일시정지 토글 (view-only면 영구 OFF — /api
 let current = null // 생성 중인 pid — 동시 1개 보장
 let currentInfo = null // { pid, name, done, total, startedAt }
 let lastResult = null // { pid, ok, error, at }
+let currentAbort = null // 진행 중 이미지 생성 취소용 AbortController (중지 버튼)
 
 const toMillis = (ts) => (ts && typeof ts.toMillis === 'function' ? ts.toMillis() : null)
+
+// ── 주마등 영상 큐 (2단계: 클립 생성 → 릴 합성) — 이미지 큐(Gemini)와 독립·병렬 ──────
+// 자동 트리거 없음. 연구자가 admin에서 버튼으로 단계별 실행한다:
+//   kind='clips': 전 장면을 Wan 클립(videos/<id>.mp4)으로 생성 (오래 걸림, 일시정지/중단 가능).
+//   kind='reel' : 사전 생성된 클립들을 크로스페이드로 90초 릴(reel.mp4)로 합성 (ffmpeg, 빠름).
+// 클립은 4창 런타임 FREEZE가 그대로 재생하는 사전 생성물이다(전시 중 생성 없음).
+let videoQueue = [] //      [{ pid, kind }]
+let videoBuilding = null // 현재 빌드 중 { pid, kind } | null
+let videoJob = null //      { pid, kind, phase, done, total, durationSec } 진행 상태
+let videoLast = null //     { pid, kind, ok, cancelled, pauseKind, error, at }
+let videoCancel = false //  현재 작업 중단 요청 (클립 사이에서 확인)
+let videoCancelKind = 'stop' // 'pause' | 'stop' — 사용자에게 보여줄 라벨용
+
+function enqueueVideo(pid, kind) {
+  if (!pid) return
+  const dup =
+    videoQueue.some((v) => v.pid === pid && v.kind === kind) ||
+    (videoBuilding?.pid === pid && videoBuilding?.kind === kind)
+  if (dup) return
+  videoQueue.push({ pid, kind })
+  logAction(`영상 대기열 추가: ${kind} ${pid} (대기 ${videoQueue.length})`)
+  pumpVideo()
+}
+
+async function pumpVideo() {
+  if (videoBuilding || videoQueue.length === 0) return
+  const job = (videoBuilding = videoQueue.shift())
+  const { pid, kind } = job
+  videoCancel = false
+  videoJob = { pid, kind, phase: 'start', done: 0, total: 0 }
+  let regenerator = null
+  try {
+    const mode = montage.regen.mode // 'seedance' | 'wan' | 'mock'
+    const sd = mode === 'seedance'
+    if (sd && !COMFY_API_KEY)
+      throw new Error('Seedance API 키 없음 — secrets/comfy-api-key.txt 필요 (또는 regen.mode를 wan으로)')
+
+    const manifest = await readManifest(pid)
+    const personaDir = path.join(LIBRARY, pid)
+    // scene 순서(출생→죽음). 루프 프롬프트에 age가 필요하므로 함께 싣는다.
+    const scenes = (manifest.images || [])
+      .filter((im) => !im.failed)
+      .map((im) => ({ id: im.id, absPath: path.join(personaDir, im.file), scene: im.scene, age: im.age }))
+    regenerator = new VideoRegenerator({
+      host: config.host,
+      regen: montage.regen,
+      personaDir,
+      apiKey: COMFY_API_KEY
+    })
+    const builder = new ReelBuilder({ regenerator, reel: montage.reel, log: logAction })
+
+    if (kind === 'clips') {
+      // 영상 생성(둘 다 장면당 1개): seedance → 10초 루프 | wan → Wan I2V
+      const total = scenes.length
+      videoJob = { pid, kind, phase: 'clip', done: 0, total }
+      logAction(`▶ 영상 생성 시작 [${mode}]: ${manifest.profile?.name || pid} (${total}장)`)
+      const clips = await builder.ensureClips(scenes, {
+        onProgress: (e) => (videoJob = { pid, kind, ...e }),
+        shouldCancel: () => videoCancel
+      })
+      const done = clips.filter(Boolean).length
+      manifest.clips = { mode, done, total, builtAt: new Date().toISOString() }
+      await writeManifest(pid, manifest)
+      videoLast = { pid, kind, ok: true, at: Date.now() }
+      logAction(`✓ 영상 생성 완료: ${pid} — ${done}/${total}`)
+    } else {
+      // 릴 합성: seedance → 루프 이어붙여 fast-forward | wan → 크로스페이드
+      videoJob = { pid, kind, phase: 'concat', done: 0, total: scenes.length }
+      logAction(`▶ 릴 합성 시작 [${mode}]: ${manifest.profile?.name || pid}`)
+      const outPath = path.join(personaDir, 'reel.mp4')
+      const clipPaths = scenes.map((s) => regenerator.cachedPath(s.id))
+      const meta = sd
+        ? await builder.concatSimple(clipPaths, outPath, { onProgress: (e) => (videoJob = { pid, kind, ...e }) })
+        : await builder.concat(clipPaths, outPath, { onProgress: (e) => (videoJob = { pid, kind, ...e }) })
+      manifest.reel = {
+        file: 'reel.mp4',
+        mode,
+        durationSec: meta.durationSec,
+        clipCount: meta.clipCount,
+        builtAt: new Date().toISOString(),
+        rev: (manifest.reel?.rev || 0) + 1 // 캐시 버스팅
+      }
+      await writeManifest(pid, manifest)
+      videoLast = { pid, kind, ok: true, durationSec: meta.durationSec, at: Date.now() }
+      logAction(`✓ 릴 완료: ${pid} — ${meta.durationSec.toFixed(1)}s (${meta.clipCount}개)`)
+    }
+  } catch (err) {
+    const cancelled = Boolean(err.cancelled) || videoCancel
+    videoLast = {
+      pid,
+      kind,
+      ok: false,
+      cancelled,
+      pauseKind: cancelled ? videoCancelKind : null,
+      error: cancelled ? null : String(err.message || err),
+      at: Date.now()
+    }
+    logAction(
+      cancelled
+        ? `⏸ 영상 ${videoCancelKind === 'pause' ? '일시정지' : '중단'}됨: ${kind} ${pid} (만든 클립은 캐시에 남아 재개 가능)`
+        : `✗ 영상 실패: ${kind} ${pid} — ${err.message}`
+    )
+  } finally {
+    regenerator?.close?.()
+    videoBuilding = null
+    videoJob = null
+    videoCancel = false
+    pumpVideo() // 대기열에 남은 게 있으면 이어서
+  }
+}
+
+// 사전 생성된 영상 개수(파일 기준) — UI가 "영상 N/총" 표시에 쓴다. 장면당 1개(루프 또는 Wan 클립).
+function clipStatus(pid, manifest) {
+  const dir = path.join(LIBRARY, pid, 'videos')
+  const imgs = (manifest.images || []).filter((im) => !im.failed)
+  let done = 0
+  for (const im of imgs) if (existsSync(path.join(dir, `${im.id}.mp4`))) done++
+  return { clipsDone: done, clipsTotal: imgs.length, mode: montage.regen.mode }
+}
 
 // 큐 뷰: 아직 안 끝난 것(submitted/generating/error) + 지금 생성 중인 것.
 function queueView() {
@@ -244,9 +373,21 @@ function queueView() {
     }))
 }
 
+// error 프로필 자동 재시도: 세션당 pid별 시도 횟수를 세어 상한까지만 다시 굴린다(무한루프 방지).
+const genAttempts = new Map()
+const MAX_GEN_RETRIES = 2
+
 async function maybeStartNext() {
   if (!firebaseReady || !autoOn || current) return
-  const next = profiles.find((p) => p.status === 'submitted')
+  // submitted 우선, 없으면 상한 안 넘은 error를 재시도 대상으로.
+  let next = profiles.find((p) => p.status === 'submitted')
+  let isRetry = false
+  if (!next) {
+    next = profiles.find(
+      (p) => p.status === 'error' && (genAttempts.get(p.id) || 0) < MAX_GEN_RETRIES
+    )
+    isRetry = Boolean(next)
+  }
   if (!next) return
 
   // current를 첫 await 이전에 동기적으로 세팅 → 재진입(스냅샷/토글) 시 중복 시작 차단.
@@ -258,35 +399,54 @@ async function maybeStartNext() {
     name: next.name || null,
     done: 0,
     total: 0,
-    portraits: 0,
     startedAt: Date.now()
   }
   next.status = 'generating' // 로컬 낙관적 갱신 — 다음 스냅샷 전까지 같은 건 재선택 방지
-  logAction(`▶ 자동 생성 시작: ${currentInfo.name || '?'} (${current})`)
+  if (isRetry) {
+    const n = (genAttempts.get(current) || 0) + 1
+    genAttempts.set(current, n)
+    logAction(`↻ 실패분 자동 재시도 (${n}/${MAX_GEN_RETRIES}): ${currentInfo.name || '?'} (${current})`)
+  } else {
+    logAction(`▶ 자동 생성 시작: ${currentInfo.name || '?'} (${current})`)
+  }
 
+  currentAbort = new AbortController() // 중지 버튼이 이걸 abort 한다
   const res = await processProfile(next, {
     config,
     outDir: LIBRARY,
+    includeErrors: isRetry, // error 프로필을 claim하려면 필요
+    signal: currentAbort.signal,
     log: logAction,
     onProgress: (e) => {
       if (e.type === 'image-done') {
         currentInfo.done = e.done
         currentInfo.total = e.total
-      } else if (e.type === 'portrait-done') {
-        currentInfo.portraits += 1
       }
     }
   })
+  currentAbort = null
 
-  lastResult = { pid: current, ok: res.ok, error: res.error || null, at: Date.now() }
+  lastResult = {
+    pid: current,
+    ok: res.ok,
+    cancelled: res.cancelled || false,
+    error: res.error || null,
+    at: Date.now()
+  }
   logAction(
-    res.ok
-      ? `✓ 자동 생성 완료: ${current}`
-      : `✗ 자동 생성 실패: ${current} — ${res.error || '(claim 실패)'}`
+    res.cancelled
+      ? `⏸ 생성 중지됨: ${current}`
+      : res.ok
+        ? `✓ 자동 생성 완료: ${current}`
+        : `✗ 자동 생성 실패: ${current} — ${res.error || '(claim 실패)'}`
   )
+  if (res.ok) genAttempts.delete(current) // 성공하면 재시도 카운트 리셋
+  // 영상 생성은 자동 트리거하지 않는다 — 이미지 완료 후 연구자가 admin에서 "영상 생성" 버튼으로 시작한다.
   current = null
   currentInfo = null
-  maybeStartNext() // 큐에 남은 게 있으면 이어서
+  // 중지 요청이면 자동으로 다음 걸 시작하지 않는다(사용자가 멈춘 것). autoOn도 함께 끈다.
+  if (res.cancelled) autoOn = false
+  else maybeStartNext() // 큐에 남은 게 있으면 이어서
 }
 
 // Firebase 연결 실패해도 서버는 뜬다(검토 기능만). 큐/자동생성만 비활성화.
@@ -331,6 +491,15 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, data, MIME[path.extname(file)] || 'application/octet-stream')
     }
 
+    // GET /media/{pid}/{...경로} → 영상(Range 지원). 릴=reel.mp4, 클립=videos/<id>.mp4
+    if (req.method === 'GET' && parts[0] === 'media' && parts.length >= 3) {
+      const personaRoot = path.normalize(path.join(LIBRARY, parts[1]))
+      const rel = parts.slice(2).map(decodeURIComponent).join('/')
+      const abs = path.normalize(path.join(personaRoot, rel))
+      if (!abs.startsWith(personaRoot)) return send(res, 403, { error: 'forbidden' }) // 경로 탈출 차단
+      return serveFile(req, res, abs, MIME[path.extname(abs)] || 'application/octet-stream')
+    }
+
     // GET /api/queue → 제출 큐 + 자동생성 상태 + 현재 진행 (어드민 상단 패널이 폴링)
     if (req.method === 'GET' && url.pathname === '/api/queue') {
       // view-only: 생성 주체가 워커라 이 프로세스의 currentInfo가 비어 있다 —
@@ -347,7 +516,6 @@ const server = http.createServer(async (req, res) => {
             name: gen.name || null,
             done: 0,
             total: 0,
-            portraits: 0,
             startedAt: toMillis(gen.generationStartedAt)
           }
         }
@@ -367,7 +535,8 @@ const server = http.createServer(async (req, res) => {
         current,
         currentInfo: info,
         lastResult: last,
-        queue: queueView()
+        queue: queueView(),
+        video: { building: videoBuilding, queue: videoQueue, job: videoJob, last: videoLast }
       })
     }
 
@@ -382,23 +551,76 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { autoOn })
     }
 
-    // GET /api/personas → persona 목록 + 검토 요약
+    // POST /api/stop → 진행 중인 이미지 생성 중지(일시정지). 진행분은 저장되고 status는 submitted로.
+    if (req.method === 'POST' && url.pathname === '/api/stop') {
+      if (!current || !currentAbort) return send(res, 200, { stopped: false, note: '진행 중인 생성 없음' })
+      logAction(`⏸ 중지 요청 → ${currentInfo?.name || current}`)
+      currentAbort.abort()
+      return send(res, 200, { stopped: true, pid: current })
+    }
+
+    // POST /api/video/stop { kind: 'pause'|'stop' } → 진행 중인 영상(클립) 생성 중지.
+    // 만든 클립은 캐시에 남아 "이어서 생성"으로 재개 가능. pause·stop은 라벨만 다르다(둘 다 클립 보존).
+    if (req.method === 'POST' && url.pathname === '/api/video/stop') {
+      if (!videoBuilding) return send(res, 200, { stopped: false, note: '진행 중인 영상 작업 없음' })
+      const { kind = 'stop' } = await readBody(req)
+      videoCancelKind = kind === 'pause' ? 'pause' : 'stop'
+      videoCancel = true
+      logAction(`⏸ 영상 ${videoCancelKind === 'pause' ? '일시정지' : '중단'} 요청 → ${videoBuilding.pid}`)
+      return send(res, 200, { stopped: true, pid: videoBuilding.pid })
+    }
+
+    // POST /api/retry { id } → 실패(error) 프로필을 다시 생성 대기(submitted)로. 재시도 카운트도 리셋.
+    if (req.method === 'POST' && url.pathname === '/api/retry') {
+      if (VIEW_ONLY) return send(res, 400, { error: '뷰어 모드에서는 재실행 불가 (생성은 워커 담당)' })
+      if (!firebaseReady) return send(res, 400, { error: 'Firebase 미연결' })
+      const { id } = await readBody(req)
+      if (!id) return send(res, 400, { error: 'id 필요' })
+      await updateProfileFields(id, { status: 'submitted', error: null })
+      genAttempts.delete(id)
+      if (!autoOn) autoOn = true // 재실행하려면 자동생성이 켜져 있어야 한다
+      logAction(`↻ 수동 재실행 요청: ${id} (submitted로 되돌림)`)
+      maybeStartNext()
+      return send(res, 200, { queued: true, id })
+    }
+
+    // ── 세션 참가자(연구자용 "로그인") ────────────────────────────────
+    // 4창 런타임은 이 선택(_session.json)을 읽어 해당 참가자의 생애를 재생한다.
+    // 선택은 오직 여기(연구자 admin)에서만 이뤄진다 — 4창에는 선택 화면이 뜨지 않는다.
+
+    // GET /api/session → 현재 세션 참가자
+    if (req.method === 'GET' && url.pathname === '/api/session') {
+      return send(res, 200, (await readSession(LIBRARY)) || { personaId: null })
+    }
+
+    // POST /api/session { personaId } → 세션 참가자 설정. 런타임이 IDLE이면 즉시 반영된다.
+    if (req.method === 'POST' && url.pathname === '/api/session') {
+      const { personaId: pid } = await readBody(req)
+      if (!pid) return send(res, 400, { error: 'personaId 필요' })
+      let manifest
+      try {
+        manifest = await readManifest(pid)
+      } catch {
+        return send(res, 404, { error: `persona 없음: ${pid}` })
+      }
+      const sel = await writeSession(LIBRARY, { personaId: pid, name: manifest.profile?.name || null })
+      logAction(`◆ 세션 참가자 설정 → ${sel.name || pid}`)
+      return send(res, 200, sel)
+    }
+
+    // GET /api/personas → persona 목록
     if (req.method === 'GET' && url.pathname === '/api/personas') {
       const out = []
       for (const dirent of await fs.readdir(LIBRARY, { withFileTypes: true }).catch(() => [])) {
         if (!dirent.isDirectory()) continue
         try {
           const m = await readManifest(dirent.name)
-          const count = (status) => m.images.filter((i) => i.status === status).length
           out.push({
             personaId: m.personaId,
             name: m.profile?.name,
             createdAt: m.createdAt,
             workflow: m.workflow,
-            total: m.images.length,
-            pending: count('pending'),
-            approved: count('approved'),
-            rejected: count('rejected')
+            total: m.images.length
           })
         } catch {
           /* manifest 없는 디렉토리는 건너뜀 */
@@ -411,39 +633,27 @@ const server = http.createServer(async (req, res) => {
     if (parts[0] === 'api' && parts[1] === 'personas' && parts[2]) {
       const pid = parts[2]
 
-      if (req.method === 'GET' && parts.length === 3) return send(res, 200, await readManifest(pid))
+      if (req.method === 'GET' && parts.length === 3) {
+        const m = await readManifest(pid)
+        m._clipStatus = clipStatus(pid, m) // 사전 생성 클립 진행도 (영상 패널 표시용)
+        return send(res, 200, m)
+      }
 
-      // 승인된 장면 피드 — 노출 단(threads-prototype 등)이 소비하는 유일한 목록
+      // 장면 피드 — 노출 단(threads-prototype 등)이 소비하는 목록.
+      // 별도 승인 절차 없이 전 장이 기본 노출된다. 문제 장은 재생성으로 그 자리에서 교체.
       if (req.method === 'GET' && parts[3] === 'approved') {
         const m = await readManifest(pid)
         return send(
           res,
           200,
-          m.images
-            .filter((i) => i.status === 'approved')
-            .map((i) => ({ id: i.id, age: i.age, file: i.file, url: `/img/${pid}/${i.file}` }))
+          m.images.map((i) => ({ id: i.id, age: i.age, file: i.file, url: `/img/${pid}/${i.file}` }))
         )
       }
 
-      // 판정 저장: { kind: 'scene'|'portrait', id, status: 'approved'|'rejected'|'pending' }
-      if (req.method === 'POST' && parts[3] === 'review') {
-        const { kind = 'scene', id, status } = await readBody(req)
-        if (!['approved', 'rejected', 'pending'].includes(status))
-          return send(res, 400, { error: 'status 값이 잘못됨' })
-        const manifest = await readManifest(pid)
-        const entry = findEntry(manifest, kind, id)
-        if (!entry) return send(res, 404, { error: `항목 없음: ${kind} ${id}` })
-        entry.status = status
-        await writeManifest(pid, manifest)
-        const label = kind === 'portrait' ? `포트레이트 age-${id}` : `장면 ${id}`
-        logAction(`${pid}  ${ACTION_LABEL[status]}  ${label}`)
-        return send(res, 200, { ok: true, entry })
-      }
-
       // 성별 수정: { gender: 'male'|'female'|null } — 자동 감지가 틀렸을 때 어드민이 바로잡는다.
-      // manifest의 성별과 모든 프롬프트(포트레이트·장면)를 새 성별로 재구성한다.
-      // 이미 생성된 이미지는 그대로 두므로, 틀리게 나온 장은 재생성해야 반영된다
-      // (포트레이트 먼저 → 그 단계 장면 순서). Firestore 프로필에도 역동기화한다.
+      // manifest의 성별과 장면 프롬프트를 새 성별로 재구성한다.
+      // 이미 생성된 이미지는 그대로 두므로, 틀리게 나온 장은 재생성해야 반영된다.
+      // Firestore 프로필에도 역동기화한다.
       if (req.method === 'POST' && parts[3] === 'gender') {
         const { gender = null } = await readBody(req)
         if (![null, 'male', 'female'].includes(gender))
@@ -451,15 +661,13 @@ const server = http.createServer(async (req, res) => {
         const manifest = await readManifest(pid)
         manifest.profile = { ...(manifest.profile || {}), gender }
         manifest.gender = { ...(manifest.gender || {}), value: gender, source: 'manual' }
-        for (const pt of manifest.agePortraits || [])
-          pt.prompt = composeAgePortraitPrompt(manifest.profile, pt.age)
         for (const img of manifest.images || [])
           img.prompt =
             manifest.workflow === 'sdxl'
               ? composeSdxlPrompt(manifest.profile, img)
               : manifest.workflow === 'gemini'
                 ? composeGeminiScenePrompt(manifest.profile, img)
-                : composeKontextPrompt(manifest.profile, img) // kontext·hybrid
+                : composeKontextPrompt(manifest.profile, img) // kontext (구 hybrid 포함)
         await writeManifest(pid, manifest)
         if (firebaseReady && manifest.profile.id) {
           await updateProfileFields(manifest.profile.id, { gender }).catch((err) =>
@@ -471,20 +679,33 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, {
           ok: true,
           gender,
-          note: '성별이 수정되고 프롬프트가 갱신되었습니다. 잘못 생성된 장은 재생성하세요 (포트레이트 먼저, 그다음 그 단계 장면).'
+          note: '성별이 수정되고 프롬프트가 갱신되었습니다. 잘못 생성된 장은 재생성하세요.'
         })
       }
 
-      // 재생성: { kind: 'scene'|'portrait', id } — 동기 처리(장당 ~15초)
+      // 재생성: { id } — 동기 처리(장당 ~15초)
       if (req.method === 'POST' && parts[3] === 'regen') {
-        const { kind = 'scene', id } = await readBody(req)
-        const label = kind === 'portrait' ? `포트레이트 age-${id}` : `장면 ${id}`
-        logAction(`${pid}  ↻ 재생성 시작  ${label}`)
-        const result = await regenerate(pid, kind, id)
+        const { id } = await readBody(req)
+        logAction(`${pid}  ↻ 재생성 시작  장면 ${id}`)
+        const result = await regenerate(pid, id)
         logAction(
-          `${pid}  ↻ 재생성 완료  ${label}  (${(result.entry.elapsedMs / 1000).toFixed(1)}s${result.entry.seed != null ? `, seed ${result.entry.seed}` : ''})`
+          `${pid}  ↻ 재생성 완료  장면 ${id}  (${(result.entry.elapsedMs / 1000).toFixed(1)}s${result.entry.seed != null ? `, seed ${result.entry.seed}` : ''})`
         )
         return send(res, 200, result)
+      }
+
+      // 영상(클립) 생성 — 전 장면을 Wan 클립으로. 비동기 큐 등록(오래 걸림). 진행은 /api/queue의 video로 폴링.
+      if (req.method === 'POST' && parts[3] === 'clips') {
+        await readManifest(pid) // 존재 확인 (없으면 throw → 404/500)
+        enqueueVideo(pid, 'clips')
+        return send(res, 200, { queued: true, pid, kind: 'clips' })
+      }
+
+      // 주마등 릴 합성 — 사전 생성된 클립들을 90초 릴로. 클립이 있어야 함.
+      if (req.method === 'POST' && parts[3] === 'reel') {
+        await readManifest(pid) // 존재 확인
+        enqueueVideo(pid, 'reel')
+        return send(res, 200, { queued: true, pid, kind: 'reel' })
       }
     }
 

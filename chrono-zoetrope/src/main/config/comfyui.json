@@ -5,6 +5,8 @@
   "perStage": 3,
   "outDir": "library",
   "timeoutMs": 300000,
+  "sceneRetries": 1,
+  "$sceneRetries": "장면 생성 실패(타임아웃 등) 시 추가 재시도 횟수. 그래도 실패하면 그 장만 failed로 건너뛰고 계속(admin에서 개별 재생성). 총 시도 = 1 + sceneRetries.",
   "gemini": {
     "model": "gemini-3-pro-image",
     "sceneModel": "gemini-3.1-flash-image",

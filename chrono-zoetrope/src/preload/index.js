@@ -33,6 +33,11 @@ const zoetrope = {
   // 재생/정지 상태 구독.
   onPlayState: (cb) => subscribe(Channels.PLAY_STATE, cb),
 
+  // IMMERSION 영상 배리어 (§7): 프리로드 지시 수신 → 준비 보고 → 동시 시작 수신.
+  onVideoPrepare: (cb) => subscribe(Channels.VIDEO_PREPARE, cb),
+  onVideoCommit: (cb) => subscribe(Channels.VIDEO_COMMIT, cb),
+  sendVideoReady: () => ipcRenderer.send(Channels.VIDEO_READY, { projectorIndex }),
+
   // renderer → main.
   sendInput: (action) => ipcRenderer.send(Channels.INPUT, { action }),
   sendFreezeReady: () => ipcRenderer.send(Channels.FREEZE_READY, { projectorIndex })

@@ -71,23 +71,28 @@ export class GeminiClient {
     return { 'x-goog-api-key': this.apiKey, 'Content-Type': 'application/json' }
   }
 
-  /** 429/5xx·네트워크 오류를 백오프 재시도. 4xx(키·요청 오류)는 즉시 throw. */
-  async #post(path, body, what) {
+  /** 429/5xx·네트워크 오류를 백오프 재시도. 4xx(키·요청 오류)는 즉시 throw.
+   *  signal: 외부 취소(중지 버튼) 신호 — 타임아웃과 합쳐 걸고, 취소되면 재시도 없이 즉시 중단. */
+  async #post(path, body, what, signal) {
     let lastErr = null
     for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+      if (signal?.aborted) throw new Error('취소됨')
       if (attempt > 0) await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt - 1]))
       try {
         const res = await fetch(`${this.host}${path}`, {
           method: 'POST',
           headers: this.#headers(),
           body: JSON.stringify(body),
-          signal: AbortSignal.timeout(this.timeoutMs)
+          signal: signal
+            ? AbortSignal.any([AbortSignal.timeout(this.timeoutMs), signal])
+            : AbortSignal.timeout(this.timeoutMs)
         })
         if (res.ok) return res.json()
         const text = await res.text().catch(() => '')
         lastErr = new Error(`Gemini ${what} 실패: HTTP ${res.status} ${text.slice(0, 500)}`)
         if (res.status !== 429 && res.status < 500) throw lastErr // 재시도 무의미
       } catch (err) {
+        if (signal?.aborted) throw new Error('취소됨') // 사용자 중지 → 재시도 안 함
         if (err === lastErr) throw err
         lastErr = err // 네트워크/타임아웃 → 재시도
       }
@@ -118,7 +123,7 @@ export class GeminiClient {
    * @param {string}   p.model        호출별 모델 오버라이드 (예: 포트레이트는 pro, 장면은 flash)
    * @returns {Promise<Buffer>} 생성된 이미지 (PNG/JPEG 바이너리)
    */
-  async generateImage({ prompt, references = [], aspectRatio = '16:9', imageSize = '2K', model = this.model }) {
+  async generateImage({ prompt, references = [], aspectRatio = '16:9', imageSize = '2K', model = this.model, signal }) {
     const body = {
       contents: [{ parts: [{ text: prompt }, ...references.map(imagePart)] }],
       generationConfig: {
@@ -126,20 +131,28 @@ export class GeminiClient {
         imageConfig: { aspectRatio, imageSize }
       }
     }
-    const out = await this.#post(`/v1beta/models/${model}:generateContent`, body, 'generateContent')
+    // IMAGE_SAFETY(출력 이미지 안전 필터)는 비결정적이라 같은 요청을 한 번 다시 굴리면
+    // 통과하는 경우가 잦다 — 그 경우에만 1회 재시도한다. 프롬프트 차단(candidate 없음)은
+    // 결정적이므로 재시도하지 않는다.
+    let lastErr = null
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const out = await this.#post(`/v1beta/models/${model}:generateContent`, body, 'generateContent', signal)
 
-    const candidate = out.candidates?.[0]
-    if (!candidate) {
-      const block = out.promptFeedback?.blockReason
-      throw new Error(`Gemini 응답에 candidate 없음${block ? ` (차단: ${block})` : ''}: ${JSON.stringify(out).slice(0, 500)}`)
+      const candidate = out.candidates?.[0]
+      if (!candidate) {
+        const block = out.promptFeedback?.blockReason
+        throw new Error(`Gemini 응답에 candidate 없음${block ? ` (차단: ${block})` : ''}: ${JSON.stringify(out).slice(0, 500)}`)
+      }
+      for (const part of candidate.content?.parts || []) {
+        const inline = part.inlineData || part.inline_data
+        if (inline?.data) return Buffer.from(inline.data, 'base64')
+      }
+      lastErr = new Error(
+        `Gemini 응답에 이미지 없음 (finishReason: ${candidate.finishReason || '?'}): ${JSON.stringify(candidate.content || {}).slice(0, 500)}`
+      )
+      if (candidate.finishReason !== 'IMAGE_SAFETY') break
     }
-    for (const part of candidate.content?.parts || []) {
-      const inline = part.inlineData || part.inline_data
-      if (inline?.data) return Buffer.from(inline.data, 'base64')
-    }
-    throw new Error(
-      `Gemini 응답에 이미지 없음 (finishReason: ${candidate.finishReason || '?'}): ${JSON.stringify(candidate.content || {}).slice(0, 500)}`
-    )
+    throw lastErr
   }
 
   /**

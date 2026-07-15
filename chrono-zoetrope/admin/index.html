@@ -17,6 +17,95 @@
         font-size: 14px;
       }
 
+      /* 좌측 persona 사이드바 + 우측 본문 2단 레이아웃 */
+      .app {
+        display: flex;
+        align-items: flex-start;
+      }
+      #sidebar {
+        position: sticky;
+        top: 0;
+        height: 100vh;
+        width: 236px;
+        flex: none;
+        display: flex;
+        flex-direction: column;
+        background: rgba(255, 255, 255, 0.02);
+        border-right: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .content {
+        flex: 1;
+        min-width: 0;
+      }
+      .side-head {
+        padding: 16px 14px 12px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+      }
+      .side-head h1 {
+        font-size: 14px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        margin-bottom: 12px;
+      }
+      #persona-search {
+        width: 100%;
+        background: #1a1a1e;
+        color: #e8e6e3;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 8px;
+        padding: 7px 10px;
+        font-size: 13px;
+      }
+      #persona-search::placeholder {
+        color: rgba(255, 255, 255, 0.35);
+      }
+      .side-list {
+        flex: 1;
+        overflow-y: auto;
+        padding: 8px;
+      }
+      .pitem {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        width: 100%;
+        text-align: left;
+        padding: 9px 11px;
+        margin-bottom: 2px;
+        border-radius: 9px;
+        border: 1px solid transparent;
+        background: transparent;
+        color: inherit;
+        cursor: pointer;
+      }
+      .pitem:hover {
+        background: rgba(255, 255, 255, 0.045);
+      }
+      .pitem.active {
+        background: rgba(255, 190, 80, 0.12);
+        border-color: rgba(255, 190, 80, 0.35);
+      }
+      .pitem .pname {
+        font-size: 13px;
+        font-weight: 600;
+        color: #e8e6e3;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .pitem.active .pname {
+        color: #ffc466;
+      }
+      .pitem .pmeta {
+        font-size: 11px;
+        color: rgba(255, 255, 255, 0.45);
+      }
+      .side-empty {
+        padding: 14px;
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.4);
+      }
+
       header {
         position: sticky;
         top: 0;
@@ -29,37 +118,10 @@
         backdrop-filter: blur(10px);
         border-bottom: 1px solid rgba(255, 255, 255, 0.08);
       }
-      header h1 {
+      .cur-name {
         font-size: 15px;
         font-weight: 600;
         letter-spacing: 0.02em;
-      }
-      header select {
-        background: #1a1a1e;
-        color: #e8e6e3;
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        border-radius: 8px;
-        padding: 6px 10px;
-        font-size: 13px;
-      }
-      .tabs {
-        display: flex;
-        gap: 6px;
-        margin-left: auto;
-      }
-      .tabs button {
-        background: transparent;
-        color: rgba(255, 255, 255, 0.65);
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        border-radius: 8px;
-        padding: 6px 12px;
-        font-size: 12.5px;
-        cursor: pointer;
-      }
-      .tabs button.active {
-        background: #e8e6e3;
-        color: #111;
-        border-color: #e8e6e3;
       }
       .counts {
         font-size: 12.5px;
@@ -78,6 +140,42 @@
       .gender-ctl .gsrc {
         font-size: 11px;
         color: rgba(255, 255, 255, 0.4);
+      }
+
+      /* 세션 참가자(연구자용 "로그인") — 이 참가자의 생애가 4창 런타임에 재생된다. */
+      .session-ctl {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        margin-left: auto;
+        font-size: 12.5px;
+      }
+      .session-label {
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .session-label b {
+        color: #7de08c;
+      }
+      #session-set {
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        padding: 6px 13px;
+        border-radius: 999px;
+        border: 1px solid rgba(110, 220, 130, 0.5);
+        background: transparent;
+        color: #7de08c;
+      }
+      #session-set:hover {
+        background: rgba(110, 220, 130, 0.14);
+      }
+      #session-set:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      .pitem .psession {
+        color: #7de08c;
+        font-weight: 600;
       }
 
       main {
@@ -109,9 +207,6 @@
         flex: none;
         transition: opacity 0.2s ease;
       }
-      .card.portrait {
-        width: 200px;
-      }
       .card img {
         display: block;
         width: 100%;
@@ -119,9 +214,6 @@
         object-fit: cover;
         background: #000;
         cursor: zoom-in;
-      }
-      .card.portrait img {
-        aspect-ratio: 832 / 1152;
       }
       .card .meta {
         display: flex;
@@ -144,18 +236,6 @@
         padding: 3px 8px;
         border-radius: 999px;
       }
-      .badge.pending {
-        background: rgba(255, 190, 80, 0.16);
-        color: #ffc466;
-      }
-      .badge.approved {
-        background: rgba(110, 220, 130, 0.16);
-        color: #7de08c;
-      }
-      .badge.rejected {
-        background: rgba(255, 110, 110, 0.16);
-        color: #ff8585;
-      }
 
       .actions {
         display: flex;
@@ -176,19 +256,30 @@
       .actions button:hover {
         border-color: rgba(255, 255, 255, 0.4);
       }
-      .actions button.ok.on {
-        background: rgba(110, 220, 130, 0.9);
-        color: #0b0b0c;
-        border-color: transparent;
-      }
-      .actions button.no.on {
-        background: rgba(255, 110, 110, 0.9);
-        color: #0b0b0c;
-        border-color: transparent;
-      }
       .actions button:disabled {
         opacity: 0.4;
         cursor: default;
+      }
+
+      .card.failed {
+        border-color: rgba(255, 110, 110, 0.4);
+      }
+      .card-failed {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        aspect-ratio: 1344 / 768;
+        background: repeating-linear-gradient(
+          45deg,
+          rgba(255, 110, 110, 0.06),
+          rgba(255, 110, 110, 0.06) 12px,
+          transparent 12px,
+          transparent 24px
+        );
+        color: rgba(255, 133, 133, 0.85);
+        font-size: 12.5px;
+        font-weight: 600;
       }
 
       .hidden {
@@ -303,6 +394,102 @@
         font-size: 12px;
         color: rgba(255, 255, 255, 0.4);
       }
+      /* 중지/재실행 버튼 */
+      .stop-btn {
+        font-size: 11.5px;
+        font-weight: 600;
+        cursor: pointer;
+        padding: 3px 10px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 110, 110, 0.5);
+        background: transparent;
+        color: #ff8585;
+      }
+      .stop-btn:hover {
+        background: rgba(255, 110, 110, 0.16);
+      }
+      .stop-btn:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      .retry-btn {
+        margin-left: 2px;
+        font-size: 11px;
+        font-weight: 600;
+        cursor: pointer;
+        padding: 2px 8px;
+        border-radius: 999px;
+        border: 1px solid rgba(150, 170, 255, 0.5);
+        background: transparent;
+        color: #a9b8ff;
+      }
+      .retry-btn:hover {
+        background: rgba(150, 170, 255, 0.16);
+      }
+      .retry-btn:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      #queue-now button {
+        margin-left: 6px;
+      }
+
+      /* 주마등 릴 (전 장면 → 90초 단일 영상) */
+      .video-panel {
+        margin-bottom: 28px;
+        padding: 14px 16px;
+        border-radius: 12px;
+        background: rgba(255, 190, 80, 0.05);
+        border: 1px solid rgba(255, 190, 80, 0.18);
+      }
+      .video-head h2 {
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        color: #ffc466;
+        margin-bottom: 12px;
+      }
+      .video-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+      .video-label {
+        font-size: 12.5px;
+        color: rgba(255, 255, 255, 0.6);
+        margin-right: auto; /* 레이블을 왼쪽으로 밀어 버튼들을 오른쪽에 모은다 */
+      }
+      .video-label b {
+        color: #e8e6e3;
+      }
+      /* 노란 계열 기본 버튼(영상 생성/릴 생성). stop-btn(일시정지·중단)은 별도 붉은 스타일 사용. */
+      .video-row button:not(.stop-btn) {
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        padding: 6px 13px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 190, 80, 0.5);
+        background: transparent;
+        color: #ffc466;
+      }
+      .video-row button:not(.stop-btn):hover {
+        background: rgba(255, 190, 80, 0.16);
+      }
+      .video-row button:not(.stop-btn):disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      .video-panel video {
+        display: block;
+        width: 100%;
+        max-width: 720px;
+        border-radius: 10px;
+        background: #000;
+        aspect-ratio: 832 / 480;
+        margin-top: 6px;
+      }
 
       /* 확대 보기 */
       #zoom {
@@ -335,27 +522,35 @@
     </style>
   </head>
   <body>
-    <header>
-      <h1>생애 라이브러리 검토</h1>
-      <select id="persona"></select>
-      <span class="counts" id="counts"></span>
-      <span class="gender-ctl" id="gender-ctl">
-        <label for="gender">성별</label>
-        <select id="gender">
-          <option value="">미지정</option>
-          <option value="male">남성</option>
-          <option value="female">여성</option>
-        </select>
-        <span class="gsrc" id="gender-src"></span>
-      </span>
-      <div class="tabs" id="tabs">
-        <button data-f="all" class="active">전체</button>
-        <button data-f="pending">대기</button>
-        <button data-f="approved">승인</button>
-        <button data-f="rejected">반려</button>
-      </div>
-    </header>
-    <section id="queue-panel" class="hidden">
+    <div class="app">
+      <aside id="sidebar">
+        <div class="side-head">
+          <h1>생애 라이브러리</h1>
+          <input id="persona-search" type="search" placeholder="이름 검색…" autocomplete="off" />
+        </div>
+        <div class="side-list" id="persona-list"></div>
+      </aside>
+      <div class="content">
+        <header>
+          <span class="cur-name" id="cur-name"></span>
+          <span class="counts" id="counts"></span>
+          <span class="gender-ctl" id="gender-ctl">
+            <label for="gender">성별</label>
+            <select id="gender">
+              <option value="">미지정</option>
+              <option value="male">남성</option>
+              <option value="female">여성</option>
+            </select>
+            <span class="gsrc" id="gender-src"></span>
+          </span>
+          <span class="session-ctl" id="session-ctl">
+            <span class="session-label" id="session-label">세션 미설정</span>
+            <button id="session-set" title="이 참가자의 생애를 4창 런타임에서 재생합니다">
+              이 참가자를 세션으로
+            </button>
+          </span>
+        </header>
+        <section id="queue-panel" class="hidden">
       <div class="qhead">
         <h2>생성 큐</h2>
         <span class="now" id="queue-now"></span>
@@ -363,7 +558,9 @@
       </div>
       <div class="qlist" id="queue-list"></div>
     </section>
-    <main id="main"></main>
+        <main id="main"></main>
+      </div>
+    </div>
     <div id="status"></div>
     <div id="zoom">
       <img />
@@ -374,7 +571,24 @@
       const $ = (s, el = document) => el.querySelector(s)
       let pid = null
       let manifest = null
-      let filter = 'all'
+      let personas = [] // 최신 생성순(내림차순) persona 목록 캐시
+      let personaFilter = '' // 사이드바 이름 검색어
+      let sessionPid = null // 현재 세션 참가자 (4창 런타임이 재생 중인 대상)
+      let videoState = null // /api/queue의 video: { building:{pid,kind}, queue, job, last }
+      let lastVideoAt = 0 // 마지막으로 반영한 영상 작업 완료 시각 (완료 감지→manifest 재로딩)
+
+      // 생성 시각 → 상대 표기 (사이드바 큐 정렬 근거를 사람이 읽게)
+      function timeAgo(iso) {
+        const t = new Date(iso).getTime()
+        if (!isFinite(t)) return ''
+        const s = Math.floor((Date.now() - t) / 1000)
+        if (s < 60) return '방금'
+        const m = Math.floor(s / 60)
+        if (m < 60) return `${m}분 전`
+        const h = Math.floor(m / 60)
+        if (h < 24) return `${h}시간 전`
+        return `${Math.floor(h / 24)}일 전`
+      }
 
       const api = (p, opts) =>
         fetch(p, opts).then(async (r) => {
@@ -387,31 +601,55 @@
         $('#status').textContent = t
       }
 
+      // 사이드바 목록 렌더 — 검색어(personaFilter)로 걸러 최신순으로 나열하고
+      // 현재 선택(pid)을 강조한다. 데이터는 personas 캐시에서만 읽어 재호출이 싸다.
+      function renderPersonaList() {
+        const el = $('#persona-list')
+        const q = personaFilter.trim().toLowerCase()
+        const shown = q
+          ? personas.filter((p) => (p.name || p.personaId).toLowerCase().includes(q))
+          : personas
+        if (shown.length === 0) {
+          el.innerHTML = `<div class="side-empty">${
+            personas.length === 0 ? '아직 생성된 persona가 없습니다.' : '검색 결과 없음'
+          }</div>`
+          return
+        }
+        el.innerHTML = shown
+          .map(
+            (p) =>
+              `<button class="pitem${p.personaId === pid ? ' active' : ''}" data-pid="${p.personaId}">` +
+              `<span class="pname">${p.name || p.personaId}</span>` +
+              `<span class="pmeta">${p.total}장 · ${timeAgo(p.createdAt)}` +
+              `${p.personaId === sessionPid ? ' · <span class="psession">● 세션</span>' : ''}</span>` +
+              `</button>`
+          )
+          .join('')
+      }
+
       // keep=true면 현재 보고 있던 persona 선택을 유지한 채 목록만 갱신한다
       // (자동 생성 완료로 새 persona가 들어와도 검토 중이던 화면이 튀지 않도록).
       async function loadPersonas({ keep = false } = {}) {
         const list = await api('/api/personas')
-        const sel = $('#persona')
+        // 최신 생성순(내림차순). createdAt 없는 옛 persona는 뒤로 민다.
+        list.sort((a, b) => (new Date(b.createdAt).getTime() || 0) - (new Date(a.createdAt).getTime() || 0))
+        personas = list
         const prev = pid
-        sel.innerHTML = list
-          .map(
-            (p) =>
-              `<option value="${p.personaId}">${p.name || p.personaId} — ${p.approved}/${p.total} 승인</option>`
-          )
-          .join('')
         if (list.length === 0) {
           pid = null
+          $('#cur-name').textContent = ''
+          renderPersonaList()
           $('#main').innerHTML =
             '<p style="color:#888">라이브러리가 비어 있습니다. 제출을 기다리거나 npm run gen:library 로 생성하세요.</p>'
           return
         }
         if (keep && prev && list.some((p) => p.personaId === prev)) {
           pid = prev
-          sel.value = pid
+          renderPersonaList()
           return // 선택 유지, manifest 재로딩 생략
         }
         pid = list[0].personaId
-        sel.value = pid
+        renderPersonaList()
         await loadManifest()
       }
 
@@ -432,63 +670,75 @@
       }
 
       function counts() {
-        const c = { pending: 0, approved: 0, rejected: 0 }
-        manifest.images.forEach((i) => c[i.status]++)
+        const total = manifest.images.length
+        const failed = manifest.images.filter((im) => im.failed).length
         $('#counts').innerHTML =
-          `대기 <b>${c.pending}</b> · 승인 <b>${c.approved}</b> · 반려 <b>${c.rejected}</b> / ${manifest.images.length}장`
+          `총 <b>${total - failed}</b>장` + (failed ? ` · <b style="color:#ff8585">실패 ${failed}</b>` : '')
       }
 
-      function card(entry, kind) {
+      // 세션 참가자 컨트롤 — 현재 세션 대상과, 보고 있는 참가자를 세션으로 지정하는 버튼.
+      function renderSessionCtl() {
+        const label = $('#session-label')
+        const btn = $('#session-set')
+        if (sessionPid) {
+          const p = personas.find((x) => x.personaId === sessionPid)
+          label.innerHTML = `세션: <b>${p?.name || sessionPid}</b>`
+        } else {
+          label.textContent = '세션 미설정'
+        }
+        btn.disabled = !pid || pid === sessionPid
+        btn.textContent = pid && pid === sessionPid ? '현재 세션' : '이 참가자를 세션으로'
+      }
+
+      // 서버에서 현재 세션 선택을 읽어 온다 (초기 로드 시).
+      async function loadSession() {
+        try {
+          const s = await api('/api/session')
+          sessionPid = s.personaId || null
+        } catch {
+          sessionPid = null // 세션 API가 없는 구버전 서버면 조용히 미설정 처리.
+        }
+        renderSessionCtl()
+        renderPersonaList()
+      }
+
+      // 별도 승인 절차 없음 — 전 장이 기본 노출. 문제 장·실패 장만 재생성으로 교체한다.
+      // failed 장(생성 중 타임아웃 등으로 건너뜀)은 플레이스홀더로 표시하고 재생성 버튼을 노출한다.
+      function card(entry) {
         const div = document.createElement('div')
-        div.className = 'card' + (kind === 'portrait' ? ' portrait' : '')
-        div.dataset.status = entry.status
-        const idLabel = kind === 'portrait' ? `age ${entry.age}` : entry.id
-        const sub =
-          kind === 'portrait'
-            ? '포트레이트 (내부 자산)'
-            : `${entry.age}살 · ${entry.year}${entry.isPast ? '' : ' (미래)'}`
+        div.className = 'card' + (entry.failed ? ' failed' : '')
+        const sub = `${entry.age}살 · ${entry.year}${entry.isPast ? '' : ' (미래)'}`
+        const media = entry.failed
+          ? `<div class="card-failed">생성 실패 — 재생성 필요</div>`
+          : `<img src="${imgUrl(entry)}" loading="lazy" title="${entry.prompt.replaceAll('"', '&quot;')}" />`
         div.innerHTML = `
-        <img src="${imgUrl(entry)}" loading="lazy" title="${entry.prompt.replaceAll('"', '&quot;')}" />
-        <div class="meta"><span class="id">${idLabel}</span><span class="sub">${sub}</span>
-          <span class="badge ${entry.status}">${{ pending: '대기', approved: '승인', rejected: '반려' }[entry.status]}</span></div>
+        ${media}
+        <div class="meta"><span class="id">${entry.id}</span><span class="sub">${sub}</span>${entry.failed ? '<span class="badge error">실패</span>' : ''}</div>
         <div class="actions">
-          <button class="ok ${entry.status === 'approved' ? 'on' : ''}">승인</button>
-          <button class="no ${entry.status === 'rejected' ? 'on' : ''}">반려</button>
           <button class="re">재생성</button>
         </div>`
-        const id = kind === 'portrait' ? entry.age : entry.id
 
-        $('img', div).addEventListener('click', () => {
-          $('#zoom img').src = imgUrl(entry)
-          $('#zoom .cap').textContent = `${idLabel} — ${entry.prompt}`
-          $('#zoom').classList.add('show')
-        })
-        const review = async (status) => {
-          // 같은 버튼 다시 누르면 대기로 되돌림
-          const next = entry.status === status ? 'pending' : status
-          await api(`/api/personas/${pid}/review`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ kind, id, status: next })
+        const imgEl = $('img', div)
+        if (imgEl)
+          imgEl.addEventListener('click', () => {
+            $('#zoom img').src = imgUrl(entry)
+            $('#zoom .cap').textContent = `${entry.id} — ${entry.prompt}`
+            $('#zoom').classList.add('show')
           })
-          entry.status = next
-          render()
-        }
-        $('.ok', div).addEventListener('click', () => review('approved'))
-        $('.no', div).addEventListener('click', () => review('rejected'))
         $('.re', div).addEventListener('click', async () => {
           const btn = $('.re', div)
           btn.disabled = true
           btn.textContent = '생성 중…'
-          setStatus(`${idLabel} 재생성 중 (~15초)`)
+          setStatus(`${entry.id} 재생성 중 (~15초)`)
           try {
             const out = await api(`/api/personas/${pid}/regen`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ kind, id })
+              body: JSON.stringify({ id: entry.id })
             })
             Object.assign(entry, out.entry)
-            setStatus(out.note || `${idLabel} 재생성 완료`)
+            delete entry.failed // 서버가 failed 키를 지워 보내므로 로컬에서도 해제
+            setStatus(`${entry.id} 재생성 완료`)
             render()
           } catch (e) {
             setStatus(`재생성 실패: ${e.message}`)
@@ -500,11 +750,13 @@
       }
 
       function render() {
+        $('#cur-name').textContent = manifest?.profile?.name || pid || ''
         counts()
         renderGender()
+        renderSessionCtl()
         const main = $('#main')
         main.innerHTML = ''
-        // 단계(stageIndex)별로 묶기: 포트레이트 1 + 장면들
+        // 단계(stageIndex)별로 묶기
         const stages = new Map()
         manifest.images.forEach((img) => {
           if (!stages.has(img.stageIndex)) stages.set(img.stageIndex, [])
@@ -517,22 +769,128 @@
           section.innerHTML = `<h2>단계 ${si} — ${age}살 (${scenes[0].year}${scenes[0].isPast ? '' : ', 미래'})</h2>`
           const row = document.createElement('div')
           row.className = 'row'
-          const portrait = (manifest.agePortraits || []).find((p) => p.age === age)
-          if (portrait && (filter === 'all' || portrait.status === filter))
-            row.appendChild(card(portrait, 'portrait'))
-          scenes.forEach((s) => {
-            if (filter === 'all' || s.status === filter) row.appendChild(card(s, 'scene'))
-          })
-          if (row.children.length > 0) {
-            section.appendChild(row)
-            main.appendChild(section)
-          }
+          scenes.forEach((s) => row.appendChild(card(s)))
+          section.appendChild(row)
+          main.appendChild(section)
         }
+        main.insertAdjacentHTML('afterbegin', '<div id="reel-slot"></div>')
+        mountVideo()
       }
 
-      $('#persona').addEventListener('change', (e) => {
-        pid = e.target.value
+      // 주마등 영상 패널 — 2단계. ① 영상(클립) 생성: 전 장면을 Wan 클립으로(N/총). ② 릴 합성:
+      // 사전 생성된 클립을 90초 릴로. 각각 버튼. 진행 상태는 videoState(pollQueue가 갱신).
+      function renderVideo() {
+        if (!pid || !manifest) return ''
+        const cs = manifest._clipStatus || { clipsDone: 0, clipsTotal: manifest.images.length }
+        const reel = manifest.reel
+        const b = videoState && videoState.building // { pid, kind } | null
+        const job = (videoState && videoState.job) || {}
+        const buildingClips = b && b.pid === pid && b.kind === 'clips'
+        const buildingReel = b && b.pid === pid && b.kind === 'reel'
+        const qHas = (kind) => videoState && (videoState.queue || []).some((v) => v.pid === pid && v.kind === kind)
+
+        // ── ① 영상 생성 행 (seedance-flf=전이 | wan=클립) ──
+        const unit = cs.mode === 'seedance' ? '루프' : '클립'
+        let clipRow
+        if (buildingClips) {
+          clipRow =
+            `<span class="video-label">영상 ${unit} <b>${job.done || 0}/${job.total || cs.clipsTotal}</b> 생성 중…</span>` +
+            `<button id="video-pause" class="stop-btn">일시정지</button>` +
+            `<button id="video-stop" class="stop-btn">중단</button>`
+        } else {
+          const label = qHas('clips')
+            ? '대기 중…'
+            : cs.clipsDone === 0
+              ? '영상 생성 시작'
+              : cs.clipsDone < cs.clipsTotal
+                ? `이어서 생성 (${cs.clipsDone}/${cs.clipsTotal})`
+                : '영상 완료 ✓'
+          const done = cs.clipsDone >= cs.clipsTotal && cs.clipsTotal > 0
+          clipRow =
+            `<span class="video-label">영상 ${unit} <b>${cs.clipsDone}/${cs.clipsTotal}</b>${done ? ' · 완료' : ''}</span>` +
+            `<button id="video-genclips"${qHas('clips') || done ? ' disabled' : ''}>${label}</button>`
+        }
+
+        // ── ② 릴 합성 행 ──
+        let reelRow
+        const reelMeta = reel && reel.durationSec ? `${reel.durationSec.toFixed(1)}초 · ${timeAgo(reel.builtAt)}` : '없음'
+        if (buildingReel) {
+          reelRow = `<span class="video-label">릴 합성 중…</span>`
+        } else {
+          const canReel = cs.clipsDone > 0
+          const label = qHas('reel') ? '대기 중…' : reel ? '릴 재생성' : '릴 생성'
+          reelRow =
+            `<span class="video-label">릴 <b>${reelMeta}</b></span>` +
+            `<button id="reel-build"${!canReel || qHas('reel') ? ' disabled' : ''} title="${canReel ? '' : '먼저 영상 클립을 생성하세요'}">${label}</button>`
+        }
+
+        const player =
+          reel && reel.file && !buildingReel
+            ? `<video controls playsinline preload="metadata" src="/media/${pid}/${reel.file}?rev=${reel.rev || 0}"></video>`
+            : ''
+
+        return (
+          `<section class="video-panel"><div class="video-head"><h2>주마등 영상</h2></div>` +
+          `<div class="video-row">${clipRow}</div>` +
+          `<div class="video-row">${reelRow}</div>${player}</section>`
+        )
+      }
+      // #reel-slot 안만 갱신 — 진행률 폴링이 장면 그리드를 건드리지 않게.
+      function mountVideo() {
+        const slot = $('#reel-slot')
+        if (slot) slot.innerHTML = renderVideo()
+      }
+      async function postVideo(path, okMsg, failMsg, body = {}) {
+        try {
+          await api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+          setStatus(okMsg)
+          mountVideo()
+        } catch (e) {
+          setStatus(`${failMsg}: ${e.message}`)
+        }
+      }
+      const genClips = () =>
+        postVideo(`/api/personas/${pid}/clips`, '영상 클립 생성 시작 — 진행은 영상 패널에 표시 (장당 ~1분, 30장이면 수십 분)', '영상 생성 실패')
+      const buildReel = () =>
+        postVideo(`/api/personas/${pid}/reel`, '릴 합성 시작 — 사전 생성된 클립을 90초로 합칩니다', '릴 합성 실패')
+      const pauseVideo = () =>
+        postVideo('/api/video/stop', '일시정지 요청 — 현재 클립까지 마치고 멈춥니다 (이어서 생성 가능)', '일시정지 실패', { kind: 'pause' })
+      const stopVideo = () =>
+        postVideo('/api/video/stop', '중단 요청 — 현재 클립까지 마치고 멈춥니다 (만든 클립은 유지)', '중단 실패', { kind: 'stop' })
+      async function retryProfile(id, btn) {
+        if (btn) {
+          btn.disabled = true
+          btn.textContent = '재실행 중…'
+        }
+        try {
+          await api('/api/retry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) })
+          setStatus(`재실행 요청: ${id} — 다시 생성 대기열로`)
+        } catch (e) {
+          setStatus(`재실행 실패: ${e.message}`)
+        }
+      }
+      // 재렌더되는 버튼들 — 이벤트 위임
+      document.addEventListener('click', (e) => {
+        const t = e.target
+        if (!t) return
+        if (t.id === 'reel-build') buildReel()
+        else if (t.id === 'video-genclips') genClips()
+        else if (t.id === 'video-pause') pauseVideo()
+        else if (t.id === 'video-stop') stopVideo()
+        else if (t.classList.contains('retry-btn')) retryProfile(t.dataset.id, t)
+      })
+
+      // 사이드바에서 persona 선택 (이벤트 위임)
+      $('#persona-list').addEventListener('click', (e) => {
+        const item = e.target.closest('.pitem')
+        if (!item || item.dataset.pid === pid) return
+        pid = item.dataset.pid
+        renderPersonaList() // 강조 즉시 이동
         loadManifest()
+      })
+      $('#persona-search').addEventListener('input', (e) => {
+        personaFilter = e.target.value
+        renderPersonaList()
       })
       $('#gender').addEventListener('change', async (e) => {
         if (!pid || !manifest) return
@@ -549,13 +907,22 @@
           renderGender() // 실패 시 원래 값으로 되돌림
         }
       })
-      $('#tabs').addEventListener('click', (e) => {
-        if (e.target.tagName !== 'BUTTON') return
-        filter = e.target.dataset.f
-        document
-          .querySelectorAll('#tabs button')
-          .forEach((b) => b.classList.toggle('active', b === e.target))
-        render()
+      // 세션 참가자 지정 — 지금 보고 있는 참가자를 4창 런타임 세션으로 설정.
+      $('#session-set').addEventListener('click', async () => {
+        if (!pid) return
+        try {
+          const sel = await api('/api/session', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ personaId: pid })
+          })
+          sessionPid = sel.personaId
+          setStatus(`세션 참가자 → ${sel.name || sel.personaId} (런타임이 IDLE이면 즉시 반영)`)
+          renderSessionCtl()
+          renderPersonaList()
+        } catch (e) {
+          setStatus(`세션 설정 실패: ${e.message}`)
+        }
       })
       $('#zoom').addEventListener('click', () => $('#zoom').classList.remove('show'))
       document.addEventListener('keydown', (e) => {
@@ -565,7 +932,7 @@
       // ── 생성 큐 (collector 제출 → admin 자동 생성) ────────────────────
       let autoOn = true
       let lastCompletionAt = 0
-      let liveSig = '' // 실시간 보기: 마지막으로 그린 manifest의 (포트레이트/장면) 수 — 바뀔 때만 재렌더
+      let liveSig = '' // 실시간 보기: 마지막으로 그린 manifest의 장면 수 — 바뀔 때만 재렌더
       const QLABEL = { submitted: '대기', generating: '생성중', error: '실패' }
 
       async function pollQueue() {
@@ -575,6 +942,31 @@
         } catch {
           return
         }
+
+        // 영상 상태 반영 (Firebase 무관 — 수동 작업도 진행 표시). 완료 감지 시 manifest 재로딩.
+        videoState = data.video || null
+        if (videoState) {
+          const b = videoState.building
+          const relevant =
+            pid && ((b && b.pid === pid) || (videoState.queue || []).some((v) => v.pid === pid))
+          if (relevant) mountVideo()
+          const vl = videoState.last
+          if (vl && vl.at > lastVideoAt) {
+            lastVideoAt = vl.at
+            if (vl.ok && vl.pid === pid)
+              loadManifest().catch(() => {}) // 클립 완료→_clipStatus 갱신, 릴 완료→플레이어
+            else mountVideo()
+            const label = vl.kind === 'reel' ? '릴' : '영상 클립'
+            setStatus(
+              vl.cancelled
+                ? `${label} ${vl.pauseKind === 'pause' ? '일시정지' : '중단'}됨: ${vl.pid}`
+                : vl.ok
+                  ? `${label} 완료: ${vl.pid}${vl.durationSec ? ` (${vl.durationSec.toFixed(1)}초)` : ''}`
+                  : `${label} 실패: ${vl.error}`
+            )
+          }
+        }
+
         const panel = $('#queue-panel')
         // Firebase 미연결이면 큐 패널 숨김 (검토 기능만 사용)
         if (!data.firebaseReady) {
@@ -600,21 +992,31 @@
         const now = $('#queue-now')
         const ci = data.currentInfo
         if (ci) {
-          const parts = []
-          if (ci.portraits) parts.push(`포트레이트 ${ci.portraits}`)
-          if (ci.total) parts.push(`장면 ${ci.done}/${ci.total}`)
-          const prog = parts.length ? ` — ${parts.join(' · ')}` : ''
+          const prog = ci.total ? ` — 장면 ${ci.done}/${ci.total}` : ''
           const watching = ci.personaId && pid === ci.personaId
           now.innerHTML =
             `생성 중 <b>${ci.name || ci.pid}</b>${prog}` +
-            (watching ? '' : ci.personaId ? ` <button id="follow-live">실시간 보기</button>` : '')
+            (watching ? '' : ci.personaId ? ` <button id="follow-live">실시간 보기</button>` : '') +
+            (data.viewOnly ? '' : ` <button id="gen-stop" class="stop-btn">중지</button>`)
           const fl = $('#follow-live')
           if (fl)
             fl.onclick = async () => {
               pid = ci.personaId
-              if ($('#persona').querySelector(`option[value="${pid}"]`)) $('#persona').value = pid
+              renderPersonaList()
               liveSig = ''
               await loadManifest().catch(() => setStatus('아직 첫 장 생성 전입니다 — 곧 나타납니다.'))
+            }
+          const gs = $('#gen-stop')
+          if (gs)
+            gs.onclick = async () => {
+              gs.disabled = true
+              gs.textContent = '중지 중…'
+              try {
+                await api('/api/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+                setStatus('생성 중지 요청 — 현재 장면까지 마치고 멈춥니다 (진행분은 저장·재개 가능)')
+              } catch (e) {
+                setStatus(`중지 실패: ${e.message}`)
+              }
             }
         } else {
           now.textContent = data.queue.some((q) => q.status === 'submitted') ? '대기 중…' : '유휴'
@@ -626,7 +1028,7 @@
         if (ci?.personaId && pid === ci.personaId) {
           api(`/api/personas/${pid}`)
             .then((m) => {
-              const sig = `${(m.agePortraits || []).length}/${m.images.length}`
+              const sig = `${m.images.length}`
               if (sig !== liveSig) {
                 liveSig = sig
                 manifest = m
@@ -634,8 +1036,8 @@
               }
             })
             .catch(() => {}) // 생성 극초반엔 manifest가 아직 없다 — 다음 폴링에서 재시도
-          // 새 persona가 셀렉터에 아직 없으면 목록에 흡수 (검토 중인 선택은 유지)
-          if (!$('#persona').querySelector(`option[value="${ci.personaId}"]`))
+          // 새 persona가 목록에 아직 없으면 흡수 (검토 중인 선택은 유지)
+          if (!personas.some((p) => p.personaId === ci.personaId))
             loadPersonas({ keep: true }).catch(() => {})
         }
 
@@ -648,7 +1050,11 @@
               (q) =>
                 `<div class="qitem" title="${q.error ? q.error.replaceAll('"', '&quot;') : q.id}">` +
                 `<span class="qid">${q.name || q.id}</span>` +
-                `<span class="badge ${q.status}">${QLABEL[q.status] || q.status}</span></div>`
+                `<span class="badge ${q.status}">${QLABEL[q.status] || q.status}</span>` +
+                (q.status === 'error' && !data.viewOnly
+                  ? `<button class="retry-btn" data-id="${q.id}">재실행</button>`
+                  : '') +
+                `</div>`
             )
             .join('')
         }
@@ -674,7 +1080,7 @@
         }
       })
 
-      loadPersonas()
+      loadPersonas().then(loadSession)
       pollQueue()
       setInterval(pollQueue, 2000)
     </script>

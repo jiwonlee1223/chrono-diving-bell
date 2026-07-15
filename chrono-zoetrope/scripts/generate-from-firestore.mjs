@@ -59,7 +59,7 @@ try {
 }
 log(
   `Firebase 연결됨. library=${OUT_DIR}, workflow=${config.workflow}` +
-    (['gemini', 'hybrid'].includes(config.workflow) ? ` gemini=${config.gemini?.model}` : '') +
+    (config.workflow === 'gemini' ? ` gemini=${config.gemini?.model}` : '') +
     (config.workflow === 'gemini' ? '' : ` comfyui=${config.host}`)
 )
 
@@ -78,7 +78,6 @@ const processProfile = (profile) =>
     onProgress: (e) => {
       if (e.type === 'gender-done')
         log(`  성별 자동감지: ${e.gender || '판별 불가'}${e.error ? ` (오류: ${e.error})` : ''}`)
-      else if (e.type === 'portrait-done') log(`  age ${e.age} 포트레이트`)
       else if (e.type === 'image-done') log(`  [${e.item.id}] ${e.done}/${e.total}`)
     }
   })

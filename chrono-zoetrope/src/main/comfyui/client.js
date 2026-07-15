@@ -13,10 +13,12 @@ import { randomUUID } from 'node:crypto'
 const POLL_INTERVAL_MS = 2500
 
 export class ComfyUIClient {
-  constructor({ host, timeoutMs = 300000 } = {}) {
+  /** apiKey: comfy.org API 키 — Seedance 등 API 노드(외부 클라우드 브로커링·과금) 실행에 필요. 로컬 노드만 쓰면 불필요. */
+  constructor({ host, timeoutMs = 300000, apiKey = null } = {}) {
     if (!host) throw new Error('ComfyUIClient: host가 필요하다 (예: http://143.248.107.38:8188)')
     this.host = host.replace(/\/+$/, '')
     this.clientId = randomUUID()
+    this.apiKey = apiKey
     this.timeoutMs = timeoutMs
     this.ws = null
     this.wsListeners = new Set() // (msg) => void — 파싱된 JSON 메시지 구독자
@@ -56,10 +58,16 @@ export class ComfyUIClient {
     const res = await fetch(`${this.host}/prompt`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: workflow, client_id: this.clientId })
+      body: JSON.stringify({
+        prompt: workflow,
+        client_id: this.clientId,
+        // API 노드(ByteDance Seedance 등)는 comfy.org 계정으로 브로커링·과금된다.
+        ...(this.apiKey ? { extra_data: { api_key_comfy_org: this.apiKey } } : {})
+      })
     })
     const out = await this.#json(res, 'prompt')
-    if (!out.prompt_id) throw new Error(`ComfyUI /prompt 응답에 prompt_id 없음: ${JSON.stringify(out).slice(0, 500)}`)
+    if (!out.prompt_id)
+      throw new Error(`ComfyUI /prompt 응답에 prompt_id 없음: ${JSON.stringify(out).slice(0, 500)}`)
     return out.prompt_id
   }
 
@@ -137,12 +145,15 @@ export class ComfyUIClient {
           const hist = await this.getHistory(promptId)
           if (hist && hist.outputs && Object.keys(hist.outputs).length > 0) return succeed(hist)
           if (hist?.status?.status_str === 'error') {
-            return fail(new Error(`ComfyUI 실행 에러: ${JSON.stringify(hist.status).slice(0, 500)}`))
+            return fail(
+              new Error(`ComfyUI 실행 에러: ${JSON.stringify(hist.status).slice(0, 500)}`)
+            )
           }
         } catch {
           // 일시적 네트워크 오류는 다음 폴링에서 재시도
         }
-        if (Date.now() > deadline) return fail(new Error(`ComfyUI 대기 시간 초과 (${this.timeoutMs}ms): ${promptId}`))
+        if (Date.now() > deadline)
+          return fail(new Error(`ComfyUI 대기 시간 초과 (${this.timeoutMs}ms): ${promptId}`))
         if (!settled) pollTimer = setTimeout(checkHistory, POLL_INTERVAL_MS)
       }
 
@@ -184,9 +195,41 @@ export class ComfyUIClient {
       }
     }
     if (images.length === 0) {
-      throw new Error(`ComfyUI 출력에 이미지가 없음: ${promptId} outputs=${JSON.stringify(Object.keys(hist.outputs))}`)
+      throw new Error(
+        `ComfyUI 출력에 이미지가 없음: ${promptId} outputs=${JSON.stringify(Object.keys(hist.outputs))}`
+      )
     }
     return { promptId, images }
+  }
+
+  /**
+   * 원샷 헬퍼: 큐잉 → 완료 대기 → 출력 영상 다운로드 (Wan I2V 등).
+   * SaveVideo·VHS 계열이 history outputs에 쓰는 키가 제각각(images/gifs/videos)이라,
+   * 모든 출력 배열을 훑어 영상 확장자 파일을 회수한다.
+   * @returns {{ promptId: string, videos: Array<{filename, subfolder, type, data: Buffer}> }}
+   */
+  async generateVideo(workflow, { onProgress } = {}) {
+    const promptId = await this.queuePrompt(workflow)
+    const hist = await this.waitForPrompt(promptId, { onProgress })
+    const videos = []
+    for (const nodeOutput of Object.values(hist.outputs)) {
+      for (const arr of Object.values(nodeOutput)) {
+        if (!Array.isArray(arr)) continue
+        for (const file of arr) {
+          if (!file || typeof file.filename !== 'string') continue
+          if (!/\.(mp4|webm|mov|mkv)$/i.test(file.filename)) continue
+          if (file.type && file.type !== 'output') continue
+          const data = await this.fetchImage(file) // /view는 파일 종류 무관
+          videos.push({ ...file, data })
+        }
+      }
+    }
+    if (videos.length === 0) {
+      throw new Error(
+        `ComfyUI 출력에 영상이 없음: ${promptId} outputs=${JSON.stringify(hist.outputs).slice(0, 800)}`
+      )
+    }
+    return { promptId, videos }
   }
 
   /**
@@ -201,7 +244,9 @@ export class ComfyUIClient {
       for (const t of nodeOutput.text || []) if (t) texts.push(String(t))
     }
     if (texts.length === 0) {
-      throw new Error(`ComfyUI 출력에 텍스트가 없음: ${promptId} outputs=${JSON.stringify(Object.keys(hist.outputs))}`)
+      throw new Error(
+        `ComfyUI 출력에 텍스트가 없음: ${promptId} outputs=${JSON.stringify(Object.keys(hist.outputs))}`
+      )
     }
     return { promptId, text: texts.join('\n') }
   }

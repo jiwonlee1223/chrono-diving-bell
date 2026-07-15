@@ -6,7 +6,6 @@
 //   node scripts/generate-life-library.mjs --profile ... --dry-run                          # 플랜만 출력
 //   node scripts/generate-life-library.mjs --profile ... --workflow sdxl                    # 폴백 강제
 //   node scripts/generate-life-library.mjs --profile ... --workflow gemini                  # 전부 Gemini
-//   node scripts/generate-life-library.mjs --profile ... --workflow hybrid                  # 포트레이트만 Gemini, 장면은 kontext
 //
 // 옵션: --host URL, --out DIR, --per-stage N (config/comfyui.json 기본값을 덮어쓴다)
 
@@ -37,7 +36,7 @@ function parseArgs(argv) {
 
 const args = parseArgs(process.argv.slice(2))
 if (!args.profile) {
-  console.error('사용법: node scripts/generate-life-library.mjs --profile <profile.json> [--limit N] [--dry-run] [--workflow auto|kontext|sdxl|gemini|hybrid]')
+  console.error('사용법: node scripts/generate-life-library.mjs --profile <profile.json> [--limit N] [--dry-run] [--workflow auto|kontext|sdxl|gemini]')
   process.exit(1)
 }
 
@@ -82,8 +81,6 @@ const result = await generateLifeLibrary(profile, {
     else if (e.type === 'gender-start') console.log('성별 자동감지 중...')
     else if (e.type === 'gender-done')
       console.log(`성별 자동감지: ${e.gender || '판별 불가'}${e.error ? ` (오류: ${e.error})` : ''}`)
-    else if (e.type === 'portrait-start') console.log(`  age ${e.age} 포트레이트 생성 중...`)
-    else if (e.type === 'portrait-done') console.log(`  age ${e.age} 포트레이트 저장: ${e.file}`)
     else if (e.type === 'image-start') console.log(`[${e.item.id}] age ${e.item.age} 생성 중... (${e.done + 1}/${e.total})`)
     else if (e.type === 'image-done') console.log(`[${e.item.id}] 저장: ${e.file}`)
   }

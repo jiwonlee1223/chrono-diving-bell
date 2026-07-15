@@ -1,0 +1,43 @@
+{
+  "$comment": "주마등 몽타주·멈춤·영상화 연출 파라미터. 시각 파라미터는 bootstrap으로 renderer에 전달된다. frameDurationMs(장당 노출)와 IMMERSION 루프 방식은 실물에서 조율 예정.",
+  "personaId": null,
+  "libraryDir": "library",
+  "frameDurationMs": 300,
+  "mapping": "repeat4",
+  "$mapping": "repeat4 = 이미지를 4사분면에 반복(기본) | front = 정면 사분면만, 나머지 검정. 실린더에서 결정(미결).",
+  "fitMode": "width",
+  "$fitMode": "width = 사분면 폭에 맞춤(상하 레터박스, 원본 구도 보존) | height = 높이에 맞춤(좌우 크롭)",
+  "edgeFeather": 0.05,
+  "blur": {
+    "$comment": "REGEN_WAIT 블러 의례. max=블러 강도(0..1), inSec=멈춤 후 흐려지는 시간, revealSec=영상 준비 후 또렷해지는 시간.",
+    "max": 1.0,
+    "inSec": 2.5,
+    "revealSec": 5.0
+  },
+  "reel": {
+    "$comment": "주마등 릴 — 죽기 직전 스쳐 가는 기억들. 장면당 1개 영상 → 이어붙여 릴. 두 모드(regen.mode): seedance = 장면별 10초 seamless 루프를 순서대로 잇고 targetSec으로 fast-forward | wan = 개별 클립 + 크로스페이드. admin에서 '영상 생성'→'릴 생성' 버튼. targetSec=릴 총길이. crossfadeSec/maxStretch/transition은 wan 전용.",
+    "targetSec": 90,
+    "crossfadeSec": 1.2,
+    "maxStretch": 1.25,
+    "transition": "fade"
+  },
+  "regen": {
+    "$comment": "영상 생성 백엔드. mode: seedance-flf = Seedance FLF 전이(기본, 최대한 seedance — API 노드, comfy.org 키·과금) | wan = 로컬 Wan2.2 I2V(폴백, 무료) | mock = 개발용(서버 없이 폴백). minWaitMs = 캐시 적중 시에도 유지하는 최소 대기(의례). timeoutMs = 클립당 상한.",
+    "mode": "seedance",
+    "mockDelayMs": 12000,
+    "minWaitMs": 8000,
+    "timeoutMs": 240000,
+    "readyTimeoutMs": 15000,
+    "seedance": {
+      "$comment": "Seedance 장면별 10초 seamless 루프(FLF 동일프레임). durationSec=Seedance 4~12s. apiKeyPath=comfy.org 키(secrets, gitignore).",
+      "model": "seedance-1-5-pro-251215",
+      "resolution": "1080p",
+      "durationSec": 10,
+      "apiKeyPath": "./secrets/comfy-api-key.txt"
+    },
+    "wan": {
+      "video": { "width": 832, "height": 480, "length": 81, "fps": 16, "steps": 4, "shift": 5.0 },
+      "promptPrefix": "The scene gently comes alive with subtle natural motion, kept in its elevated high-angle view looking down on the moment from above, as if watching a memory of one's own life pass by below. The central person breathes and moves softly, hair and clothing stir in a faint breeze, ambient life continues around them. Every other person's face stays wiped away and featureless, a soft painterly smudge, and never sharpens into a recognizable face. The camera holds its high vantage nearly still with a very slow drift. Cinematic, realistic, understated motion."
+    }
+  }
+}

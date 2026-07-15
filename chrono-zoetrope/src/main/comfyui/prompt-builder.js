@@ -13,9 +13,12 @@
 //     gender?: 'male'|'female',   — 없으면 레퍼런스 사진에서 자동 감지(gender-detect.js)
 //     descriptors?: string[]      — 향후 더 descriptive한 입력 확장 지점 }
 
-// 라이브러리 전체의 시각적 톤 통일 (Flash Back 자산의 필름 사진 톤을 따른다).
+// 라이브러리 전체의 시각적 톤 통일 (Flash Back 자산의 필름 사진 톤 + 부드럽고 따뜻한 빛).
+// 소용돌이 보케는 빈티지 렌즈 질감 — 프롬프트로 잘 먹힌다. 가장자리 방사형 블러·비네트는
+// 여기 넣지 않는다: 생성 모델이 불안정하게 처리하므로 렌더러 포스트 셰이더에서 건다
+// (FREEZE→IMMERSION에서 블러가 걷히는 전환도 셰이더 유니폼으로 만든다).
 export const STYLE =
-  'candid documentary photograph, cinematic natural light, 35mm film grain, muted colors, shallow depth of field, no text, no watermark'
+  'candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, shallow depth of field with gentle swirly bokeh, photorealistic, no text, no watermark'
 
 // 생애 10단계. Flash Back의 Age Profiles(3~82살)와 같은 골격.
 // {occ}는 직업, 장면 문구는 장소·빛·사물만 — 감정 서술 금지.
@@ -204,83 +207,72 @@ export function subjectNoun(age, gender) {
   return child ? 'child' : 'person'
 }
 
-// 나이대별 구체적 신체 묘사. "나이를 바꿔라"라는 추상 지시는 Kontext가 무시하므로
-// (정체성 보존이 이겨버린다) 바뀌어야 할 물리적 특징을 직접 나열한다. 실서버 검증 결과.
-// 성별 명사를 박아 큰 나이 점프에서 성별이 드리프트하는 것도 같이 막는다.
-function ageTraits(age, gender) {
-  // 아동 명사(boy/girl/child)와 성인 명사(man/woman/person)
-  const c = gender === 'male' ? 'boy' : gender === 'female' ? 'girl' : 'child'
-  const a = gender === 'male' ? 'man' : gender === 'female' ? 'woman' : 'person'
-  if (age <= 4)
-    return `a toddler ${c === 'child' ? '' : `${c} `}with a round baby face, chubby cheeks, large eyes, a tiny nose, a completely smooth face without any facial hair, wispy baby hair`
-  if (age <= 10)
-    return `a young ${c} with a round face, bright eyes, a completely smooth face without any facial hair`
-  if (age <= 16)
-    return `an adolescent ${c === 'child' ? '' : `${c} `}with youthful smooth skin, no facial hair, soft features`
-  if (age <= 22)
-    return c === 'child'
-      ? 'a teenager with smooth youthful skin and a slim face'
-      : `a teenage ${c} with smooth youthful skin and a slim face`
-  if (age <= 40) return `a young ${a === 'person' ? 'adult' : a}`
-  if (age <= 50) return `a middle-aged ${a} with faint wrinkles and mature features`
-  if (age <= 60) return `a middle-aged ${a} with visible wrinkles and graying hair`
-  if (age <= 75) return `an elderly ${a} with wrinkles and gray hair`
-  return `a very old ${a} with deep wrinkles, thin white hair, and age spots`
-}
+// ── 3인칭 관조(부감) 구도 — 크리스마스 캐롤의 스크루지가 자기 삶을 내려다보듯 ──────────
+// 모든 장면은 그 순간을 약간 위에서 내려다보는 3인칭 부감(high angle)으로 본다. 관람객은
+// 자기 삶의 한 장면을 바깥에서, 조금 떨어진 위쪽에서 관조한다. 이 부감 구도가 필수다.
+//  1. 주인공은 화면 중심에 보이고, 자기 얼굴도 드러난다(초점 안).
+//  2. 주인공을 제외한 모든 인물의 얼굴은 붓으로 문질러 지운 듯 매끄럽게 뭉개 흐릿하게 —
+//     특징 없는 얼룩처럼. 기형·왜곡이 아니라(그로테스크 금지) 그저 지워진 붓자국.
+//     "blurry face"라고 직접 쓰면 뭉개진 기형이 나오기 쉬워, smeared / wiped away like a
+//     brushstroke / painterly featureless smudge, not distorted 로 우회해 표현한다.
+// 감각적 지시일 뿐 감정·의미 서술이 아니다(§1). 가장자리 방사형 블러는 렌더러 셰이더 몫.
+// 주의(이력 역전): POV(1인칭·주인공 비가시)에서 이 3인칭 구도로 되돌린 것이라, 아동 나이
+// 얼굴 생성이 걸리던 Gemini IMAGE_SAFETY를 다시 노출할 수 있다. 서버 복구 후 첫 생성에서
+// 아동 단계(3·7·14살) 차단 여부를 반드시 확인할 것.
 
 /**
- * 나이별 포트레이트(1단계)용 지시형 프롬프트 — Flash Back의 Age Profiles에 해당.
- * Kontext는 정체성 보존이 강해 장면 전환과 큰 나이 변화를 한 번에 시키면 나이가 무시된다.
- * 포트레이트만 먼저 나이를 옮겨 놓고, 장면 생성은 그 포트레이트를 레퍼런스로 쓴다(2단계).
+ * Kontext용 장면 프롬프트 — 3인칭 부감 전환. 편집 모델이라 입력(레퍼런스) 이미지가 있어
+ * 주인공 얼굴 정체성을 살릴 수 있으나, 아동 나이에서 IMAGE_SAFETY 위험이 있다 — gemini가 주 경로, 이건 폴백.
  */
-export function composeAgePortraitPrompt(profile, age) {
-  return (
-    `Replace the person with a ${age}-year-old version of the same person: ${ageTraits(age, profile.gender)},` +
-    ` wearing a plain white t-shirt. Keep the same facial identity recognizable.` +
-    ` A neutral studio portrait photograph, plain light gray background, facing the camera,` +
-    ` natural expression, soft even light, photorealistic. no text, no watermark`
-  )
-}
-
-/** Kontext용 장면 프롬프트(2단계) — 나이별 포트레이트의 인물을 장면에 배치. */
 export function composeKontextPrompt(profile, item) {
   const extra = (profile.descriptors || []).join(', ')
-  const who = profile.gender ? `${subjectNoun(item.age, profile.gender)}` : ''
+  const who = `a ${item.age}-year-old ${subjectNoun(item.age, profile.gender)}`
   return (
-    `Place this person, a ${item.age}-year-old${who ? ` ${who}` : ''}, in a new scene: ${item.scene}.` +
-    ` Keep the same facial identity. Full scene visible, person within the environment.` +
+    `Transform this into a high-angle third-person photograph taken from clearly above the scene,` +
+    ` the camera raised well above head height and tilted downward, looking down on the moment from an elevated vantage point,` +
+    ` the floor or ground filling much of the frame, as if observing a memory from above.` +
+    ` ${who} is the central subject, clearly visible in this moment seen from above: ${item.scene}.` +
+    ` Keep this main person's own face visible and in focus.` +
+    ` Every other person's face is wiped away like a smear of paint — smooth, soft, blurred, featureless,` +
+    ` painterly, as if brushed out, not distorted and not grotesque, simply an indistinct smudge.` +
     (extra ? ` ${extra}.` : '') +
     ` ${STYLE}`
   )
 }
 
 /**
- * Gemini 장면 프롬프트(2단계) — 나이별 포트레이트의 인물을 장면에 배치.
- * Kontext보다 지시 이해력이 좋으므로, 얼굴 정체성은 유지하되 헤어·복장·차림새를
- * 장면 맥락(나이·시대·상황)에 맞게 바꾸라는 지시를 함께 준다 —
- * 포트레이트의 흰 티·스튜디오 배경이 장면으로 새는 것을 막는다.
+ * Gemini 장면 프롬프트 — 3인칭 부감(관조) 구도. 크리스마스 캐롤의 스크루지가 자기 삶을
+ * 위에서 내려다보듯, 그 순간을 약간 위·바깥에서 관조한다. 주인공은 보이고 자기 얼굴도 드러나며,
+ * 나머지 인물의 얼굴은 붓으로 지운 듯 뭉갠다. 레퍼런스 이미지는 쓰지 않는다(순수 텍스트→이미지).
  * 미래 단계는 "그럴듯한 미래의 한 순간"으로만 힌트 — 감정·의미 서술은 넣지 않는다(§1).
  */
 export function composeGeminiScenePrompt(profile, item) {
-  const who = `${item.age}-year-old ${subjectNoun(item.age, profile.gender)}`
+  const who = `a ${item.age}-year-old ${subjectNoun(item.age, profile.gender)}`
   const extra = (profile.descriptors || []).join(', ')
   const future = item.isPast
     ? ''
-    : ` This is an imagined moment further along in this person's life — keep the appearance a plausible continuation of the reference.`
+    : ` This is an imagined moment further along in this person's life.`
+  // 샷 타입 선언(강한 부감·3인칭)을 맨 앞에 — 카메라 위치를 먼저 확정해야 모델이 구도를 지킨다.
+  // "slightly/gently"는 모델이 무시하므로(실측 2026-07-13, 전부 눈높이로 나옴) 부감을 분명히 밀어붙인다.
   return (
-    `Using the person in the reference image, create a new photograph of the same person as a ${who} in this scene: ${item.scene}.` +
-    ` Keep the same facial identity and features recognizable.` +
-    ` Change the hairstyle, clothing, and grooming so they naturally fit the scene, the person's age, and the era —` +
-    ` do not keep the plain white t-shirt or the studio background from the reference.` +
+    `High-angle shot, elevated camera. A third-person photograph taken from clearly above the scene:` +
+    ` the camera is raised well above the subject's head and tilted downward, looking down on the moment from an elevated vantage point.` +
+    ` The floor or ground fills much of the frame and we look down onto the scene from above —` +
+    ` as if the viewer were floating a little above and behind, quietly watching a memory of their own life pass by below them.` +
+    ` In the scene, seen from this high angle looking down, ${who} in this moment: ${item.scene}.` +
+    ` This central person is the subject and is clearly visible, their own face shown and in focus.` +
+    ` Every other person in the scene has their face wiped away as if smeared out with a single brushstroke:` +
+    ` smooth, soft, featureless and blurred — painterly, not distorted, not grotesque, simply an indistinct smudge where the face would be,` +
+    ` like a face erased from memory.` +
     future +
     (extra ? ` ${extra}.` : '') +
-    ` Full scene visible, person within the environment. ${STYLE}`
+    ` ${STYLE}`
   )
 }
 
-/** SDXL 폴백용 서술형 프롬프트 — 인물 일관성 없음. */
+/** SDXL 폴백용 서술형 프롬프트 — 3인칭 부감 구도 동일 유지. "high angle"은 SDXL이 잘 아는 태그다. */
 export function composeSdxlPrompt(profile, item) {
   const who = `a ${item.age}-year-old Korean ${subjectNoun(item.age, profile.gender)}`
   const extra = (profile.descriptors || []).join(', ')
-  return `${who}, ${item.scene}${extra ? `, ${extra}` : ''}, ${STYLE}`
+  return `strong high angle shot, elevated camera raised well above and tilted downward looking down on the scene, third person view seen from above, floor and ground filling much of the frame, observing a memory from outside, ${who} as the central subject clearly visible with their own face in focus, ${item.scene}, all other people with faces smeared and wiped away like erased brushstrokes, featureless indistinct smudged faces, not distorted, not grotesque${extra ? `, ${extra}` : ''}, ${STYLE}`
 }

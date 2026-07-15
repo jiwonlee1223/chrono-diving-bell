@@ -31,5 +31,6 @@ export function createPanoramaPreview(projector, material) {
   mesh.frustumCulled = false
   scene.add(mesh)
 
-  return { scene, camera }
+  // mesh를 노출해 상태에 따른 재료 교체(thread ↔ montage)를 실린더와 함께 받게 한다.
+  return { scene, camera, mesh }
 }

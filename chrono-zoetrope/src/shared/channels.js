@@ -26,7 +26,12 @@ export const Channels = Object.freeze({
   VIEW_MODE: 'zoetrope:view-mode', //    main → renderer(전 창 동시): { preview: boolean }
 
   // 재생/정지(Space). main이 유효 시간 모델을 소유·브로드캐스트해 4창 동기(§7). Phase 3 FREEZE 선행.
-  PLAY_STATE: 'zoetrope:play-state' //   main → renderer(전 창 동시): { playing, offset, frozenEff }
+  PLAY_STATE: 'zoetrope:play-state', //   main → renderer(전 창 동시): { playing, offset, frozenEff }
+
+  // IMMERSION 영상 배리어 (§7 FREEZE 배리어와 같은 패턴 — 4창이 같은 순간에 재생을 시작해야 한다).
+  VIDEO_PREPARE: 'zoetrope:video-prepare', // main → renderer: { url, imageId } — 프리로드 지시
+  VIDEO_READY: 'zoetrope:video-ready', //     renderer → main: { projectorIndex } — 재생 가능 보고
+  VIDEO_COMMIT: 'zoetrope:video-commit' //    main → renderer: { startAtMs } — 벽시계 기준 동시 시작
 })
 
 export const InputAction = Object.freeze({

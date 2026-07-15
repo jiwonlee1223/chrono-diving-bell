@@ -1,0 +1,145 @@
+// 몽타주 재료 — 생성 이미지(평면 사진)를 실린더 UV에 매핑하고,
+// 멈춤의 블러(REGEN_WAIT 의례)와 정지 이미지→영상 크로스페이드(IMMERSION)를 셰이더 한 장에서 처리한다.
+//
+// 매핑(미결 — 실린더에서 결정, montage.json mapping):
+//   repeat4 = 같은 이미지를 4사분면(프로젝터 담당 호와 일치)에 반복. 어느 방향을 봐도 그 순간.
+//   front   = 정면(az 0) 사분면만 이미지, 나머지 검정. (thread 앰비언트와의 합성은 추후 옵션.)
+// fit(montage.json fitMode):
+//   width  = 사분면 폭에 맞춤 → 상하 레터박스(원본 구도 보존, §2 위아래 어둠과 어울림)
+//   height = 높이에 맞춤 → 좌우 크롭
+//
+// 블러는 이미지 샘플에만 건다: 영상은 블러가 걷히며 나타나므로("점점 또렷해지면서 영상 재생")
+// 이미지 블러 아웃 + 영상 크로스페이드 인이 겹치면 그 인상이 된다. mip 바이어스 + 포아송 8탭.
+//
+// 시간·상태는 renderer.js가 uniform으로 밀어넣는다. 이 재료는 실린더 메시와 파노라마 프리뷰
+// 쿼드가 공유한다(thread material과 같은 방식) — 두 뷰의 애니메이션이 자동 일치.
+
+import * as THREE from 'three'
+
+const VERT = /* glsl */ `
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`
+
+const FRAG = /* glsl */ `
+  precision highp float;
+  varying vec2 vUv;
+
+  uniform sampler2D uTexImage;  // 현재 몽타주 프레임 (또는 FREEZE로 고정된 순간)
+  uniform sampler2D uTexVideo;  // Wan2.2 재생성 영상 (IMMERSION)
+  uniform float uHasImage;      // 0/1
+  uniform float uHasVideo;      // 0/1
+  uniform float uVideoMix;      // 0..1 정지 이미지 → 영상 크로스페이드
+  uniform float uBlur;          // 0..1 멈춤의 블러 (REGEN_WAIT 의례)
+  uniform float uImageAspect;   // 이미지 w/h
+  uniform float uVideoAspect;   // 영상 w/h
+  uniform float uQuadAspect;    // 사분면 벽 가로/세로 = (2πR/4)/H
+  uniform float uMapping;       // 0 = repeat4, 1 = front
+  uniform float uFit;           // 0 = width(레터박스), 1 = height(크롭)
+  uniform float uEdgeFeather;   // 이미지 가장자리 페더 (어둠 속에 떠 있는 사진)
+
+  // 실린더 UV → 사분면 로컬 x(0..1). 사분면 밖(front 모드)은 -1.
+  float quadLocalX(float u) {
+    if (uMapping < 0.5) return fract((u + 0.125) * 4.0);
+    float t = fract(u + 0.125); // 정면 사분면: t ∈ [0, 0.25)
+    return t < 0.25 ? t * 4.0 : -1.0;
+  }
+
+  // 사분면 로컬 좌표 → 콘텐츠 UV. 화면 밖이면 alpha 0.
+  // aspect별로 이미지/영상이 각자 호출한다 (832×480 영상과 1344×768 이미지의 미세한 비율 차 흡수).
+  vec3 contentUV(float localX, float v, float aspect) {
+    float x = (localX - 0.5) * uQuadAspect; // 높이=1 단위의 벽 좌표
+    float y = v - 0.5;
+    vec2 cuv;
+    if (uFit < 0.5) {
+      float h = uQuadAspect / aspect;       // 폭 맞춤 → 콘텐츠 세로 크기
+      cuv = vec2(localX, y / h + 0.5);
+    } else {
+      cuv = vec2(x / aspect + 0.5, v);      // 높이 맞춤 → 좌우 크롭
+    }
+    float f = uEdgeFeather + uBlur * 0.2;   // 블러 중엔 가장자리도 함께 풀린다
+    float a = smoothstep(0.0, f, cuv.x) * smoothstep(0.0, f, 1.0 - cuv.x)
+            * smoothstep(0.0, f, cuv.y) * smoothstep(0.0, f, 1.0 - cuv.y);
+    return vec3(cuv, a);
+  }
+
+  // 포아송 8탭 + mip 바이어스 블러. blur 0이면 단일 탭.
+  vec3 sampleBlurred(sampler2D tex, vec2 uv, float blur) {
+    vec3 c = texture2D(tex, uv, blur * 5.0).rgb;
+    if (blur < 0.003) return c;
+    float r = blur * 0.05;
+    float b = blur * 5.0;
+    c += texture2D(tex, uv + vec2( 0.527,  0.085) * r, b).rgb;
+    c += texture2D(tex, uv + vec2(-0.040,  0.536) * r, b).rgb;
+    c += texture2D(tex, uv + vec2(-0.670, -0.179) * r, b).rgb;
+    c += texture2D(tex, uv + vec2( 0.324, -0.585) * r, b).rgb;
+    c += texture2D(tex, uv + vec2( 0.876, -0.481) * r, b).rgb;
+    c += texture2D(tex, uv + vec2(-0.591,  0.784) * r, b).rgb;
+    c += texture2D(tex, uv + vec2(-0.940, -0.320) * r, b).rgb;
+    c += texture2D(tex, uv + vec2( 0.086,  0.985) * r, b).rgb;
+    return c / 9.0;
+  }
+
+  void main() {
+    float lx = quadLocalX(vUv.x);
+    if (lx < 0.0 || uHasImage < 0.5) {
+      gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+      return;
+    }
+
+    vec3 iu = contentUV(lx, vUv.y, uImageAspect);
+    vec3 col = sampleBlurred(uTexImage, iu.xy, uBlur) * iu.z;
+
+    if (uHasVideo > 0.5 && uVideoMix > 0.001) {
+      vec3 vu = contentUV(lx, vUv.y, uVideoAspect);
+      vec3 vid = texture2D(uTexVideo, vu.xy).rgb * vu.z;
+      col = mix(col, vid, uVideoMix);
+    }
+
+    gl_FragColor = vec4(col, 1.0);
+  }
+`
+
+export function createMontageMaterial(install, montageConfig) {
+  const { radius, height } = install.cylinder
+  const quadAspect = (2 * Math.PI * radius) / 4 / height // ≈ 0.785 (110cm / 140cm)
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uTexImage: { value: null },
+      uTexVideo: { value: null },
+      uHasImage: { value: 0 },
+      uHasVideo: { value: 0 },
+      uVideoMix: { value: 0 },
+      uBlur: { value: 0 },
+      uImageAspect: { value: 16 / 9 },
+      uVideoAspect: { value: 16 / 9 },
+      uQuadAspect: { value: quadAspect },
+      uMapping: { value: montageConfig?.mapping === 'front' ? 1 : 0 },
+      uFit: { value: montageConfig?.fitMode === 'height' ? 1 : 0 },
+      uEdgeFeather: { value: montageConfig?.edgeFeather ?? 0.05 }
+    },
+    vertexShader: VERT,
+    fragmentShader: FRAG,
+    side: THREE.FrontSide,
+    depthWrite: true
+  })
+}
+
+export function setMontageImage(material, texture) {
+  const u = material.uniforms
+  u.uTexImage.value = texture
+  u.uHasImage.value = texture ? 1 : 0
+  const img = texture?.image
+  if (img?.width && img?.height) u.uImageAspect.value = img.width / img.height
+}
+
+export function setMontageVideo(material, videoTexture) {
+  const u = material.uniforms
+  u.uTexVideo.value = videoTexture
+  u.uHasVideo.value = videoTexture ? 1 : 0
+  const el = videoTexture?.image
+  if (el?.videoWidth) u.uVideoAspect.value = el.videoWidth / el.videoHeight
+}

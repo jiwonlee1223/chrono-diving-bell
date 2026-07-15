@@ -12,8 +12,19 @@ export const MODELS = {
   kontext: 'flux1-dev-kontext_fp8_scaled.safetensors',
   kontextClip: ['clip_l.safetensors', 't5xxl_fp8_e4m3fn.safetensors'],
   kontextVae: 'ae.safetensors',
-  sdxl: 'realvisxlV40_v40LightningBakedvae.safetensors'
+  sdxl: 'realvisxlV40_v40LightningBakedvae.safetensors',
+  // Wan2.2 I2V 14B: high/low noise 2-패스 + lightx2v 4-step 증류 LoRA (실서버 확인, 2026-07).
+  wanHigh: 'wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors',
+  wanLow: 'wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors',
+  wanLoraHigh: 'wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors',
+  wanLoraLow: 'wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors',
+  wanClip: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
+  wanVae: 'wan_2.1_vae.safetensors'
 }
+
+// Wan2.2 공식 템플릿 계열의 표준 네거티브(중국어). 정적 화면·저품질·자막 억제.
+export const WAN_NEGATIVE =
+  '色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走'
 
 export function randomSeed() {
   return Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)
@@ -127,6 +138,167 @@ export function buildKontextWorkflow({
       class_type: 'SaveImage',
       inputs: { images: ['11', 0], filename_prefix: filenamePrefix },
       _meta: { title: 'Save Scene' }
+    }
+  }
+}
+
+/**
+ * Wan2.2 I2V 14B (high/low noise 2-패스) + lightx2v 4-step LoRA: 정지 이미지 → 짧은 영상.
+ * FREEZE 순간의 이미지를 IMMERSION 영상으로 만드는 경로 (§5.2 실시간 재생성의 영상판).
+ *
+ * 구조는 ComfyUI 공식 Wan2.2 I2V 템플릿과 동일:
+ *   high noise 모델이 steps 0→boundaryStep, low noise 모델이 boundaryStep→끝을 이어서 샘플링.
+ *   4-step 증류 LoRA를 양쪽에 걸어 cfg 1·4스텝으로 줄인다 (풀스텝 대비 수 분 → 수십 초).
+ *
+ * @param {object} p
+ * @param {string} p.prompt         모션 프롬프트 (장면 서술 + 움직임)
+ * @param {string} p.startImage     업로드된 시작 이미지 이름 (client.uploadImage 반환값의 name)
+ * @param {number} p.width          16의 배수
+ * @param {number} p.height         16의 배수
+ * @param {number} p.length         프레임 수 (4k+1; 81 = 16fps 약 5초)
+ * @param {number} p.fps            Wan2.2 14B 네이티브 16
+ * @param {number} p.steps          총 스텝 (LoRA 증류 기준 4)
+ * @param {number} p.boundaryStep   high→low 전환 스텝 (steps의 절반)
+ * @param {number} p.shift          ModelSamplingSD3 shift
+ * @param {string} p.filenamePrefix SaveVideo prefix (예: "chrono-zoetrope/p-1a2b/vid-5-1")
+ */
+export function buildWan22I2VWorkflow({
+  prompt,
+  startImage,
+  negative = WAN_NEGATIVE,
+  width = 832,
+  height = 480,
+  length = 81,
+  fps = 16,
+  seed = randomSeed(),
+  steps = 4,
+  boundaryStep = 2,
+  shift = 5.0,
+  loraStrength = 1.0,
+  filenamePrefix
+}) {
+  return {
+    1: {
+      class_type: 'UNETLoader',
+      inputs: { unet_name: MODELS.wanHigh, weight_dtype: 'default' },
+      _meta: { title: 'Load Wan2.2 High Noise' }
+    },
+    2: {
+      class_type: 'UNETLoader',
+      inputs: { unet_name: MODELS.wanLow, weight_dtype: 'default' },
+      _meta: { title: 'Load Wan2.2 Low Noise' }
+    },
+    3: {
+      class_type: 'LoraLoaderModelOnly',
+      inputs: { model: ['1', 0], lora_name: MODELS.wanLoraHigh, strength_model: loraStrength },
+      _meta: { title: '4-step LoRA (high)' }
+    },
+    4: {
+      class_type: 'LoraLoaderModelOnly',
+      inputs: { model: ['2', 0], lora_name: MODELS.wanLoraLow, strength_model: loraStrength },
+      _meta: { title: '4-step LoRA (low)' }
+    },
+    5: {
+      class_type: 'ModelSamplingSD3',
+      inputs: { model: ['3', 0], shift },
+      _meta: { title: 'Shift (high)' }
+    },
+    6: {
+      class_type: 'ModelSamplingSD3',
+      inputs: { model: ['4', 0], shift },
+      _meta: { title: 'Shift (low)' }
+    },
+    7: {
+      class_type: 'CLIPLoader',
+      inputs: { clip_name: MODELS.wanClip, type: 'wan', device: 'default' },
+      _meta: { title: 'Load UMT5' }
+    },
+    8: {
+      class_type: 'CLIPTextEncode',
+      inputs: { text: prompt, clip: ['7', 0] },
+      _meta: { title: 'Motion Prompt' }
+    },
+    9: {
+      class_type: 'CLIPTextEncode',
+      inputs: { text: negative, clip: ['7', 0] },
+      _meta: { title: 'Negative' }
+    },
+    10: {
+      class_type: 'VAELoader',
+      inputs: { vae_name: MODELS.wanVae },
+      _meta: { title: 'Load Wan VAE' }
+    },
+    11: {
+      class_type: 'LoadImage',
+      inputs: { image: startImage },
+      _meta: { title: 'Frozen Moment' }
+    },
+    12: {
+      class_type: 'WanImageToVideo',
+      inputs: {
+        positive: ['8', 0],
+        negative: ['9', 0],
+        vae: ['10', 0],
+        width,
+        height,
+        length,
+        batch_size: 1,
+        start_image: ['11', 0]
+      },
+      _meta: { title: 'Wan I2V Latent' }
+    },
+    13: {
+      class_type: 'KSamplerAdvanced',
+      inputs: {
+        model: ['5', 0],
+        add_noise: 'enable',
+        noise_seed: seed,
+        steps,
+        cfg: 1,
+        sampler_name: 'euler',
+        scheduler: 'simple',
+        positive: ['12', 0],
+        negative: ['12', 1],
+        latent_image: ['12', 2],
+        start_at_step: 0,
+        end_at_step: boundaryStep,
+        return_with_leftover_noise: 'enable'
+      },
+      _meta: { title: 'Sample (high noise)' }
+    },
+    14: {
+      class_type: 'KSamplerAdvanced',
+      inputs: {
+        model: ['6', 0],
+        add_noise: 'disable',
+        noise_seed: seed,
+        steps,
+        cfg: 1,
+        sampler_name: 'euler',
+        scheduler: 'simple',
+        positive: ['12', 0],
+        negative: ['12', 1],
+        latent_image: ['13', 0],
+        start_at_step: boundaryStep,
+        end_at_step: 10000,
+        return_with_leftover_noise: 'disable'
+      },
+      _meta: { title: 'Sample (low noise)' }
+    },
+    15: {
+      class_type: 'VAEDecode',
+      inputs: { samples: ['14', 0], vae: ['10', 0] },
+      _meta: { title: 'Decode' }
+    },
+    16: {
+      class_type: 'CreateVideo',
+      inputs: { images: ['15', 0], fps },
+      _meta: { title: 'Create Video' }
+    },
+    17: {
+      class_type: 'SaveVideo',
+      inputs: { video: ['16', 0], filename_prefix: filenamePrefix, format: 'mp4', codec: 'h264' },
+      _meta: { title: 'Save Video' }
     }
   }
 }
@@ -269,6 +441,100 @@ export function buildSdxlWorkflow({
       class_type: 'SaveImage',
       inputs: { images: ['6', 0], filename_prefix: filenamePrefix },
       _meta: { title: 'Save Scene' }
+    }
+  }
+}
+
+// ── Seedance (ByteDance API 노드 — comfy.org 브로커링, client의 apiKey 필요) ──────────
+// 릴의 "기억→기억" 전이 생성. first/last 프레임으로 두 장면 사이를 모델이 이어준다.
+
+export const SEEDANCE_DEFAULTS = Object.freeze({
+  model: 'seedance-1-5-pro-251215', // 서버 노드 옵션 중 최신 (2026-07 확인)
+  resolution: '1080p',
+  aspectRatio: '16:9'
+})
+
+/**
+ * 루프 컨텍스트 프롬프트 — 한 장면(기억)이 살아 움직이되 처음으로 되돌아오는 seamless 루프.
+ * FLF의 first=last=같은 이미지로 만들면 끝이 시작과 이어져 무한 루프가 된다.
+ * 3인칭 부감·타인 얼굴 지움(붓자국) 유지. 감정·의미 서술 없음(§1).
+ * @param {{ scene: string, age?: number }} s
+ */
+export function composeSeedanceLoopPrompt(s) {
+  const at = s.age != null ? ` — around age ${s.age}` : ''
+  return (
+    `A living memory that breathes and gently loops. This moment${at}: ${s.scene}. ` +
+    `Seen from a slightly elevated high angle looking gently down, quietly observing this life from just above. ` +
+    `The central person breathes and moves softly, hair and clothing stir in a faint breeze, ambient life drifts — ` +
+    `and everything eases back to exactly where it began so the motion loops seamlessly. ` +
+    `Every other person's face stays soft, blurred and indistinct, wiped away like a brushstroke, never sharp. ` +
+    `Warm faded film grain, gentle unhurried motion, cinematic, no text, no captions.`
+  )
+}
+
+/**
+ * (미사용 예정) 전이 프롬프트 — 두 장면을 잇는 morph. 루프 방식으로 전환하며 남겨둠.
+ * @param {{ scene: string, age?: number }} a
+ * @param {{ scene: string, age?: number }} b
+ */
+export function composeSeedanceTransitionPrompt(a, b) {
+  const at = a.age != null ? ` — around age ${a.age}` : ''
+  const bt = b.age != null ? ` — around age ${b.age}` : ''
+  return (
+    `A single life flashing by, one memory dissolving into the next. ` +
+    `The scene begins in this moment — ${a.scene}${at}, held softly for a breath, ` +
+    `then dreamlike melts and transforms into the next memory — ${b.scene}${bt}. ` +
+    `Seen from a slightly elevated high angle looking gently down, quietly observing this life from just above. ` +
+    `The central person is the subject and stays visible; every other person's face remains soft, blurred and indistinct, ` +
+    `wiped away like a brushstroke, never sharp. Warm faded film grain, gentle drifting motion, cinematic, no text, no captions.`
+  )
+}
+
+/**
+ * Seedance first→last 프레임 전이 워크플로우.
+ * @param {object} p
+ * @param {string} p.prompt          composeSeedanceTransitionPrompt 결과
+ * @param {string} p.firstImage      업로드된 시작 장면 이미지 이름
+ * @param {string} p.lastImage       업로드된 도착 장면 이미지 이름
+ * @param {number} p.durationSec     3~12초 (노드 제약)
+ * @param {string} [p.model]
+ * @param {string} [p.resolution]    '480p'|'720p'|'1080p'
+ * @param {number} [p.seed]          0~2147483647 (INT32 — 노드 제약)
+ * @param {string} p.filenamePrefix
+ */
+export function buildSeedanceFLFWorkflow({
+  prompt,
+  firstImage,
+  lastImage,
+  durationSec,
+  model = SEEDANCE_DEFAULTS.model,
+  resolution = SEEDANCE_DEFAULTS.resolution,
+  seed = Math.floor(Math.random() * 2147483647),
+  filenamePrefix = 'chrono-zoetrope/flf'
+}) {
+  return {
+    1: { class_type: 'LoadImage', inputs: { image: firstImage }, _meta: { title: 'First Frame' } },
+    2: { class_type: 'LoadImage', inputs: { image: lastImage }, _meta: { title: 'Last Frame' } },
+    3: {
+      class_type: 'ByteDanceFirstLastFrameNode',
+      inputs: {
+        model,
+        prompt,
+        first_frame: ['1', 0],
+        last_frame: ['2', 0],
+        resolution,
+        aspect_ratio: SEEDANCE_DEFAULTS.aspectRatio,
+        duration: Math.min(12, Math.max(4, Math.round(durationSec))), // Seedance 1.5 Pro 최소 4초
+        seed,
+        camera_fixed: false,
+        watermark: false
+      },
+      _meta: { title: 'Seedance FLF' }
+    },
+    4: {
+      class_type: 'SaveVideo',
+      inputs: { video: ['3', 0], filename_prefix: filenamePrefix, format: 'mp4', codec: 'h264' },
+      _meta: { title: 'Save Transition' }
     }
   }
 }
