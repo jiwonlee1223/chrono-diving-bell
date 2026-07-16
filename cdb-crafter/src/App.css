@@ -47,35 +47,6 @@
   border-color: var(--text);
 }
 
-.onboarding-field {
-  position: relative;
-}
-
-.onboarding-field input {
-  width: 100%;
-}
-
-/* 크롬 등 데스크톱 웹은 date input에 자체 "연도-월-일" 텍스트를 그려서
-   우리가 넣은 커스텀 placeholder와 겹쳐 보인다. 값이 비어있을 때는
-   브라우저 내장 텍스트를 투명 처리해 커스텀 placeholder만 보이게 한다. */
-.onboarding-field input[type="date"].is-empty::-webkit-datetime-edit-year-field,
-.onboarding-field input[type="date"].is-empty::-webkit-datetime-edit-month-field,
-.onboarding-field input[type="date"].is-empty::-webkit-datetime-edit-day-field,
-.onboarding-field input[type="date"].is-empty::-webkit-datetime-edit-text {
-  color: transparent;
-}
-
-.onboarding-date-placeholder {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-muted);
-  font-size: 17px;
-  pointer-events: none;
-}
-
 .onboarding-error {
   color: #b3543f;
   font-size: 13px;

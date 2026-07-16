@@ -61,23 +61,15 @@ export default function Onboarding({ onSubmit }) {
             }}
             autoFocus
           />
-          <div className="onboarding-field">
-            <input
-              type="date"
-              className={birthDate ? "" : "is-empty"}
-              value={birthDate}
-              max={TODAY}
-              onChange={(e) => {
-                setBirthDate(e.target.value);
-                setError("");
-              }}
-            />
-            {/* type="date"는 placeholder를 지원하지 않아 사파리/모바일에서 빈 박스로
-                보이므로, 값이 없을 때만 보이는 가짜 placeholder를 박스 안에 겹쳐 둔다. */}
-            {!birthDate && (
-              <span className="onboarding-date-placeholder">생년월일</span>
-            )}
-          </div>
+          <input
+            type="date"
+            value={birthDate}
+            max={TODAY}
+            onChange={(e) => {
+              setBirthDate(e.target.value);
+              setError("");
+            }}
+          />
           {error && <p className="onboarding-error">{error}</p>}
           <button type="submit">시작하기</button>
         </form>
