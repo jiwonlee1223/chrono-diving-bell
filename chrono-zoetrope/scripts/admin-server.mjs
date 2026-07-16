@@ -176,6 +176,9 @@ async function applySeamFix(pid, manifest, entry, srcBuffer, client) {
     bandPrompt: SEAM_BAND_PROMPT, // 이음매 띠에 인물 안 그리게(기괴함 방지)
     width: manifest.image.width,
     height: manifest.image.height,
+    // 재생성은 현재 config.seamfix를 우선(운영 중 밴드폭 조정 반영), 없으면 생성 당시 manifest 값 → workflow 기본.
+    bandWidth: config.seamfix?.bandWidth ?? manifest.seamfix?.bandWidth,
+    feather: config.seamfix?.feather ?? manifest.seamfix?.feather,
     bandModel: manifest.seamfix?.bandModel || 'flux-fill',
     seed,
     filenamePrefix: `chrono-zoetrope/${pid}/${path.basename(entry.file, '.png')}`

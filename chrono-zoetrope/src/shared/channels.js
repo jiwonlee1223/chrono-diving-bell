@@ -35,7 +35,11 @@ export const Channels = Object.freeze({
 
   // 서버 → 페이지: 참가자(페르소나) 교체 등으로 재생목록이 바뀌었으니 페이지를 새로 부트스트랩하라.
   // Electron에서는 webContents.reload()였다. 웹앱에선 SSE로 알려 페이지가 location.reload().
-  RELOAD: 'zoetrope:reload'
+  RELOAD: 'zoetrope:reload',
+
+  // 서버 → 페이지: reel 데모 시퀀스(테스트 경험). payload: { phase: 'spinup'|'reel', url?, spinupMs? }
+  // spinup=주황 실타래 회전 가속, reel=사전 빌드 reel.mp4 1회 재생 후 멈춤. (§1 긴장 有 — 되돌릴 수 있는 테스트 경로)
+  REEL_DEMO: 'zoetrope:reel-demo'
 })
 
 export const InputAction = Object.freeze({

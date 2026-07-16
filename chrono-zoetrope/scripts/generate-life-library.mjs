@@ -73,6 +73,8 @@ const result = await generateLifeLibrary(profile, {
   perStage,
   limit: args.limit ? parseInt(args.limit, 10) : Infinity,
   image: config.image,
+  panorama: config.panorama, // seamfix 파노라마 크기 (CLI에도 반영)
+  seamfix: config.seamfix, // 이음매 밴드 폭/페더
   timeoutMs: config.timeoutMs,
   gemini: resolveGeminiConfig(config.gemini, root),
   onProgress: (e) => {

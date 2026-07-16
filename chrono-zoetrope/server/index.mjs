@@ -134,8 +134,10 @@ async function applySessionSelection(personaId) {
   }
   const ok = await loadPersona(personaId)
   if (!ok) return
-  console.log('[server] 세션 참가자 반영 → 페이지 재부트스트랩(RELOAD)')
-  broadcast(Channels.RELOAD, {})
+  // 테스트 경험(사용자 확정): 참가자 선택이 곧바로 reel 데모 시퀀스를 트리거한다.
+  // (페이지 리로드 없이 SSE로 구동 — 실타래·reel은 몽타주 텍스처가 필요 없다. 되돌리려면 여기서 RELOAD로.)
+  console.log('[server] 세션 참가자 반영 → reel 데모 트리거')
+  runReelDemo()
 }
 
 // 개발용 뷰 토글: §4.1 프로젝터 예왜곡 렌더 ↔ 펼친 파노라마 프리뷰.
@@ -145,12 +147,36 @@ function toggleDevPreview() {
   broadcast(Channels.VIEW_MODE, { preview: devPreview })
 }
 
+// ── reel 데모 시퀀스(테스트 경험, §1 긴장 有 — 되돌릴 수 있는 경로) ─────
+// 참가자 선택 → 실타래 회전 가속(spinup) → 사전 빌드 reel.mp4 1회 재생.
+const REEL_SPINUP_MS = 3500
+let reelTimer = null
+
+function reelMediaUrl() {
+  if (!library?.dir) return null
+  const p = path.join(library.dir, 'reel.mp4')
+  return existsSync(p) ? toMediaUrl(p) : null
+}
+
+function runReelDemo(spinupMs = REEL_SPINUP_MS) {
+  clearTimeout(reelTimer)
+  const url = reelMediaUrl()
+  if (!url) console.warn('[server] reel 데모: reel.mp4 없음 — spinup만 실행(관리자에서 릴 생성 필요)')
+  console.log(`[server] reel 데모 시작 (spinup ${spinupMs}ms → reel ${url ?? '(없음)'})`)
+  broadcast(Channels.REEL_DEMO, { phase: 'spinup', spinupMs })
+  reelTimer = setTimeout(() => {
+    broadcast(Channels.REEL_DEMO, { phase: 'reel', url })
+  }, spinupMs)
+}
+
 // ── 부트스트랩 페이로드 (Channels.BOOTSTRAP 핸들러 이관) ──────────────
 // 단일 페이지가 4타일을 렌더하므로 projectors 배열 전체를 준다.
 function bootstrapPayload() {
   return {
     projectors: PROJECTORS,
     install: installConfig,
+    // 생성하는 씬 파노라마 비율(4096×1024=4:1). 렌더러가 4타일 가로 정렬 전체 크기를 이 비율에 맞춘다.
+    panorama: comfyuiConfig.panorama ?? null,
     devPreview,
     montage: library
       ? {
@@ -298,6 +324,13 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/view-toggle') {
       toggleDevPreview()
       return sendJson(res, 200, { preview: devPreview })
+    }
+
+    // reel 데모 수동 트리거(테스트용 — 참가자 교체 없이 현재 페르소나로 시퀀스 실행).
+    if (req.method === 'POST' && url.pathname === '/api/reel-demo') {
+      const body = await readBody(req)
+      runReelDemo(Number.isFinite(body?.spinupMs) ? body.spinupMs : undefined)
+      return sendJson(res, 200, { ok: true, reel: reelMediaUrl() })
     }
 
     // ---- 개발용 Space(재생/정지) 트리거도 열어둔다(선택). ----

@@ -31,14 +31,9 @@ THREE.ColorManagement.enabled = false
 // 몽타주 재료를 쓰는 상태들. 나머지는 thread 앰비언트.
 const MONTAGE_STATES = new Set(['ZOETROPE', 'FREEZE', 'REGEN_WAIT', 'IMMERSION'])
 
-// 2×2 타일 배치(window-manager.js의 방위 인접성 유지): P0|P1 위, P2|P3 아래.
-// GL 뷰포트는 원점이 좌하단(y ↑)이므로 위 행 y=halfH, 아래 행 y=0.
-const TILE_GRID = [
-  { col: 0, row: 0 }, // P0 top-left
-  { col: 1, row: 0 }, // P1 top-right
-  { col: 0, row: 1 }, // P2 bottom-left
-  { col: 1, row: 1 } // P3 bottom-right
-]
+// 타일 배치: 프로젝터를 방위 순서대로 가로 한 줄(P0|P1|P2|P3 = 0°|90°|180°|270°).
+// 4타일이 이어진 전체 영역은 생성 씬 파노라마 비율(4096×1024=4:1)에 맞춰 창 안에 레터박스한다
+// → 각 타일은 (파노라마비율 / 타일수) = 1:1. preview 모드면 4슬라이스가 이어져 온전한 파노라마가 된다.
 
 // 선형 트윈 (server 방송이 목표를 주면 로컬로 보간 — 수 ms 오차 허용 구간).
 function makeTween(v = 0) {
@@ -63,6 +58,8 @@ async function main() {
   const boot = await window.zoetrope.getBootstrap()
   const { projectors, install, montage } = boot
   const count = projectors.length // 4
+  // 4타일 이어붙인 전체 영역의 목표 종횡비 = 생성 씬 파노라마 비율. 없으면 count:1(=4:1) 기본.
+  const panoAspect = boot.panorama?.width / boot.panorama?.height || count
 
   const canvas = document.getElementById('view')
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true })
@@ -127,6 +124,14 @@ async function main() {
   const blurCfg = montage?.config?.blur ?? { max: 1.0, inSec: 2.5, revealSec: 5.0 }
   const blur = makeTween(0)
   const videoMix = makeTween(0)
+
+  // ---- reel 데모 시퀀스(테스트 경험, §1 긴장 有 — 되돌릴 수 있게 기존 상태기계와 병존) ----
+  // demoPhase: null(일반) | 'spinup'(실타래 회전 가속) | 'reel'(reel.mp4 1회 재생 후 멈춤).
+  const SPINUP_MAX = 8 // 실타래 회전 최대 배속.
+  let demoPhase = null
+  const threadSpeedMul = makeTween(1) // 실타래 시간 배속(가속 연출).
+  let threadClock = 0 //                로컬 적분 실타래 시계(배속 변화에도 위상 점프 없음).
+  let lastFrameMs = performance.now()
 
   let videoEl = null
   let videoTexture = null
@@ -211,13 +216,87 @@ async function main() {
     }, 4000)
   })
 
+  // 죽기 직전 섬광 — spinup→reel 전환 순간 화면을 짧게 번쩍인다(§관람 연출). Web Animations라 rAF 무관.
+  const flashEl = document.getElementById('flash')
+  function triggerFlash() {
+    flashEl?.animate([{ opacity: 0 }, { opacity: 0.95, offset: 0.18 }, { opacity: 0 }], {
+      duration: 420,
+      easing: 'ease-out'
+    })
+  }
+
+  // ---- reel 데모: reel.mp4 1회 재생(loop 없음) → 끝나면 IDLE 실타래(구름)로 복귀 ----
+  function playReelOnce(url) {
+    teardownVideo()
+    if (!url || !montageMaterial) return // reel 없거나 몽타주 재료 없으면 스킵.
+    videoEl = document.createElement('video')
+    videoEl.muted = true
+    videoEl.loop = false // 1회 재생.
+    videoEl.playsInline = true
+    videoEl.preload = 'auto'
+    videoEl.crossOrigin = 'anonymous' // /media ACAO — WebGL 텍스처 오염 방지.
+    videoEl.src = url
+    videoEl.addEventListener(
+      'canplaythrough',
+      () => {
+        videoTexture = new THREE.VideoTexture(videoEl)
+        videoTexture.colorSpace = THREE.NoColorSpace
+        setMontageVideo(montageMaterial, videoTexture)
+        // reel 표시로 즉시 스냅. rAF 누적 트윈에 의존하지 않아 견고하다.
+        videoMix.v = videoMix.from = videoMix.to = 1
+        triggerFlash() // reel이 드러나는 순간 섬광 — 섬광이 컷을 덮는다.
+        videoEl.play().catch(() => {})
+      },
+      { once: true }
+    )
+    // 끝나면 검정으로 페이드 후 IDLE 실타래(구름)로 복귀. 다음 참가자 대기 상태.
+    videoEl.addEventListener(
+      'ended',
+      () => {
+        videoEl?.pause()
+        tweenTo(videoMix, 0, 1.2) // reel → 검정 페이드
+        tweenTo(threadSpeedMul, 1, 3.0) // 구름 회전 정상 속도로 감속
+        setTimeout(() => {
+          demoPhase = null // 검정에서 실타래(구름) 앰비언트로 (appState=IDLE 따라감)
+          teardownVideo()
+        }, 1200)
+      },
+      { once: true }
+    )
+    videoEl.load()
+  }
+
+  window.zoetrope.onReelDemo?.(({ phase, url, spinupMs } = {}) => {
+    if (phase === 'spinup') {
+      // 실타래 앰비언트로 되돌려 회전을 가속시킨다(주황 구름이 빨라짐).
+      demoPhase = 'spinup'
+      teardownVideo()
+      tweenTo(videoMix, 0, 0.2)
+      tweenTo(blur, 0, 0.2)
+      tweenTo(threadSpeedMul, SPINUP_MAX, Math.max(0.5, (spinupMs ?? 3500) / 1000))
+    } else if (phase === 'reel') {
+      // 가속된 상태에서 reel로 컷 → 1회 재생.
+      demoPhase = 'reel'
+      playReelOnce(url)
+    }
+  })
+
+  // 테스트용 수동 트리거 버튼(좌하단) — 참가자 교체 없이 현재 페르소나로 데모 시퀀스 실행.
+  document.getElementById('demoBtn')?.addEventListener('click', () => {
+    fetch('/api/reel-demo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}'
+    }).catch(() => {})
+  })
+
   // ---- 출력 파이프라인: 타일 사이즈 RT 하나를 4타일이 재사용 ----
 
   // 뷰포트/시저는 CSS(논리) 픽셀 — three.js가 내부에서 pixelRatio를 곱한다.
   // RT는 물리(드로잉버퍼) 픽셀 — pixelRatio가 이미 반영된 값을 그대로 쓴다.
   const size = new THREE.Vector2() // 드로잉버퍼(물리) 크기
-  let tileCssW = 1 // 타일 논리 폭(뷰포트/시저용)
-  let tileCssH = 1
+  // 레터박스된 타일 영역(CSS 픽셀): 가로 count개 정렬, 전체가 panoAspect. originX/Y = 창 안 좌상단 오프셋.
+  const layout = { tileW: 1, tileH: 1, originX: 0, originY: 0 }
   const rt = new THREE.WebGLRenderTarget(2, 2, {
     minFilter: THREE.LinearFilter,
     magFilter: THREE.LinearFilter,
@@ -229,12 +308,27 @@ async function main() {
     const h = window.innerHeight
     renderer.setSize(w, h, false)
     renderer.getDrawingBufferSize(size)
-    tileCssW = Math.max(1, Math.floor(w / 2))
-    tileCssH = Math.max(1, Math.floor(h / 2))
-    // RT는 물리 타일 크기(업스케일 손실 최소화). 카메라 aspect는 타일 비율(= 창 비율).
-    rt.setSize(Math.max(1, Math.floor(size.x / 2)), Math.max(1, Math.floor(size.y / 2)))
-    const aspect = tileCssW / tileCssH
-    cameras.forEach((cam) => updateAspect(cam, aspect))
+    // 전체 타일 영역을 panoAspect 비율로 창에 레터박스. 창이 더 넓으면 높이 기준, 좁으면 폭 기준.
+    let totalW, totalH
+    if (w / h >= panoAspect) {
+      totalH = h
+      totalW = h * panoAspect
+    } else {
+      totalW = w
+      totalH = w / panoAspect
+    }
+    layout.tileW = totalW / count
+    layout.tileH = totalH
+    layout.originX = (w - totalW) / 2
+    layout.originY = (h - totalH) / 2
+    // RT는 물리 타일 크기(업스케일 손실 최소화). CSS→물리 스케일 = 드로잉버퍼/창.
+    const scaleX = size.x / w
+    const scaleY = size.y / h
+    rt.setSize(
+      Math.max(1, Math.round(layout.tileW * scaleX)),
+      Math.max(1, Math.round(layout.tileH * scaleY))
+    )
+    cameras.forEach((cam) => updateAspect(cam, layout.tileW / layout.tileH))
   }
   window.addEventListener('resize', resize)
   resize()
@@ -248,36 +342,55 @@ async function main() {
     for (const p of previews) p.mesh.material = mat
   }
 
-  // 타일 뷰포트(좌하단 원점, CSS 픽셀). col/row 는 화면 기준(row0=위) → GL y 반전.
+  // 타일 뷰포트(좌하단 원점, CSS 픽셀). 가로 한 줄이라 x만 증가, y는 레터박스 오프셋으로 고정.
+  // GL 원점은 좌하단(y↑)이므로 창 상단 기준 originY를 하단 기준으로 뒤집는다.
   function tileRect(i) {
-    const { col, row } = TILE_GRID[i] ?? TILE_GRID[0]
-    const x = col * tileCssW
-    const y = (1 - row) * tileCssH // row0(위) → 아래쪽 큰 y
-    return { x, y, w: tileCssW, h: tileCssH }
+    const x = layout.originX + i * layout.tileW
+    const y = window.innerHeight - (layout.originY + layout.tileH)
+    return { x, y, w: layout.tileW, h: layout.tileH }
   }
 
-  renderer.setAnimationLoop(() => {
+  function frame() {
     const eff = effSeconds()
-    const montageActive = montageMaterial && MONTAGE_STATES.has(appState)
+    // 실타래 시계를 배속만큼 적분(가속 연출). 배속이 변해도 위상 점프 없음.
+    const nowMs = performance.now()
+    const dt = Math.min(0.1, (nowMs - lastFrameMs) / 1000)
+    lastFrameMs = nowMs
+    threadClock += dt * tweenUpdate(threadSpeedMul)
+
+    // demoPhase가 설정되면 데모가 표면을 결정: 'reel'=영상 재료, 그 외=실타래. 없으면 기존 상태기계.
+    const montageActive =
+      demoPhase === 'reel'
+        ? !!montageMaterial
+        : demoPhase === 'spinup'
+          ? false
+          : montageMaterial && MONTAGE_STATES.has(appState)
     setSurfaceMaterial(montageActive ? montageMaterial : threadMaterial)
 
     if (montageActive) {
-      // 몽타주 프레임 선택. FREEZE 후에는 eff가 얼어 있어 같은 식이 멈춘 프레임을 유지한다.
-      const n = montage.playlist.length
-      const durSec = montage.config.frameDurationMs / 1000
-      const frame = ((Math.floor(eff / durSec) % n) + n) % n
-      if (frame !== currentFrame && textures[frame]) {
-        currentFrame = frame
-        setMontageImage(montageMaterial, textures[frame])
+      if (demoPhase === 'reel') {
+        // reel 데모: 영상만(정지 이미지 프레임 갱신 안 함). videoMix가 실타래→reel 크로스페이드.
+        montageMaterial.uniforms.uBlur.value = 0
+        montageMaterial.uniforms.uVideoMix.value = tweenUpdate(videoMix)
+      } else {
+        // 몽타주 프레임 선택. FREEZE 후에는 eff가 얼어 있어 같은 식이 멈춘 프레임을 유지한다.
+        const n = montage.playlist.length
+        const durSec = montage.config.frameDurationMs / 1000
+        const frame = ((Math.floor(eff / durSec) % n) + n) % n
+        if (frame !== currentFrame && textures[frame]) {
+          currentFrame = frame
+          setMontageImage(montageMaterial, textures[frame])
+        }
+        montageMaterial.uniforms.uBlur.value = tweenUpdate(blur)
+        montageMaterial.uniforms.uVideoMix.value = tweenUpdate(videoMix)
       }
-      montageMaterial.uniforms.uBlur.value = tweenUpdate(blur)
-      montageMaterial.uniforms.uVideoMix.value = tweenUpdate(videoMix)
     } else {
-      updateThread(threadMaterial, eff, install)
+      // 실타래 앰비언트. 데모 spinup이면 threadClock이 가속돼 회전이 빨라진다.
+      updateThread(threadMaterial, threadClock, install)
     }
 
-    // 4타일 렌더. 화면 전체를 한 번 검게 클리어한 뒤 타일별로 그린다. (CSS 픽셀 뷰포트)
-    renderer.setViewport(0, 0, tileCssW * 2, tileCssH * 2)
+    // 창 전체를 한 번 검게 클리어(레터박스 여백 포함)한 뒤 타일별로 그린다. (CSS 픽셀 뷰포트)
+    renderer.setViewport(0, 0, window.innerWidth, window.innerHeight)
     renderer.setScissorTest(false)
     renderer.setRenderTarget(null)
     renderer.clear()
@@ -306,7 +419,8 @@ async function main() {
       }
     }
     renderer.setScissorTest(false)
-  })
+  }
+  renderer.setAnimationLoop(frame)
 
   // 리프트 신호 경로(§9 미결). 지금은 수신만 하고 horizon-lock 훅에 전달. 기본 no-op.
   window.zoetrope.onLift?.(({ position } = {}) => {

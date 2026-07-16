@@ -178,7 +178,8 @@ function pick(rand, arr, k) {
  */
 export function buildScenePlan(profile, { perStage = 3, now = new Date() } = {}) {
   const birthYear = parseInt(String(profile.birthDate).slice(0, 4), 10)
-  if (!Number.isFinite(birthYear)) throw new Error(`birthDate 형식이 잘못됨: ${profile.birthDate} (YYYY-MM-DD)`)
+  if (!Number.isFinite(birthYear))
+    throw new Error(`birthDate 형식이 잘못됨: ${profile.birthDate} (YYYY-MM-DD)`)
   const rand = mulberry32(hashString(`${profile.name}|${profile.birthDate}|${profile.occupation}`))
   const currentYear = now.getFullYear()
 
@@ -305,8 +306,9 @@ export function composeSdxlPrompt(profile, item) {
  * 등 배경은 자연히 맞춰지고, 프롬프트는 사람이 끼어들지 않게만 하면 된다.
  */
 export const SEAM_BAND_PROMPT =
-  'seamless continuous background environment, empty, no people, no person, no face, no figure, ' +
-  'plain surfaces and furnishings flowing together, soft warm natural light, 35mm film grain, ' +
+  'seamless continuous plain background surface, a bare wall, blank wallpaper, a simple smooth pillar or column, or empty floor, ' +
+  'empty, no people, no person, no face, no figure, no furniture, no complex objects, no clutter, no detailed items, ' +
+  'one plain uninterrupted surface flowing together, soft warm natural light, 35mm film grain, ' +
   'muted colors, photorealistic, no text'
 
 /**
@@ -335,6 +337,11 @@ export function composePanoramaScenePrompt(profile, item) {
     ` smooth, soft, featureless and blurred, painterly, not distorted, not grotesque, simply an indistinct smudge where the face would be,` +
     ` like a face erased from memory.` +
     ` One continuous unbroken environment with no visible seam, edge or border; the far left and far right flow into one another.` +
+    // 이음매(far-left ≡ far-right wrap)의 '접합선 그 자리'만 단순면(벽·기둥)에 걸리게 한다. 콘텐츠를 엣지에서
+    // 멀리 떼면 큰 민무늬 여백이 생기므로, 장면은 좌우 끝까지 자연스레 채우되 딱 이어지는 선만 단순면이면 된다.
+    ` Only right along the thin vertical line where the far-left and far-right ends join, let the two ends meet on a simple plain surface such as a bare wall or a pillar,` +
+    ` and avoid placing a person's face or a complex detailed object directly across that exact joining line. The rest of the scene, including people and furnishings,` +
+    ` still fills the view naturally all the way to the edges — only the thin joining line itself falls on a plain surface, not a wide empty margin.` +
     future +
     (extra ? ` ${extra}.` : '') +
     ` ${STYLE}` +

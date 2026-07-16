@@ -61,6 +61,7 @@ export async function generateLifeLibrary(profile, opts = {}) {
     sceneRetries = 1, // 장면 생성 실패 시 추가 재시도 횟수 (총 시도 = 1 + sceneRetries)
     signal, //          외부 취소(중지 버튼) — 장면 사이·생성 요청에서 확인해 중단한다
     gemini = {},
+    seamfix = {}, //     이음매 밴드 { bandWidth, feather } — 미지정 키는 workflow 기본(256/96)
     onProgress = () => {}
   } = opts
 
@@ -125,7 +126,9 @@ export async function generateLifeLibrary(profile, opts = {}) {
     workflow: mode,
     image: effImage,
     ...(useGeminiScene ? { gemini: { model: gclient.model, sceneModel, imageSize } } : {}),
-    ...(isSeamfix ? { seamfix: { bandModel: 'flux-fill' } } : {}),
+    ...(isSeamfix
+      ? { seamfix: { bandModel: 'flux-fill', bandWidth: seamfix.bandWidth, feather: seamfix.feather } }
+      : {}),
     // 사진 바이너리는 제외하고 경로만 기록
     profile: { ...profile, photos: profile.photos || [] },
     images: []
@@ -247,6 +250,8 @@ export async function generateLifeLibrary(profile, opts = {}) {
               bandPrompt: SEAM_BAND_PROMPT, // 이음매 띠에 인물 안 그리게(기괴함 방지)
               width: effImage.width,
               height: effImage.height,
+              bandWidth: seamfix.bandWidth, // config 미지정이면 workflow 기본(256)
+              feather: seamfix.feather, //   config 미지정이면 workflow 기본(96)
               bandModel: 'flux-fill',
               seed,
               filenamePrefix: `chrono-zoetrope/${pid}/${item.id}`

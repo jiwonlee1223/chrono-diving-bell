@@ -85,6 +85,7 @@ export function installZoetropeWeb() {
     onPlayState: (cb) => on(Channels.PLAY_STATE, cb),
     onVideoPrepare: (cb) => on(Channels.VIDEO_PREPARE, cb),
     onVideoCommit: (cb) => on(Channels.VIDEO_COMMIT, cb),
+    onReelDemo: (cb) => on(Channels.REEL_DEMO, cb),
 
     // page → server.
     sendInput: (action) => postJson('/api/input', { action }),

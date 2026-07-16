@@ -37,7 +37,7 @@ const FRAG = /* glsl */ `
   uniform float uImageAspect;   // 이미지 w/h
   uniform float uVideoAspect;   // 영상 w/h
   uniform float uQuadAspect;    // 사분면 벽 가로/세로 = (2πR/4)/H
-  uniform float uMapping;       // 0 = repeat4, 1 = front
+  uniform float uMapping;       // 0 = repeat4, 1 = front, 2 = panorama(360°에 한 번 감김)
   uniform float uFit;           // 0 = width(레터박스), 1 = height(크롭)
   uniform float uEdgeFeather;   // 이미지 가장자리 페더 (어둠 속에 떠 있는 사진)
 
@@ -84,14 +84,40 @@ const FRAG = /* glsl */ `
   }
 
   void main() {
+    bool hasContent = uHasImage > 0.5 || (uHasVideo > 0.5 && uVideoMix > 0.001);
+
+    // panorama(uMapping=2): 하나의 파노라마/reel이 360°(전 타일)에 한 번 감긴다.
+    // 방위 u를 텍스처 x에 1:1 대응 → 4타일이 4:1 한 장을 90°씩 나눠 갖는다(반복 없음).
+    // 텍스처 비율 = 타일 레이아웃 비율(둘 다 파노라마 비율)이라 세로는 그대로 채운다(레터박스 없음).
+    if (uMapping > 1.5) {
+      if (!hasContent) {
+        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+      }
+      vec2 cuv = vec2(fract(vUv.x), vUv.y);
+      vec3 pcol = vec3(0.0);
+      if (uHasImage > 0.5) pcol = sampleBlurred(uTexImage, cuv, uBlur);
+      if (uHasVideo > 0.5 && uVideoMix > 0.001) {
+        vec3 pvid = texture2D(uTexVideo, cuv).rgb;
+        pcol = mix(pcol, pvid, uVideoMix);
+      }
+      gl_FragColor = vec4(pcol, 1.0);
+      return;
+    }
+
     float lx = quadLocalX(vUv.x);
-    if (lx < 0.0 || uHasImage < 0.5) {
+    // 이미지도 영상도 없으면(또는 사분면 밖이면) 검정. 영상만 있어도(reel 데모) 렌더한다.
+    if (lx < 0.0 || !hasContent) {
       gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
       return;
     }
 
-    vec3 iu = contentUV(lx, vUv.y, uImageAspect);
-    vec3 col = sampleBlurred(uTexImage, iu.xy, uBlur) * iu.z;
+    // 이미지가 있으면 그 위에서 시작, 없으면 검정에서 영상으로.
+    vec3 col = vec3(0.0);
+    if (uHasImage > 0.5) {
+      vec3 iu = contentUV(lx, vUv.y, uImageAspect);
+      col = sampleBlurred(uTexImage, iu.xy, uBlur) * iu.z;
+    }
 
     if (uHasVideo > 0.5 && uVideoMix > 0.001) {
       vec3 vu = contentUV(lx, vUv.y, uVideoAspect);
@@ -117,7 +143,9 @@ export function createMontageMaterial(install, montageConfig) {
       uImageAspect: { value: 16 / 9 },
       uVideoAspect: { value: 16 / 9 },
       uQuadAspect: { value: quadAspect },
-      uMapping: { value: montageConfig?.mapping === 'front' ? 1 : 0 },
+      uMapping: {
+        value: montageConfig?.mapping === 'panorama' ? 2 : montageConfig?.mapping === 'front' ? 1 : 0
+      },
       uFit: { value: montageConfig?.fitMode === 'height' ? 1 : 0 },
       uEdgeFeather: { value: montageConfig?.edgeFeather ?? 0.05 }
     },

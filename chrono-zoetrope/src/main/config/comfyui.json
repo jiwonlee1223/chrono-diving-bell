@@ -5,6 +5,8 @@
   "$workflow": "seamfix(B안): Gemini 1인칭 360° 파노라마 생성 + ComfyUI Flux Fill 이음매 보정. panorama 크기는 아래 override(없으면 2048×1024).",
   "$panorama": "seamfix 파노라마 크기. 비율에 맞는 Gemini aspectRatio가 자동 선택된다(4096×1024→4:1). 넓히려면 여기만 조정.",
   "panorama": { "width": 4096, "height": 1024 },
+  "$seamfix": "이음매 보정 밴드. bandWidth=이음매(좌우 wrap 접합부)를 Flux Fill로 덮어써 재생성하는 세로 띠 폭(px, panorama.width 기준). 넓힐수록 사람·복잡 가구가 이음매에 남을 확률↓, 단 단순면(벽/기둥) 스트립이 더 넓게 들어가고 inpaint 자국 위험↑. 4096 기준 256=6.25%(±11°), 384=9.4%(±17°), 512=12.5%(±22°). feather=띠 좌우 블렌드 폭(px).",
+  "seamfix": { "bandWidth": 256, "feather": 96 },
   "perStage": 3,
   "outDir": "library",
   "timeoutMs": 300000,

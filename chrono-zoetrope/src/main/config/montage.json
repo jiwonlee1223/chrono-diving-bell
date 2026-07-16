@@ -3,8 +3,8 @@
   "personaId": null,
   "libraryDir": "library",
   "frameDurationMs": 300,
-  "mapping": "repeat4",
-  "$mapping": "repeat4 = 이미지를 4사분면에 반복(기본) | front = 정면 사분면만, 나머지 검정. 실린더에서 결정(미결).",
+  "mapping": "panorama",
+  "$mapping": "panorama = 하나의 파노라마/reel이 360°(전 4타일)에 한 번 감김 — 4타일이 4:1 한 장을 90°씩 나눠 가짐(seamless 파노라마 페르소나 기본) | repeat4 = 이미지를 4사분면에 반복(비파노라마/legacy — 어느 방향이든 같은 순간) | front = 정면 사분면만.",
   "fitMode": "width",
   "$fitMode": "width = 사분면 폭에 맞춤(상하 레터박스, 원본 구도 보존) | height = 높이에 맞춤(좌우 크롭)",
   "edgeFeather": 0.05,
@@ -22,8 +22,8 @@
     "transition": "fade"
   },
   "regen": {
-    "$comment": "영상 생성 백엔드. mode: seedance-flf = Seedance FLF 전이(기본, 최대한 seedance — API 노드, comfy.org 키·과금) | wan = 로컬 Wan2.2 I2V(폴백, 무료) | mock = 개발용(서버 없이 폴백). minWaitMs = 캐시 적중 시에도 유지하는 최소 대기(의례). timeoutMs = 클립당 상한.",
-    "mode": "seedance",
+    "$comment": "영상 생성 백엔드. mode: wan = 로컬 Wan2.2 I2V(현재 기본 — 종횡비 제한 없어 4:1 seamless 파노라마 그대로 애니메이션) | seedance = ByteDance Seedance FLF 루프(API 노드·과금, 단 지원 종횡비 16:9~21:9뿐이라 4:1 파노라마 입력 거부됨) | mock = 개발용(서버 없이 폴백). minWaitMs = 캐시 적중 시에도 유지하는 최소 대기(의례). timeoutMs = 클립당 상한.",
+    "mode": "wan",
     "mockDelayMs": 12000,
     "minWaitMs": 8000,
     "timeoutMs": 240000,
@@ -36,7 +36,9 @@
       "apiKeyPath": "./secrets/comfy-api-key.txt"
     },
     "wan": {
-      "video": { "width": 832, "height": 480, "length": 81, "fps": 16, "steps": 4, "shift": 5.0 },
+      "$video": "4:1 = seamless 360° 파노라마(4096×1024) 비율 유지. 1920×480은 16의 배수·720p와 동일 latent 비용. 비파노라마(1.79) 페르소나엔 좌우 늘어남 — 파노라마 구도 기준값. width/height는 16의 배수.",
+      "$length": "영상 길이(초) = length/fps. length는 반드시 4k+1(4의 배수+1). 목표초 → round((초×fps-1)/4)×4+1. 예: 5s=81, 10s=161. 주의: 프레임 2배면 생성시간·VRAM 대략 2배(1920×480×161 ≈ 290s/클립), Wan2.2는 ~5s(81f) 학습이라 그 이상은 모션이 늘어지거나 반복될 수 있음. IMMERSION은 어차피 loop 재생이라 length는 '반복 주기'.",
+      "video": { "width": 1920, "height": 480, "length": 161, "fps": 16, "steps": 4, "shift": 5.0 },
       "promptPrefix": "The scene gently comes alive with subtle natural motion, kept in its elevated high-angle view looking down on the moment from above, as if watching a memory of one's own life pass by below. The central person breathes and moves softly, hair and clothing stir in a faint breeze, ambient life continues around them. Every other person's face stays wiped away and featureless, a soft painterly smudge, and never sharpens into a recognizable face. The camera holds its high vantage nearly still with a very slow drift. Cinematic, realistic, understated motion."
     }
   }
