@@ -1,15 +1,5 @@
 import { useState } from "react";
-
-function calculateAge(birthDateStr) {
-  const birth = new Date(birthDateStr);
-  const today = new Date();
-  let age = today.getFullYear() - birth.getFullYear();
-  const hasHadBirthdayThisYear =
-    today.getMonth() > birth.getMonth() ||
-    (today.getMonth() === birth.getMonth() && today.getDate() >= birth.getDate());
-  if (!hasHadBirthdayThisYear) age -= 1;
-  return age;
-}
+import { calculateAge } from "../stageUtils";
 
 const TODAY = new Date().toISOString().slice(0, 10);
 
@@ -17,8 +7,11 @@ export default function Onboarding({ onSubmit }) {
   const [name, setName] = useState("");
   const [birthDate, setBirthDate] = useState("");
   const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
-  function handleSubmit(e) {
+  // onSubmit은 기존 프로필을 불러오는 비동기 작업이라 실패할 수 있다.
+  // 실패하면 { error } 를 돌려받아 폼에 그대로 보여주고 다시 입력할 수 있게 한다.
+  async function handleSubmit(e) {
     e.preventDefault();
 
     if (!name.trim()) {
@@ -36,7 +29,13 @@ export default function Onboarding({ onSubmit }) {
       return;
     }
 
-    onSubmit({ name: name.trim(), birthDate, age });
+    setSubmitting(true);
+    setError("");
+    const result = await onSubmit({ name: name.trim(), birthDate, age });
+    if (result?.error) {
+      setError(result.error);
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -71,7 +70,9 @@ export default function Onboarding({ onSubmit }) {
             }}
           />
           {error && <p className="onboarding-error">{error}</p>}
-          <button type="submit">시작하기</button>
+          <button type="submit" className="onboarding-submit" disabled={submitting}>
+            {submitting ? "확인하는 중..." : "시작하기"}
+          </button>
         </form>
       </div>
     </div>

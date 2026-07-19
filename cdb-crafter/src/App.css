@@ -53,7 +53,7 @@
   margin: 0;
 }
 
-.onboarding-card button {
+.onboarding-submit {
   padding: 14px 16px;
   border-radius: 6px;
   border: none;
@@ -446,7 +446,7 @@
   font-weight: 500;
 }
 
-/* ---------- Branch picker modal ---------- */
+/* ---------- Session menu (로그인 후 3항목 선택 화면) ---------- */
 .branch-picker-desc {
   color: var(--text-muted);
   font-size: 13px;
@@ -478,6 +478,11 @@
   text-align: left;
 }
 
+.branch-picker-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .branch-picker-dot {
   width: 10px;
   height: 10px;
@@ -498,13 +503,26 @@
   color: var(--text);
 }
 
-.branch-picker-hint {
-  font-size: 12px;
-  color: var(--text-muted);
+.branch-picker-item.is-active {
+  background: var(--text);
+  border-color: var(--text);
+}
+
+.branch-picker-item.is-active .branch-picker-label {
+  color: var(--on-text);
+  font-weight: 600;
+}
+
+.branch-picker-item.is-done {
+  opacity: 0.7;
+}
+
+.branch-picker-item.is-locked {
+  opacity: 0.35;
 }
 
 .branch-picker-check {
   font-size: 13px;
-  color: var(--text-muted);
+  color: var(--accent);
 }
 

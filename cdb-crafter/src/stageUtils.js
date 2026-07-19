@@ -11,6 +11,17 @@ export const COLUMN_LABELS = [
 
 export const COLUMN_COUNT = COLUMN_LABELS.length;
 
+export function calculateAge(birthDateStr) {
+  const birth = new Date(birthDateStr);
+  const today = new Date();
+  let age = today.getFullYear() - birth.getFullYear();
+  const hasHadBirthdayThisYear =
+    today.getMonth() > birth.getMonth() ||
+    (today.getMonth() === birth.getMonth() && today.getDate() >= birth.getDate());
+  if (!hasHadBirthdayThisYear) age -= 1;
+  return age;
+}
+
 // 세로축 단위: 나이대가 아니라 인생의 생애주기(mode of life)로 구분한다.
 export const LIFE_STAGES = [
   { id: "protect", label: "보호기", sublabel: "0~7세", maxAge: 7 },
@@ -35,20 +46,11 @@ export function computeStages(age) {
   }));
 }
 
-// 현재 이후 갈라지는 네 갈래의 미래 (각 갈래 모두 같은 3개 시기를 공유하며, 이 순서대로 안내한다)
-export const BRANCH_DEFS = [
-  { id: "normal", label: "평범한 미래", prompt: "평범한 미래를 상상하며 그려주세요." },
-  { id: "positive", label: "긍정적 미래", prompt: "긍정적인 미래를 상상하며 그려주세요." },
-  { id: "negative", label: "부정적 미래", prompt: "부정적인 미래를 상상하며 그려주세요." },
-  { id: "unexpected", label: "예기치못한 미래", prompt: "예기치못한 미래를 상상하며 그려주세요." },
-];
+// 미래는 이제 타입을 구분하지 않는다. 한 번 로그인할 때마다(=한 세션마다) 미래를 하나씩
+// 이어 그리고, 최대 세 번까지 쌓인다. 각 세션의 미래는 색으로만 구분한다.
+export const MAX_FUTURE_SESSIONS = 3;
 
-export const BRANCH_COLORS = {
-  positive: "#3fc5ff",
-  negative: "#c774ff",
-  normal: "#ffcf5c",
-  unexpected: "#4ff0a8",
-};
+export const FUTURE_COLORS = ["#ffcf5c", "#3fc5ff", "#c774ff"];
 
 // 과거~현재(pastStages) 이후 남은 생애주기 단계 전부를 미래로 넘긴다 — 보간하지 않으므로
 // "정착기" 같은 단계가 계산 중 건너뛰어지는 일이 없다. 모든 갈래가 이 같은 시점들을 공유한다.

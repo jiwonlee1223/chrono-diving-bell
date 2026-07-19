@@ -1,98 +1,146 @@
 import { useEffect, useState } from "react";
 import Onboarding from "./components/Onboarding";
+import SessionMenu from "./components/SessionMenu";
 import LifeGraph from "./components/LifeGraph";
 import PointModal from "./components/PointModal";
-import BranchPickerModal from "./components/BranchPickerModal";
 import SubmitConfirmModal from "./components/SubmitConfirmModal";
 import {
   computeStages,
   computeFutureStages,
-  BRANCH_DEFS,
-  BRANCH_COLORS,
+  calculateAge,
+  MAX_FUTURE_SESSIONS,
+  FUTURE_COLORS,
 } from "./stageUtils";
-import { saveLifeGraph } from "./saveLifeGraph";
+import {
+  loadProfile,
+  personaIdFor,
+  saveInitialProfile,
+  saveFollowUpSession,
+  SESSION_KEYS,
+} from "./saveLifeGraph";
 import "./App.css";
 
-function noop() {}
-
-function makeEmptyBranches() {
-  const entries = BRANCH_DEFS.map((b) => [b.id, { points: {}, activeIndex: 0 }]);
-  return Object.fromEntries(entries);
+// pointsMap(과거~현재~미래가 뒤섞인 세션 전체 점)에서 stageList에 속한 것만 골라낸다.
+function pickPoints(pointsMap, stageList) {
+  const out = {};
+  stageList.forEach((s) => {
+    if (pointsMap?.[s.id]) out[s.id] = pointsMap[s.id];
+  });
+  return out;
 }
 
 function App() {
+  // screen: "login" -> "menu" -> "draw" -> "saved"
+  const [screen, setScreen] = useState("login");
+
   const [profile, setProfile] = useState(null); // { name, birthDate, age }
+  const [personaId, setPersonaId] = useState("");
   const [stages, setStages] = useState(null);
-  const [points, setPoints] = useState({});
+
+  // 기존에 저장된 세션들 (다시 로그인했을 때 불러온 것) — [pointsMap, ...],
+  // 각 pointsMap은 과거~현재~그때의 미래 점을 통째로 담고 있다. 이 세션에서 절대 다시 쓰지 않는다.
+  const [existingSessions, setExistingSessions] = useState([]);
+
+  // 이번에 그리는 미래가 몇 번째인지 (0-based). 0이면 과거~현재도 이번 세션에서 그린다.
+  const [sessionFutureIndex, setSessionFutureIndex] = useState(0);
+
+  const [points, setPoints] = useState({}); // 과거~현재 점 (session 1에서만 편집됨)
+  const [futurePoints, setFuturePoints] = useState({}); // 이번 세션에서 그리는 미래의 점
   const [activeIndex, setActiveIndex] = useState(0); // 과거~현재 구간 안에서의 위치
+  const [futureActiveIndex, setFutureActiveIndex] = useState(0); // 미래 구간 안에서의 위치
 
   // focusZone: 지금 커서가 과거~현재 쪽에 있는지, 미래 쪽에 있는지
   const [focusZone, setFocusZone] = useState("main"); // "main" | "future"
-  const [currentBranchId, setCurrentBranchId] = useState(BRANCH_DEFS[0].id);
-  const [branches, setBranches] = useState(makeEmptyBranches);
-  const [branchPickerOpen, setBranchPickerOpen] = useState(false);
+
   const [confirmSubmitOpen, setConfirmSubmitOpen] = useState(false);
-  const [submitted, setSubmitted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
 
-  // { branchId: null | string, stageId } — null branchId면 과거~현재 그래프의 점
+  // { zone: "main" | "future", stageId }
   const [modal, setModal] = useState(null);
 
-  // 미래 쪽에 있거나 미래를 고르는 모달이 떠 있을 때 다크 모드 — 과거/현재로 돌아가면 바로 라이트 모드로 복귀한다.
+  const mainInteractive = sessionFutureIndex === 0;
+
+  // 미래 쪽에 있을 때만 다크 모드 — 로그인/메뉴/저장완료 화면과 과거~현재 구간은 항상 라이트 모드.
   useEffect(() => {
-    if (focusZone === "future" || branchPickerOpen) {
+    if (screen === "draw" && focusZone === "future") {
       document.documentElement.setAttribute("data-theme", "dark");
     } else {
       document.documentElement.removeAttribute("data-theme");
     }
-  }, [focusZone, branchPickerOpen]);
+  }, [screen, focusZone]);
 
-  function handleOnboardingSubmit({ name, birthDate, age }) {
-    setProfile({ name, birthDate, age });
-    setStages(computeStages(age));
-    setPoints({});
-    setActiveIndex(0);
-    setFocusZone("main");
-    setCurrentBranchId(BRANCH_DEFS[0].id);
-    setBranches(makeEmptyBranches());
-    setBranchPickerOpen(false);
-    setConfirmSubmitOpen(false);
-    setSubmitted(false);
-    setSubmitting(false);
-    setSubmitError("");
+  // ---------- 로그인 (이름+생년월일로 기존 프로필을 찾아오거나 새로 시작) ----------
+  async function handleOnboardingSubmit({ name, birthDate, age }) {
+    const id = personaIdFor({ name, birthDate });
+    try {
+      const data = await loadProfile(id);
+      if (data) {
+        // 예전 스키마로 만들어진 문서는 age가 없을 수 있다 — 그럴 때만 다시 계산한다.
+        const age = typeof data.age === "number" ? data.age : calculateAge(birthDate);
+        setProfile({ name, birthDate, age });
+        setStages(computeStages(age));
+        setExistingSessions(SESSION_KEYS.map((key) => data[key]).filter(Boolean));
+      } else {
+        setProfile({ name, birthDate, age });
+        setStages(computeStages(age));
+        setExistingSessions([]);
+      }
+      setPersonaId(id);
+      setScreen("menu");
+    } catch (err) {
+      console.error(err);
+      return { error: "정보를 불러오는 중 문제가 발생했어요. 다시 시도해주세요." };
+    }
   }
 
-  // ---------- 점 찍기 / 모달 열기 (과거~현재, 미래 갈래 공통) ----------
+  // ---------- 메뉴에서 그릴 세션 선택 ----------
+  function handleSelectSession(index) {
+    const isMain = index === 0;
+    setSessionFutureIndex(index);
+    setPoints(
+      isMain ? {} : pickPoints(existingSessions[existingSessions.length - 1], stages),
+    );
+    setFuturePoints({});
+    setActiveIndex(0);
+    setFutureActiveIndex(0);
+    setFocusZone(isMain ? "main" : "future");
+    setModal(null);
+    setConfirmSubmitOpen(false);
+    setSubmitError("");
+    setScreen("draw");
+  }
+
+  // ---------- 점 찍기 / 모달 열기 ----------
+  // LifeGraph는 그 순간의 유일한 interactive 시리즈에 대해서만 셀 클릭을 보내므로
+  // (과거~현재 세션이면 "main", 아니면 이번 세션의 미래) 여기선 그 둘만 구분하면 된다.
   function handleCellClick(seriesId, stageId, col) {
     if (seriesId === "main") {
       setPoints((prev) => ({
         ...prev,
         [stageId]: { ...(prev[stageId] || {}), x: col },
       }));
-      setModal({ branchId: null, stageId });
+      setModal({ zone: "main", stageId });
       return;
     }
-    setBranches((prev) => ({
+    setFuturePoints((prev) => ({
       ...prev,
-      [seriesId]: {
-        ...prev[seriesId],
-        points: {
-          ...prev[seriesId].points,
-          [stageId]: { ...(prev[seriesId].points[stageId] || {}), x: col },
-        },
-      },
+      [stageId]: { ...(prev[stageId] || {}), x: col },
     }));
-    setModal({ branchId: seriesId, stageId });
+    setModal({ zone: "future", stageId });
   }
 
+  const currentFutureId = `future-${sessionFutureIndex}`;
+
   function handlePointClick(seriesId, stageId) {
-    // main 시리즈의 점이거나, 갈래들이 공유하는 "현재" 지점이면 과거~현재 데이터를 보여준다.
+    // main 시리즈의 점이거나, 모든 시리즈가 공유하는 "현재" 지점이면 과거~현재 데이터.
     if (seriesId === "main" || stageId === presentStage.id) {
-      setModal({ branchId: null, stageId });
+      if (!mainInteractive) return; // 잠긴 과거/현재는 탭해도 안 열린다.
+      setModal({ zone: "main", stageId });
       return;
     }
-    setModal({ branchId: seriesId, stageId });
+    if (seriesId !== currentFutureId) return; // 이전 세션에 그린 미래는 잠겨 있다.
+    setModal({ zone: "future", stageId });
   }
 
   // ---------- 이전 / 다음 ----------
@@ -101,54 +149,48 @@ function App() {
       setActiveIndex((i) => Math.max(0, i - 1));
       return;
     }
-    const branchActiveIndex = branches[currentBranchId].activeIndex;
-    if (branchActiveIndex === 0) {
-      // 갈래의 첫 단계에서 한 번 더 이전 -> 현재로 되돌아간다.
-      setFocusZone("main");
-      setActiveIndex(stages.length - 1);
+    if (futureActiveIndex === 0) {
+      if (mainInteractive) {
+        setFocusZone("main");
+        setActiveIndex(stages.length - 1);
+      }
       return;
     }
-    setBranches((prev) => ({
-      ...prev,
-      [currentBranchId]: { ...prev[currentBranchId], activeIndex: branchActiveIndex - 1 },
-    }));
+    setFutureActiveIndex((i) => i - 1);
   }
 
   function handleNext() {
     if (focusZone === "main") {
       if (activeIndex < stages.length - 1) {
         setActiveIndex((i) => i + 1);
-      } else if (futureStages.length > 0) {
-        // 현재에서 한 번 더 다음 -> 어떤 미래를 그릴지 모달로 선택하게 한다.
-        setBranchPickerOpen(true);
+      } else {
+        setFocusZone("future");
       }
       return;
     }
-    const branchActiveIndex = branches[currentBranchId].activeIndex;
-    if (branchActiveIndex < futureStages.length - 1) {
-      setBranches((prev) => ({
-        ...prev,
-        [currentBranchId]: { ...prev[currentBranchId], activeIndex: branchActiveIndex + 1 },
-      }));
-      return;
+    if (futureActiveIndex < futureStages.length - 1) {
+      setFutureActiveIndex((i) => i + 1);
     }
-    // 이 갈래를 완성했다 -> 다른 미래를 고를 수 있도록 다시 선택 모달을 연다.
-    setBranchPickerOpen(true);
-  }
-
-  function handleChooseBranch(branchId) {
-    setCurrentBranchId(branchId);
-    setFocusZone("future");
-    setBranchPickerOpen(false);
   }
 
   async function handleConfirmSubmit() {
     setSubmitting(true);
     setSubmitError("");
     try {
-      await saveLifeGraph({ profile, stages, futureStages, points, branches });
+      if (sessionFutureIndex === 0) {
+        await saveInitialProfile({ profile, stages, futureStages, points, futurePoints });
+      } else {
+        await saveFollowUpSession({
+          personaId,
+          sessionIndex: sessionFutureIndex,
+          stages,
+          futureStages,
+          pastPresentPoints: points,
+          futurePoints,
+        });
+      }
       setConfirmSubmitOpen(false);
-      setSubmitted(true);
+      setScreen("saved");
     } catch (err) {
       console.error(err);
       setSubmitError("저장 중 문제가 발생했어요. 다시 시도해주세요.");
@@ -157,39 +199,31 @@ function App() {
     }
   }
 
-  function handleRestart() {
+  function handleRestartAll() {
     setProfile(null);
+    setPersonaId("");
     setStages(null);
+    setExistingSessions([]);
+    setSessionFutureIndex(0);
     setPoints({});
+    setFuturePoints({});
     setActiveIndex(0);
+    setFutureActiveIndex(0);
     setFocusZone("main");
-    setCurrentBranchId(BRANCH_DEFS[0].id);
-    setBranches(makeEmptyBranches());
-    setBranchPickerOpen(false);
     setConfirmSubmitOpen(false);
-    setSubmitted(false);
     setSubmitting(false);
     setSubmitError("");
     setModal(null);
+    setScreen("login");
   }
 
   // ---------- 모달 저장 ----------
   function handleModalSave({ text, image }) {
     if (!modal) return;
-    if (modal.branchId) {
-      setBranches((prev) => ({
+    if (modal.zone === "future") {
+      setFuturePoints((prev) => ({
         ...prev,
-        [modal.branchId]: {
-          ...prev[modal.branchId],
-          points: {
-            ...prev[modal.branchId].points,
-            [modal.stageId]: {
-              ...(prev[modal.branchId].points[modal.stageId] || {}),
-              text,
-              image,
-            },
-          },
-        },
+        [modal.stageId]: { ...(prev[modal.stageId] || {}), text, image },
       }));
     } else {
       setPoints((prev) => ({
@@ -200,90 +234,110 @@ function App() {
     setModal(null);
   }
 
-  if (!stages) {
+  if (screen === "login") {
     return <Onboarding onSubmit={handleOnboardingSubmit} />;
   }
 
+  // login 이후엔 profile/stages가 항상 준비돼 있다.
   const presentStage = stages[stages.length - 1];
   const futureStages = computeFutureStages(stages);
   const hasFuture = futureStages.length > 0;
+  const maxSessions = hasFuture ? MAX_FUTURE_SESSIONS : 1;
 
+  if (screen === "menu") {
+    return (
+      <SessionMenu
+        personaName={profile.name}
+        doneCount={existingSessions.length}
+        maxSessions={maxSessions}
+        onSelect={handleSelectSession}
+      />
+    );
+  }
+
+  if (screen === "saved") {
+    return (
+      <div className="app-shell">
+        <header className="app-header">
+          <h1>{profile.name}님의 인생 그래프</h1>
+        </header>
+        <p className="graph-hint">저장이 완료됐어요. 소중한 이야기를 들려주셔서 감사합니다.</p>
+        <div className="graph-controls">
+          <button type="button" className="control-btn control-btn-primary" onClick={handleRestartAll}>
+            처음으로 돌아가기
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // screen === "draw"
   const isFuture = focusZone === "future";
-  const branchIndex = BRANCH_DEFS.findIndex((b) => b.id === currentBranchId);
-  const branchActiveIndex = branches[currentBranchId].activeIndex;
-  const activeStageObj = isFuture ? futureStages[branchActiveIndex] : stages[activeIndex];
+  const activeStageObj = isFuture ? futureStages[futureActiveIndex] : stages[activeIndex];
   const hasActivePoint = isFuture
-    ? Boolean(branches[currentBranchId].points[activeStageObj.id])
+    ? Boolean(futurePoints[activeStageObj.id])
     : Boolean(points[activeStageObj.id]);
   const isLastMainStage = !isFuture && activeIndex === stages.length - 1;
-  const isLastBranchStage = isFuture && branchActiveIndex === futureStages.length - 1;
-  const allBranchesComplete = BRANCH_DEFS.every((b) =>
-    futureStages.every((s) => branches[b.id].points[s.id]),
-  );
+  const isLastFutureStage = isFuture && futureActiveIndex === futureStages.length - 1;
   const readyToSubmit =
-    (isFuture && isLastBranchStage && hasActivePoint && allBranchesComplete) ||
+    (isFuture && isLastFutureStage && hasActivePoint) ||
     (!isFuture && !hasFuture && isLastMainStage && hasActivePoint);
+
+  // 과거~현재와 미래를 하나의 트랙으로 계산한다 (다크 모드만 나중에 켜질 뿐, 구조는 동일).
+  const allStages = [...stages, ...futureStages];
+  const combinedActiveIndex = isFuture ? stages.length + futureActiveIndex : activeIndex;
+  const series = [
+    { id: "main", points, color: null, interactive: mainInteractive && !isFuture },
+    ...existingSessions.map((s, i) => ({
+      id: `future-${i}`,
+      color: FUTURE_COLORS[i],
+      interactive: false,
+      points: { [presentStage.id]: points[presentStage.id], ...pickPoints(s, futureStages) },
+    })),
+    {
+      id: currentFutureId,
+      color: FUTURE_COLORS[sessionFutureIndex],
+      interactive: isFuture,
+      points: { [presentStage.id]: points[presentStage.id], ...futurePoints },
+    },
+  ];
 
   let modalStageLabel = "";
   let modalPoint = null;
   if (modal) {
-    if (modal.branchId) {
-      const futureStage = futureStages.find((s) => s.id === modal.stageId);
-      const branchDef = BRANCH_DEFS.find((b) => b.id === modal.branchId);
-      modalStageLabel = `${branchDef?.label} · ${futureStage?.label}`;
-      modalPoint = branches[modal.branchId].points[modal.stageId];
+    if (modal.zone === "future") {
+      modalStageLabel = futureStages.find((s) => s.id === modal.stageId)?.label ?? "";
+      modalPoint = futurePoints[modal.stageId];
     } else {
-      modalStageLabel = stages.find((s) => s.id === modal.stageId)?.label;
+      modalStageLabel = stages.find((s) => s.id === modal.stageId)?.label ?? "";
       modalPoint = points[modal.stageId];
     }
   }
 
-  // 과거~현재와 미래를 처음부터 하나의 트랙으로 계산한다 (다크 모드만 나중에 켜질 뿐, 구조는 동일).
-  const allStages = [...stages, ...futureStages];
-  const combinedActiveIndex = isFuture ? stages.length + branchActiveIndex : activeIndex;
-  const series = [
-    { id: "main", points, color: null, interactive: !isFuture },
-    ...BRANCH_DEFS.map((b) => ({
-      id: b.id,
-      color: BRANCH_COLORS[b.id],
-      interactive: isFuture && b.id === currentBranchId,
-      points: { [presentStage.id]: points[presentStage.id], ...branches[b.id].points },
-    })),
-  ];
-
-  const currentBranch = BRANCH_DEFS[branchIndex];
-
-  // 제출 후에는 어떤 갈래도 다시 편집/이동할 수 없는 읽기 전용 그래프로 보여준다.
-  const displaySeries = submitted ? series.map((s) => ({ ...s, interactive: false })) : series;
-
   let hint;
-  if (submitted) {
-    hint = "제출이 완료됐어요. 소중한 이야기를 들려주셔서 감사합니다.";
-  } else if (!isFuture) {
+  if (!isFuture) {
     if (!hasActivePoint) {
-      hint = `“${activeStageObj.label}”에서 느낀 감정에 맞는 위치를 눌러 점을 찍어주세요.`;
+      hint = `"${activeStageObj.label}"에서 느낀 감정에 맞는 위치를 눌러 점을 찍어주세요.`;
     } else if (isLastMainStage && hasFuture) {
-      hint = "여기서부터 미래가 네 갈래로 나뉘어요.";
+      hint = "여기서부터 미래를 그려요.";
     } else if (isLastMainStage) {
-      hint = "제출하기를 눌러주세요.";
+      hint = "저장하기를 눌러주세요.";
     } else {
       hint = "다음을 눌러 다음 시기로 넘어가세요.";
     }
   } else if (readyToSubmit) {
-    hint = "네 가지 미래를 모두 그렸어요! 제출하기를 눌러주세요.";
-  } else if (hasActivePoint && isLastBranchStage) {
-    hint = "다음을 누르면 다른 미래를 선택할 수 있어요.";
+    hint = "미래를 다 그렸어요! 저장하기를 눌러주세요.";
+  } else if (!hasActivePoint) {
+    hint = `"${activeStageObj.label}"에서 그 미래의 감정에 맞는 위치를 눌러 점을 찍어주세요.`;
   } else {
-    hint = currentBranch.prompt;
+    hint = "다음을 눌러 다음 시기로 넘어가세요.";
   }
 
   return (
     <div className="app-shell">
       <header className="app-header">
-        <h1>{profile?.name ? `${profile.name}님의 인생 그래프` : "인생 그래프"}</h1>
-        <p className="app-subtitle">
-          왼쪽은 부정적인 기억, 오른쪽은 긍정적인 기억이에요.
-        </p>
+        <h1>{profile.name}님의 인생 그래프</h1>
+        <p className="app-subtitle">왼쪽은 부정적인 기억, 오른쪽은 긍정적인 기억이에요.</p>
       </header>
 
       <div className="axis-legend">
@@ -293,58 +347,34 @@ function App() {
 
       <LifeGraph
         stages={allStages}
-        series={displaySeries}
+        series={series}
         activeIndex={combinedActiveIndex}
-        onCellClick={submitted ? noop : handleCellClick}
-        onPointClick={submitted ? noop : handlePointClick}
+        onCellClick={handleCellClick}
+        onPointClick={handlePointClick}
         focusRatio={modal ? 0.28 : 0.5}
         rootStageId={presentStage.id}
-        scrollable={submitted}
       />
 
       <p className="graph-hint">{hint}</p>
 
       <div className="graph-controls">
-        {submitted ? (
-          <button type="button" className="control-btn control-btn-primary" onClick={handleRestart}>
-            처음으로 돌아가기
-          </button>
-        ) : (
-          <>
-            <button
-              type="button"
-              className="control-btn"
-              onClick={handlePrev}
-              disabled={!isFuture && activeIndex === 0}
-            >
-              이전
-            </button>
-            <button
-              type="button"
-              className="control-btn control-btn-primary"
-              onClick={readyToSubmit ? () => setConfirmSubmitOpen(true) : handleNext}
-              disabled={!hasActivePoint}
-            >
-              {readyToSubmit
-                ? "제출하기"
-                : !isFuture && isLastMainStage
-                  ? "미래 그리기"
-                  : isFuture && isLastBranchStage
-                    ? "다른 미래 선택"
-                    : "다음"}
-            </button>
-          </>
-        )}
+        <button
+          type="button"
+          className="control-btn"
+          onClick={handlePrev}
+          disabled={isFuture ? futureActiveIndex === 0 && !mainInteractive : activeIndex === 0}
+        >
+          이전
+        </button>
+        <button
+          type="button"
+          className="control-btn control-btn-primary"
+          onClick={readyToSubmit ? () => setConfirmSubmitOpen(true) : handleNext}
+          disabled={!hasActivePoint}
+        >
+          {readyToSubmit ? "저장하기" : !isFuture && isLastMainStage ? "미래 그리기" : "다음"}
+        </button>
       </div>
-
-      {branchPickerOpen && (
-        <BranchPickerModal
-          branches={branches}
-          futureStages={futureStages}
-          onSelect={handleChooseBranch}
-          onClose={() => setBranchPickerOpen(false)}
-        />
-      )}
 
       {confirmSubmitOpen && (
         <SubmitConfirmModal
@@ -363,7 +393,7 @@ function App() {
         <PointModal
           stageLabel={modalStageLabel}
           point={modalPoint}
-          allowImage={!modal.branchId}
+          allowImage={modal.zone === "main"}
           onSave={handleModalSave}
           onClose={() => setModal(null)}
         />
