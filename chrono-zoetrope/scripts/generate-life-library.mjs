@@ -73,8 +73,10 @@ const result = await generateLifeLibrary(profile, {
   perStage,
   limit: args.limit ? parseInt(args.limit, 10) : Infinity,
   image: config.image,
-  panorama: config.panorama, // seamfix 파노라마 크기 (CLI에도 반영)
-  seamfix: config.seamfix, // 이음매 밴드 폭/페더
+  panorama: config.panorama, // 파노라마(조립본) 크기 — equirect/surround/seamfix가 사용 (CLI에도 반영)
+  seamfix: config.seamfix, // (구) seamfix 이음매 밴드 폭/페더 — surround에선 미사용
+  surround: config.surround, // (구) surround 접합선 블렌드 { seamBlend, bandWidth, feather }
+  equirect: config.equirect, // equirect { sourceAspect, seamfix } — 현재 채택 워크플로우
   timeoutMs: config.timeoutMs,
   gemini: resolveGeminiConfig(config.gemini, root),
   onProgress: (e) => {

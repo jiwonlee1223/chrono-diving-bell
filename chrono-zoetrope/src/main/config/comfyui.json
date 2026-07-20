@@ -1,12 +1,14 @@
 {
   "host": "http://143.248.107.38:8188",
-  "workflow": "seamfix",
+  "workflow": "equirect",
   "image": { "width": 1344, "height": 768 },
-  "$workflow": "seamfix(B안): Gemini 1인칭 360° 파노라마 생성 + ComfyUI Flux Fill 이음매 보정. panorama 크기는 아래 override(없으면 2048×1024).",
-  "$panorama": "seamfix 파노라마 크기. 비율에 맞는 Gemini aspectRatio가 자동 선택된다(4096×1024→4:1). 넓히려면 여기만 조정.",
+  "$workflow": "equirect(현재 채택): Gemini에 '360 카메라 equirectangular 파노라마'를 직접 요청해 한 콜로 진짜 360 기하를 얻고, 세로 중앙 crop으로 4:1(눈높이 띠)로 만든다. gaze 구도(주인공 정면 0° + 응시 대상 반대편)도 한 프롬프트에 담긴다. 스티칭·조립 불필요. panorama 크기는 아래 override(없으면 4096×1024). (구 surround: 평면 원근 스티칭 — 진짜 360 기하가 안 나와 대체됨. docs/panorama-approaches.md 참조.)",
+  "$equirect": "equirect { sourceAspect, seamfix }. sourceAspect=Gemini 요청 비율(기본 '21:9' — 현재 모델이 4:1 미지원이라 21:9로 받아 세로 crop). seamfix=등 뒤 wrap 이음매 보정 { bandWidth, feather } — Gemini equirect의 좌우 끝이 진짜 주기적이지 않아 이음매가 남는데, Flux Fill이 서로 다른 두 벽을 이으며 '기둥'을 만들 수 있어 기본 false(끔). 근본 해결은 엣지 구도/SDXL SeamlessTile 봉합(후속).",
+  "equirect": { "sourceAspect": "21:9", "seamfix": false },
+  "$panorama": "파노라마(조립본) 크기. surround는 이 폭을 4등분해 각 타일을 정사각(1:1)으로 생성 후 가로로 잇는다(4096→타일 1024²). 렌더·영상 파이프라인이 4:1을 가정하므로 4:1 유지 권장.",
   "panorama": { "width": 4096, "height": 1024 },
-  "$seamfix": "이음매 보정 밴드. bandWidth=이음매(좌우 wrap 접합부)를 Flux Fill로 덮어써 재생성하는 세로 띠 폭(px, panorama.width 기준). 넓힐수록 사람·복잡 가구가 이음매에 남을 확률↓, 단 단순면(벽/기둥) 스트립이 더 넓게 들어가고 inpaint 자국 위험↑. 4096 기준 256=6.25%(±11°), 384=9.4%(±17°), 512=12.5%(±22°). feather=띠 좌우 블렌드 폭(px).",
-  "seamfix": { "bandWidth": 256, "feather": 96 },
+  "$surround": "서라운드. outpaint='flux2'(권장, 실제로는 '넓은 앵커' 방식): Gemini로 넓은 2:1 정면(좌+주인공+우가 한 장에)·맞은편 2장을 만들어 붙이고, 좁은 이음선 2곳(가운데 join + 등 뒤 wrap)만 Flux Fill로 보정한다. 좌우가 애초에 정면과 같은 이미지라 선명하게 이어진다(90° 조각 4장은 갭이 흐려져 폐기). bandWidth=이음선 밴드 폭(px), feather=밴드 페더. outpaint='gemini'(구): 4타일 캔버스 아웃페인팅 + 4접합선 Flux Fill 블렌드(seamBlend). 둘 다 ComfyUI 필요.",
+  "surround": { "outpaint": "flux2", "bandWidth": 256, "feather": 96, "seamBlend": true },
   "perStage": 3,
   "outDir": "library",
   "timeoutMs": 300000,
@@ -22,6 +24,10 @@
   "firebase": {
     "serviceAccountPath": "./secrets/serviceAccountKey.json",
     "projectId": "",
+    "storageBucket": "chrono-diving-bell.firebasestorage.app",
+    "$storageBucket": "생성 파노라마 업로드 대상 버킷. 미지정 시 '{projectId}.firebasestorage.app'. Admin SDK 업로드는 storage.googleapis.com 경유라 캠퍼스망 firebasestorage SNI 차단과 무관(실측). 생성 완료 시 library/<pid>/*.png를 generated-panoramas/<이름_생년월일6자>/ 로 올리고 링크를 'generatedPanoramaImages' 컬렉션에 기록.",
+    "uploadGenerated": true,
+    "$uploadGenerated": "true면 생성 완료 시 파노라마를 Storage에 업로드하고 링크를 Firestore에 기록. false면 로컬만.",
     "pollIntervalMs": 15000,
     "batchLimit": 5
   }

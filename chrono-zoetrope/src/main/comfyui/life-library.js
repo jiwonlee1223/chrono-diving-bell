@@ -24,10 +24,22 @@ import {
   buildKontextWorkflow,
   buildSdxlWorkflow,
   buildGeminiSeamFixWorkflow,
+  buildSurroundSeamBlendWorkflow,
   randomSeed
 } from './workflows.js'
 import { detectGender, detectGenderWithGemini } from './gender-detect.js'
-import { buildScenePlan, composeScenePromptFor, personaId, SEAM_BAND_PROMPT } from './prompt-builder.js'
+import {
+  buildScenePlan,
+  composeScenePromptFor,
+  composeSurroundPrompts,
+  composeSurroundGazePrompts,
+  personaId,
+  SEAM_BAND_PROMPT,
+  SEAM_BLEND_PROMPT
+} from './prompt-builder.js'
+import { generateSurroundPanorama } from './panorama-tiles.js'
+import { generateSurroundPanoramaFlux2 } from './panorama-flux2.js'
+import { generateEquirectPanorama } from './equirect-panorama.js'
 
 /**
  * @param {object} profile  prompt-builder.js 상단의 스키마 참조
@@ -62,6 +74,7 @@ export async function generateLifeLibrary(profile, opts = {}) {
     signal, //          외부 취소(중지 버튼) — 장면 사이·생성 요청에서 확인해 중단한다
     gemini = {},
     seamfix = {}, //     이음매 밴드 { bandWidth, feather } — 미지정 키는 workflow 기본(256/96)
+    surround = {}, //    surround { seamBlend, bandWidth, feather } — seamBlend면 조립본을 Flux Fill로 접합선 블렌드
     onProgress = () => {}
   } = opts
 
@@ -77,13 +90,26 @@ export async function generateLifeLibrary(profile, opts = {}) {
     throw new Error(`${mode} 워크플로우에는 profile.photos 레퍼런스 사진이 최소 1장 필요하다`)
   }
   const isGemini = mode === 'gemini'
-  const isSeamfix = mode === 'seamfix' // B안: Gemini 파노라마 생성 + ComfyUI Flux Fill 이음매 보정
-  const useGeminiScene = isGemini || isSeamfix // 장면 픽셀을 Gemini가 만든다(seamfix는 그 뒤 보정)
-  const useComfy = !isGemini // kontext·sdxl·seamfix (seamfix는 보정에 ComfyUI 사용)
-  // seamfix 소스는 360° 둘레라 2:1 와이드가 필요하다 → 라이브러리 기본 16:9 대신 파노라마 크기 사용.
-  const effImage = isSeamfix ? opts.panorama || { width: 2048, height: 1024 } : image
+  const isSeamfix = mode === 'seamfix' // 구 B안: Gemini 파노라마 생성 + ComfyUI Flux Fill 이음매 보정
+  const isSurround = mode === 'surround' // 구: 1인칭 360° 서라운드(평면 원근 스티칭)
+  const isEquirect = mode === 'equirect' // 현재 채택: Gemini 360 equirectangular 직접 생성 → 4:1 crop
+  // surround 아웃페인팅 엔진: 'flux2'(기본 — Flux.2 마스크 아웃페인팅, 진짜 연속) | 'gemini'(캔버스 아웃페인팅).
+  const surroundFlux2 = isSurround && (surround.outpaint ?? 'flux2') === 'flux2'
+  // gemini 엔진 전용: 조립본의 4접합선을 Flux Fill로 블렌드(기본 켬). flux2는 연속이라 불필요(wrap만 내부 처리).
+  const surroundBlend = isSurround && !surroundFlux2 && (surround.seamBlend ?? true)
+  // equirect wrap seamfix — config equirect.seamfix { bandWidth, feather }가 있을 때만(기본 OFF, 기둥 위험).
+  const equirect = opts.equirect || {}
+  const equirectSeamfix = isEquirect && equirect.seamfix ? equirect.seamfix : null
+  const useGeminiScene = isGemini || isSeamfix || isSurround || isEquirect // 장면/앵커 픽셀을 Gemini가 만든다
+  // ComfyUI 필요: kontext·sdxl·seamfix + (flux2 surround) + (블렌드 켠 gemini surround) + (seamfix 켠 equirect)
+  const useComfy = mode === 'kontext' || mode === 'sdxl' || isSeamfix || (isSurround && (surroundFlux2 || surroundBlend)) || !!equirectSeamfix
+  // 파노라마 소스는 360° 둘레라 와이드가 필요하다 → 라이브러리 기본 16:9 대신 파노라마 크기 사용.
+  const effImage = isSeamfix || isSurround || isEquirect ? opts.panorama || { width: 4096, height: 1024 } : image
+  // surround는 4타일이 4:1 파노라마를 90°씩 나눠 갖는다 → 타일 한 변 = 파노라마 폭 / 4(정사각 1:1).
+  const tileSize = Math.round(effImage.width / 4)
   // Gemini는 픽셀 크기 대신 종횡비로 지정한다 — 실제 출력 크기(effImage)에 가장 가까운
   // 지원 비율을 고른다. gemini(1344×768)→'16:9', seamfix 파노라마(4096×1024)→'4:1'.
+  // (surround는 종횡비를 panorama-tiles가 타일·캔버스별로 직접 정하므로 이 값을 쓰지 않는다.)
   const geminiAspect = nearestGeminiAspect(effImage.width, effImage.height)
   const imageSize = gemini.imageSize || '2K'
   // 장면 모델: gemini.sceneModel(기본 flash — 장당 비용 절감), 없으면 gemini.model.
@@ -128,6 +154,20 @@ export async function generateLifeLibrary(profile, opts = {}) {
     ...(useGeminiScene ? { gemini: { model: gclient.model, sceneModel, imageSize } } : {}),
     ...(isSeamfix
       ? { seamfix: { bandModel: 'flux-fill', bandWidth: seamfix.bandWidth, feather: seamfix.feather } }
+      : {}),
+    ...(isSurround
+      ? {
+          surround: {
+            tileSize,
+            outpaint: surroundFlux2 ? 'flux2' : 'gemini',
+            ...(surroundFlux2 ? { engine: 'wide' } : { seamBlend: surroundBlend }),
+            bandWidth: surround.bandWidth,
+            feather: surround.feather
+          }
+        }
+      : {}),
+    ...(isEquirect
+      ? { equirect: { sourceAspect: equirect.sourceAspect || '21:9', seamfix: equirectSeamfix || false } }
       : {}),
     // 사진 바이너리는 제외하고 경로만 기록
     profile: { ...profile, photos: profile.photos || [] },
@@ -188,8 +228,8 @@ export async function generateLifeLibrary(profile, opts = {}) {
     for (let i = 0; i < plan.length; i++) {
       if (signal?.aborted) break // 중지 요청 — 진행분은 finally가 저장, 남은 장은 나중에 재개
       const item = plan[i]
-      // gemini는 시드 개념이 없다. seamfix는 보정 단계(ComfyUI)에 시드가 필요하므로 발급한다.
-      const seed = isGemini ? null : randomSeed()
+      // gemini·surround·equirect는 시드 개념이 없다(순수 Gemini). seamfix는 보정(ComfyUI)에 시드가 필요해 발급한다.
+      const seed = isGemini || isSurround || isEquirect ? null : randomSeed()
       const prompt = composeScenePromptFor(mode, profile, item)
       const localFile = path.join(dir, `${item.id}.png`)
 
@@ -210,6 +250,7 @@ export async function generateLifeLibrary(profile, opts = {}) {
       //  admin에서 그 장만 재생성할 수 있다.) IMAGE_SAFETY는 gclient 내부에서 이미 1회 재시도.
       let promptId = null
       let srcFile = null // seamfix: 보관한 Gemini 원본 파일명(edge 재연결용)
+      let tiles = null //  surround: 보관한 4타일 파일명(edge 재연결이 앵커 유지로 재사용)
       let ok = false
       let lastErr = null
       let cancelled = false
@@ -230,6 +271,77 @@ export async function generateLifeLibrary(profile, opts = {}) {
               signal
             })
             await fs.writeFile(localFile, data)
+          } else if (isSurround && surroundFlux2) {
+            // 항공샷 기반 서라운드: 배치도 → 눈높이 정면·리버스뷰 2장 + 좁은 이음선 보정.
+            // 항공샷·다중레퍼런스는 pro 모델 사용(flash는 간헐 404, 공간 일관성도 pro가 유리).
+            const { aerial, front, back, panorama, workflow } = await generateSurroundPanoramaFlux2({
+              gclient,
+              client,
+              prompts: composeSurroundGazePrompts(profile, item),
+              tileSize,
+              imageSize,
+              model: gemini.model,
+              bandWidth: surround.bandWidth,
+              feather: surround.feather,
+              pid,
+              sceneId: item.id,
+              signal,
+              onProgress: (p) => onProgress({ type: 'image-progress', item, ...p })
+            })
+            // 정면·리버스뷰 + 항공샷(배치도) 보관 — edge 재연결이 두 뷰를 두고 이음선만 다시.
+            tiles = { front: `${item.id}.front.png`, back: `${item.id}.back.png`, aerial: `${item.id}.aerial.png` }
+            await Promise.all([
+              fs.writeFile(path.join(dir, tiles.front), front),
+              fs.writeFile(path.join(dir, tiles.back), back),
+              ...(aerial ? [fs.writeFile(path.join(dir, tiles.aerial), aerial)] : []),
+              fs.writeFile(localFile, panorama),
+              fs.writeFile(path.join(dir, `${item.id}.workflow.json`), JSON.stringify(workflow, null, 2))
+            ])
+          } else if (isSurround) {
+            // (구) Gemini 캔버스 아웃페인팅 서라운드. 앵커 + 좌·우·등 뒤 아웃페인팅 → 조립 → 4접합선 블렌드(옵션).
+            const { tiles: t, panorama } = await generateSurroundPanorama({
+              gclient,
+              prompts: composeSurroundPrompts(profile, item),
+              tileSize,
+              imageSize,
+              model: sceneModel,
+              signal,
+              onProgress: (p) => onProgress({ type: 'image-progress', item, ...p })
+            })
+            tiles = {
+              front: `${item.id}.front.png`,
+              right: `${item.id}.right.png`,
+              back: `${item.id}.back.png`,
+              left: `${item.id}.left.png`
+            }
+            await Promise.all([
+              fs.writeFile(path.join(dir, tiles.front), t.front),
+              fs.writeFile(path.join(dir, tiles.right), t.right),
+              fs.writeFile(path.join(dir, tiles.back), t.back),
+              fs.writeFile(path.join(dir, tiles.left), t.left)
+            ])
+            if (surroundBlend) {
+              const uploaded = await client.uploadImage(panorama, `${pid}-${item.id}-assembled.png`)
+              const wf = buildSurroundSeamBlendWorkflow({
+                referenceImage: uploaded.name,
+                bandPrompt: SEAM_BLEND_PROMPT,
+                width: effImage.width,
+                height: effImage.height,
+                tileCount: 4,
+                bandWidth: surround.bandWidth,
+                feather: surround.feather,
+                seed: randomSeed(),
+                filenamePrefix: `chrono-zoetrope/${pid}/${item.id}`
+              })
+              const out = await client.generate(wf, {
+                onProgress: (p) => onProgress({ type: 'image-progress', item, ...p })
+              })
+              promptId = out.promptId
+              const corrected = out.images.find((im) => /-pano_/.test(im.filename)) || out.images[0]
+              await fs.writeFile(localFile, corrected.data)
+            } else {
+              await fs.writeFile(localFile, panorama)
+            }
           } else if (isSeamfix) {
             // B안: Gemini로 1인칭 360° 파노라마 생성 → ComfyUI Flux Fill로 좌우 이음매 보정.
             const data = await gclient.generateImage({
@@ -263,6 +375,29 @@ export async function generateLifeLibrary(profile, opts = {}) {
             // 워크플로우는 보정본(-pano)과 원본(-raw)을 저장한다 — 보정본을 장면 파일로 쓴다.
             const corrected = out.images.find((im) => /-pano_/.test(im.filename)) || out.images[0]
             await fs.writeFile(localFile, corrected.data)
+          } else if (isEquirect) {
+            // equirect-native: Gemini 360 equirect 1콜 → 세로 crop 4:1 → (옵션) wrap seamfix.
+            const { src, panorama, workflow } = await generateEquirectPanorama({
+              gclient,
+              client, // seamfix 없으면 null이어도 무방(모듈이 seamfix일 때만 사용)
+              prompt,
+              panorama: effImage,
+              sourceAspect: equirect.sourceAspect || '21:9',
+              imageSize,
+              model: sceneModel,
+              seamfix: equirectSeamfix,
+              pid,
+              sceneId: item.id,
+              signal,
+              onProgress: (p) => onProgress({ type: 'image-progress', item, ...p })
+            })
+            // Gemini 원본(21:9) 보관 — admin "edge 재연결"이 재생성 없이 이 원본에서 crop/seamfix만 다시.
+            srcFile = `${item.id}.src.png`
+            await Promise.all([
+              fs.writeFile(path.join(dir, srcFile), src),
+              fs.writeFile(localFile, panorama),
+              ...(workflow ? [fs.writeFile(path.join(dir, `${item.id}.workflow.json`), JSON.stringify(workflow, null, 2))] : [])
+            ])
           } else {
             const wf =
               mode === 'kontext'
@@ -313,6 +448,7 @@ export async function generateLifeLibrary(profile, opts = {}) {
           promptId,
           file: `${item.id}.png`,
           ...(srcFile ? { srcFile } : {}), // seamfix 원본 — edge 재연결이 재사용
+          ...(tiles ? { tiles } : {}), //     surround 4타일 — edge 재연결이 앵커 유지로 재사용
           elapsedMs: Date.now() - t0
         })
         await writeManifest() // 장마다 기록 — 중단돼도 진행분은 남는다

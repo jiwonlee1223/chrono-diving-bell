@@ -17,7 +17,8 @@ import { ComfyUIClient } from './client.js'
 import {
   buildWan22I2VWorkflow,
   buildSeedanceFLFWorkflow,
-  composeSeedanceLoopPrompt
+  composeSeedanceLoopPrompt,
+  composeWanMotionPrompt
 } from './workflows.js'
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -76,9 +77,8 @@ export class VideoRegenerator {
     const t0 = Date.now()
     console.log(`[regen] Wan2.2 I2V: ${image.id} (${v.width}x${v.height}, ${v.length}f)`)
     const uploaded = await this.client.uploadImage(await readFile(image.absPath), `freeze-${basename(image.absPath)}`)
-    const prompt = image.scene
-      ? `${this.regen.wan.promptPrefix} Scene: ${image.scene}.`
-      : this.regen.wan.promptPrefix
+    // 고정 불변부(promptPrefix) + ' Scene: {scene}.' + 씬 컨텍스트에 맞는 주변 모션 구절.
+    const prompt = composeWanMotionPrompt(image, { promptPrefix: this.regen.wan.promptPrefix })
     const workflow = buildWan22I2VWorkflow({
       prompt,
       startImage: uploaded.name,

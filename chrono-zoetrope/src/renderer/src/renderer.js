@@ -24,6 +24,7 @@ import {
 } from './scene/montage-material.js'
 import { createPanoramaPreview } from './scene/panorama-preview.js'
 import { PostPass } from './scene/post-pass.js'
+import { createGhost } from './scene/ghost.js'
 
 // 테스트 패턴·사진 색을 그린 그대로 통과시킨다(색 관리 이중변환 회피).
 THREE.ColorManagement.enabled = false
@@ -259,6 +260,8 @@ async function main() {
         setTimeout(() => {
           demoPhase = null // 검정에서 실타래(구름) 앰비언트로 (appState=IDLE 따라감)
           teardownVideo()
+          loadCards() // 목록 갱신(그새 생성된 참가자 반영)
+          showSelect() // 다음 참가자 선택 화면 복귀
         }, 1200)
       },
       { once: true }
@@ -289,6 +292,67 @@ async function main() {
       body: '{}'
     }).catch(() => {})
   })
+
+  // ---- 사용자 선택 화면(카드 = 참가자, 생성 순서) ----
+  const selectScreen = document.getElementById('selectScreen')
+  const cardsEl = document.getElementById('cards')
+  function showSelect() {
+    selectScreen?.classList.remove('hidden')
+  }
+  function hideSelect() {
+    selectScreen?.classList.add('hidden')
+  }
+  async function selectPersona(personaId) {
+    hideSelect() // 즉시 숨김 — 곧 spinup→섬광→reel 체험이 시작된다.
+    try {
+      await fetch('/api/select', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ personaId })
+      })
+    } catch {
+      showSelect() // 실패 시 다시 선택할 수 있게 복귀
+    }
+  }
+  async function loadCards() {
+    if (!cardsEl) return
+    let personas = []
+    try {
+      personas = await fetch('/api/personas').then((r) => r.json())
+    } catch {
+      personas = []
+    }
+    cardsEl.innerHTML = ''
+    if (!personas.length) {
+      const empty = document.createElement('div')
+      empty.id = 'cardsEmpty'
+      empty.textContent = '생성된 참가자가 없습니다'
+      cardsEl.appendChild(empty)
+      return
+    }
+    for (const p of personas) {
+      const card = document.createElement('button')
+      card.type = 'button'
+      card.className = 'card'
+      const name = document.createElement('div')
+      name.className = 'cname'
+      name.textContent = p.name || p.personaId
+      const birth = document.createElement('div')
+      birth.className = 'cbirth'
+      birth.textContent = p.birthDate || ''
+      card.append(name, birth)
+      if (!p.hasReel) {
+        const w = document.createElement('div')
+        w.className = 'cnoreel'
+        w.textContent = '영상 미생성'
+        card.appendChild(w)
+      }
+      card.addEventListener('click', () => selectPersona(p.personaId))
+      cardsEl.appendChild(card)
+    }
+  }
+  loadCards()
+  showSelect() // 최초 진입 = 선택 화면(IDLE 구름 위에).
 
   // ---- 출력 파이프라인: 타일 사이즈 RT 하나를 4타일이 재사용 ----
 
@@ -332,6 +396,17 @@ async function main() {
   }
   window.addEventListener('resize', resize)
   resize()
+
+  // 유령 에이전트: 4타일 스트립을 배회하는 앰비언트 발광체(눈코입 없는 부끄부끄, 구름에 가려진 빛).
+  // 렌더 경로(preview/installation)와 무관한 DOM 오버레이라 실행 직후부터 4개 화면을 돌아다닌다.
+  createGhost({
+    getStrip: () => ({
+      x: layout.originX,
+      y: layout.originY,
+      w: layout.tileW * count,
+      h: layout.tileH
+    })
+  })
 
   let currentFrame = -1
   let surfaceMaterial = threadMaterial

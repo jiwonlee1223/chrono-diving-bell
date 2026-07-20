@@ -12,7 +12,8 @@ import {
   claimProfile,
   downloadPhotos,
   toGeneratorProfile,
-  setProfileStatus
+  setProfileStatus,
+  uploadPersonaPanoramas
 } from './firestore-source.js'
 
 const noop = () => {}
@@ -57,8 +58,10 @@ export async function processProfile(
       workflow: config.workflow,
       perStage: config.perStage,
       image: config.image,
-      panorama: config.panorama, // seamfix(B안) 파노라마 크기 override (없으면 2048×1024 기본)
-      seamfix: config.seamfix, // 이음매 밴드 폭/페더 (없으면 workflow 기본 256/96)
+      panorama: config.panorama, // 파노라마(조립본) 크기 override (equirect/surround/seamfix)
+      seamfix: config.seamfix, // (구) seamfix 이음매 밴드 폭/페더
+      surround: config.surround, // (구) surround 접합선 블렌드 { seamBlend, bandWidth, feather }
+      equirect: config.equirect, // equirect { sourceAspect, seamfix } — 현재 채택
       timeoutMs: config.timeoutMs,
       sceneRetries: config.sceneRetries, // 장면 실패 시 재시도 횟수 (undefined면 기본 1)
       signal, // 중지 버튼 신호
@@ -80,14 +83,33 @@ export async function processProfile(
     // 한 장도 못 만들었으면(전면 장애) 완료가 아니라 실패로 — 재시도 대상이 되게 한다.
     if (imageCount === 0) throw new Error(`전 장면 생성 실패 (${failedCount}장 모두 실패)`)
 
-    // 3) 완료 기록. 검토(admin)는 별개 — 여기서는 생성 완료까지만 책임진다.
+    // 3) 생성물을 Firebase Storage에 업로드하고 링크를 'generatedPanoramaImages' 컬렉션에 기록.
+    //    로컬 파일은 그대로 두되 Firebase가 정본 링크를 갖는다. 업로드 실패가 생성 완료를 막지 않게 try로 감싼다.
+    let panorama = null
+    if (config.firebase?.uploadGenerated !== false) {
+      try {
+        panorama = await uploadPersonaPanoramas({
+          profile, //         Firestore 문서(id=이름_생년월일6자) → 컬렉션 문서 키
+          personaId: result.personaId,
+          dir: result.dir, // 실제 생성 이미지 디렉터리(library/<p-해시>)
+          images: all,
+          onProgress: (e) => onProgress({ type: 'upload', item: { id: e.id }, ...e })
+        })
+        log(`  ↑ Firebase 업로드: ${panorama.count}장 → 'generatedPanoramaImages'/${panorama.key}`)
+      } catch (upErr) {
+        log(`  ⚠ Firebase 업로드 실패(로컬은 보존됨): ${upErr.message}`)
+      }
+    }
+
+    // 4) 완료 기록. 검토(admin)는 별개 — 여기서는 생성 완료까지만 책임진다.
     // 자동 감지된 성별도 역기록해, 이후 재생성 시 재감지 없이 프로필 값을 쓰게 한다.
     const detectedGender = result.manifest?.profile?.gender
     await setProfileStatus(pid, 'done', {
-      libraryDir: `library/${pid}`,
+      libraryDir: `library/${result.personaId}`,
       imageCount,
       failedCount, // 건너뛴 장면 수 — admin에서 개별 재생성 대상
       generatedAt: new Date().toISOString(),
+      ...(panorama ? { panoramaDoc: panorama.key, panoramaCount: panorama.count } : {}),
       ...(detectedGender ? { gender: detectedGender } : {})
     })
     log(

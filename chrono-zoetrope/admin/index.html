@@ -142,42 +142,6 @@
         color: rgba(255, 255, 255, 0.4);
       }
 
-      /* 세션 참가자(연구자용 "로그인") — 이 참가자의 생애가 4창 런타임에 재생된다. */
-      .session-ctl {
-        display: flex;
-        align-items: center;
-        gap: 9px;
-        margin-left: auto;
-        font-size: 12.5px;
-      }
-      .session-label {
-        color: rgba(255, 255, 255, 0.55);
-      }
-      .session-label b {
-        color: #7de08c;
-      }
-      #session-set {
-        font-size: 12px;
-        font-weight: 600;
-        cursor: pointer;
-        padding: 6px 13px;
-        border-radius: 999px;
-        border: 1px solid rgba(110, 220, 130, 0.5);
-        background: transparent;
-        color: #7de08c;
-      }
-      #session-set:hover {
-        background: rgba(110, 220, 130, 0.14);
-      }
-      #session-set:disabled {
-        opacity: 0.45;
-        cursor: default;
-      }
-      .pitem .psession {
-        color: #7de08c;
-        font-weight: 600;
-      }
-
       main {
         padding: 20px 22px 60px;
       }
@@ -543,12 +507,6 @@
             </select>
             <span class="gsrc" id="gender-src"></span>
           </span>
-          <span class="session-ctl" id="session-ctl">
-            <span class="session-label" id="session-label">세션 미설정</span>
-            <button id="session-set" title="이 참가자의 생애를 4창 런타임에서 재생합니다">
-              이 참가자를 세션으로
-            </button>
-          </span>
         </header>
         <section id="queue-panel" class="hidden">
       <div class="qhead">
@@ -573,7 +531,6 @@
       let manifest = null
       let personas = [] // 최신 생성순(내림차순) persona 목록 캐시
       let personaFilter = '' // 사이드바 이름 검색어
-      let sessionPid = null // 현재 세션 참가자 (4창 런타임이 재생 중인 대상)
       let videoState = null // /api/queue의 video: { building:{pid,kind}, queue, job, last }
       let lastVideoAt = 0 // 마지막으로 반영한 영상 작업 완료 시각 (완료 감지→manifest 재로딩)
 
@@ -620,8 +577,7 @@
             (p) =>
               `<button class="pitem${p.personaId === pid ? ' active' : ''}" data-pid="${p.personaId}">` +
               `<span class="pname">${p.name || p.personaId}</span>` +
-              `<span class="pmeta">${p.total}장 · ${timeAgo(p.createdAt)}` +
-              `${p.personaId === sessionPid ? ' · <span class="psession">● 세션</span>' : ''}</span>` +
+              `<span class="pmeta">${p.total}장 · ${timeAgo(p.createdAt)}</span>` +
               `</button>`
           )
           .join('')
@@ -676,31 +632,6 @@
           `총 <b>${total - failed}</b>장` + (failed ? ` · <b style="color:#ff8585">실패 ${failed}</b>` : '')
       }
 
-      // 세션 참가자 컨트롤 — 현재 세션 대상과, 보고 있는 참가자를 세션으로 지정하는 버튼.
-      function renderSessionCtl() {
-        const label = $('#session-label')
-        const btn = $('#session-set')
-        if (sessionPid) {
-          const p = personas.find((x) => x.personaId === sessionPid)
-          label.innerHTML = `세션: <b>${p?.name || sessionPid}</b>`
-        } else {
-          label.textContent = '세션 미설정'
-        }
-        btn.disabled = !pid || pid === sessionPid
-        btn.textContent = pid && pid === sessionPid ? '현재 세션' : '이 참가자를 세션으로'
-      }
-
-      // 서버에서 현재 세션 선택을 읽어 온다 (초기 로드 시).
-      async function loadSession() {
-        try {
-          const s = await api('/api/session')
-          sessionPid = s.personaId || null
-        } catch {
-          sessionPid = null // 세션 API가 없는 구버전 서버면 조용히 미설정 처리.
-        }
-        renderSessionCtl()
-        renderPersonaList()
-      }
 
       // 별도 승인 절차 없음 — 전 장이 기본 노출. 문제 장·실패 장만 재생성으로 교체한다.
       // failed 장(생성 중 타임아웃 등으로 건너뜀)은 플레이스홀더로 표시하고 재생성 버튼을 노출한다.
@@ -714,14 +645,26 @@
         const media = entry.failed
           ? `<div class="card-failed" style="aspect-ratio:${ar}">생성 실패 — 재생성 필요</div>`
           : `<img src="${imgUrl(entry)}" loading="lazy" style="aspect-ratio:${ar}" title="${entry.prompt.replaceAll('"', '&quot;')}" />`
-        // edge 재연결: seamfix 워크플로우 + 보관된 Gemini 원본(srcFile)이 있을 때만.
-        const canReseam = manifest && manifest.workflow === 'seamfix' && entry.srcFile && !entry.failed
+        // edge 재연결: seamfix(보관된 Gemini 원본 srcFile) 또는 surround(보관된 앵커 타일 front)일 때.
+        const isSurround = manifest && manifest.workflow === 'surround'
+        const surroundFlux2 = isSurround && (manifest.surround?.outpaint ?? 'flux2') === 'flux2'
+        const canReseam =
+          manifest &&
+          !entry.failed &&
+          ((manifest.workflow === 'seamfix' && entry.srcFile) ||
+            (surroundFlux2 && entry.tiles?.front && entry.tiles?.back) ||
+            (isSurround && !surroundFlux2 && manifest.surround?.seamBlend && entry.tiles?.front))
+        const reseamTitle = surroundFlux2
+          ? '넓은 앵커 2장(정면·맞은편)은 두고 이음선만 Flux Fill로 다시 (Gemini 재과금 없음)'
+          : isSurround
+            ? '보관된 타일은 두고 접합선만 Flux Fill로 다시 블렌드 (Gemini 재과금 없음)'
+            : 'Gemini 원본은 두고 seamless 이음매만 다시 붙임 (재과금 없음)'
         div.innerHTML = `
         ${media}
         <div class="meta"><span class="id">${entry.id}</span><span class="sub">${sub}</span>${entry.failed ? '<span class="badge error">실패</span>' : ''}</div>
         <div class="actions">
           <button class="re" title="Gemini부터 전체 다시 생성">재생성</button>
-          ${canReseam ? '<button class="reseam" title="Gemini 원본은 두고 seamless 이음매만 다시 붙임 (재과금 없음)">edge 재연결</button>' : ''}
+          ${canReseam ? `<button class="reseam" title="${reseamTitle}">edge 재연결</button>` : ''}
         </div>`
 
         const imgEl = $('img', div)
@@ -762,7 +705,9 @@
             reseamBtn.disabled = true
             if (re) re.disabled = true
             reseamBtn.textContent = '재연결 중…'
-            setStatus(`${entry.id} edge 재연결 중 (~60초, Gemini 재생성 없음)`)
+            setStatus(
+              `${entry.id} edge 재연결 중 ${surroundFlux2 ? '(넓은 앵커 2장 유지, 이음선만 Flux Fill 재보정)' : isSurround ? '(타일 유지, 접합선만 Flux Fill 재블렌드)' : '(~60초, Gemini 재생성 없음)'}`
+            )
             try {
               const out = await api(`/api/personas/${pid}/reseam`, {
                 method: 'POST',
@@ -786,7 +731,6 @@
         $('#cur-name').textContent = manifest?.profile?.name || pid || ''
         counts()
         renderGender()
-        renderSessionCtl()
         const main = $('#main')
         main.innerHTML = ''
         // 단계(stageIndex)별로 묶기
@@ -938,23 +882,6 @@
         } catch (err) {
           setStatus(`성별 수정 실패: ${err.message}`)
           renderGender() // 실패 시 원래 값으로 되돌림
-        }
-      })
-      // 세션 참가자 지정 — 지금 보고 있는 참가자를 4창 런타임 세션으로 설정.
-      $('#session-set').addEventListener('click', async () => {
-        if (!pid) return
-        try {
-          const sel = await api('/api/session', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ personaId: pid })
-          })
-          sessionPid = sel.personaId
-          setStatus(`세션 참가자 → ${sel.name || sel.personaId} (런타임이 IDLE이면 즉시 반영)`)
-          renderSessionCtl()
-          renderPersonaList()
-        } catch (e) {
-          setStatus(`세션 설정 실패: ${e.message}`)
         }
       })
       $('#zoom').addEventListener('click', () => $('#zoom').classList.remove('show'))
@@ -1113,7 +1040,7 @@
         }
       })
 
-      loadPersonas().then(loadSession)
+      loadPersonas()
       pollQueue()
       setInterval(pollQueue, 2000)
     </script>

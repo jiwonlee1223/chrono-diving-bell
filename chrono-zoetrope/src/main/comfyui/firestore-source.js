@@ -22,10 +22,18 @@ import { getStorage } from 'firebase-admin/storage'
 
 let app = null
 let db = null
+let defaultBucket = null //   업로드용 기본 Storage 버킷 이름 (config.firebase.storageBucket)
 
-/** Admin SDK 초기화. serviceAccountPath 또는 GOOGLE_APPLICATION_CREDENTIALS 필요. */
-export async function initFirebase({ serviceAccountPath, projectId } = {}) {
-  if (db) return db
+// 생성물 링크를 기록하는 Firestore 컬렉션 이름(프로필별 문서 = 이름_생년월일6자). 여기서만 바꾸면 된다.
+export const COLLECTION_IMAGES = 'generatedPanoramaImages'
+export const COLLECTION_VIDEOS = 'generatedVideos'
+
+/** Admin SDK 초기화. serviceAccountPath 또는 GOOGLE_APPLICATION_CREDENTIALS 필요. storageBucket은 생성물 업로드용. */
+export async function initFirebase({ serviceAccountPath, projectId, storageBucket } = {}) {
+  if (db) {
+    if (storageBucket) defaultBucket = storageBucket
+    return db
+  }
   const saPath = serviceAccountPath || process.env.GOOGLE_APPLICATION_CREDENTIALS
   if (!saPath) {
     throw new Error(
@@ -39,9 +47,129 @@ export async function initFirebase({ serviceAccountPath, projectId } = {}) {
   } catch (err) {
     throw new Error(`서비스 계정 키를 읽을 수 없다 (${saPath}): ${err.message}`)
   }
-  app = initializeApp({ credential: cert(sa), projectId: projectId || sa.project_id })
+  // 기본 버킷: config → '{projectId}.firebasestorage.app'(신규 기본). Admin SDK 업로드는 storage.googleapis.com
+  // 경유라 캠퍼스망 firebasestorage SNI 차단과 무관하게 동작한다(실측 확인).
+  defaultBucket = storageBucket || `${projectId || sa.project_id}.firebasestorage.app`
+  app = initializeApp({ credential: cert(sa), projectId: projectId || sa.project_id, storageBucket: defaultBucket })
   db = getFirestore(app)
   return db
+}
+
+/** 프로필 → 파노라마 컬렉션 문서 키 '이름_생년월일6자'(예: 김철수_990101). */
+export function panoramaDocKey(profile) {
+  if (profile.id) return profile.id // Firestore 수집 프로필은 이미 이 형식
+  const digits = String(profile.birthDate || '').replace(/\D/g, '') // '1994-03-15' → '19940315'
+  return `${profile.name || 'unknown'}_${digits.slice(2, 8)}` // → 김주만_940315
+}
+
+/** 로컬 파일 1개를 Storage에 올리고 공개 URL(+gs 경로)을 반환. makePublic 실패(균일 접근)면 7일 서명 URL. */
+async function uploadFileToStorage(bkt, localPath, objectPath, contentType) {
+  const file = bkt.file(objectPath)
+  await file.save(await fs.readFile(localPath), { contentType, resumable: false, metadata: { cacheControl: 'public,max-age=31536000' } })
+  let url
+  try {
+    await file.makePublic()
+    url = `https://storage.googleapis.com/${bkt.name}/${objectPath.split('/').map(encodeURIComponent).join('/')}`
+  } catch {
+    ;[url] = await file.getSignedUrl({ action: 'read', expires: Date.now() + 7 * 864e5 })
+  }
+  return { url, storagePath: `gs://${bkt.name}/${objectPath}` }
+}
+
+/**
+ * 생성된 파노라마들을 Firebase Storage에 업로드하고, 링크를 'generatedPanoramaImages' 컬렉션에
+ * 프로필(이름_생년월일6자)별로 기록한다. 로컬 파일은 그대로 두되 Firebase가 정본 링크를 갖는다.
+ *
+ * @param {object} p
+ * @param {object} p.profile   { name, birthDate, id? }
+ * @param {string} p.personaId 내부 pid(p-해시)
+ * @param {string} p.dir       로컬 라이브러리 디렉터리(파일 읽기용)
+ * @param {Array}  p.images    manifest.images (각 { id, age, year, scene, isPast, file, failed? })
+ * @param {string} [p.bucket]  버킷 override(기본 defaultBucket)
+ * @param {(e:object)=>void} [p.onProgress]
+ * @returns {Promise<{ key:string, count:number, images:Array }>}
+ */
+export async function uploadPersonaPanoramas({ profile, personaId, dir, images, bucket, onProgress = () => {} }) {
+  if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  const bkt = getStorage(app).bucket(bucket || defaultBucket)
+  const key = panoramaDocKey(profile)
+  const ok = (images || []).filter((im) => !im.failed && im.file)
+  const uploaded = []
+  for (let i = 0; i < ok.length; i++) {
+    const im = ok[i]
+    const local = path.join(dir, im.file)
+    const objectPath = `generated-panoramas/${key}/${im.file}`
+    const { url, storagePath } = await uploadFileToStorage(bkt, local, objectPath, 'image/png')
+    uploaded.push({ id: im.id, age: im.age, year: im.year, scene: im.scene, isPast: im.isPast ?? null, url, storagePath })
+    onProgress({ type: 'upload', done: i + 1, total: ok.length, id: im.id })
+  }
+  await db
+    .collection(COLLECTION_IMAGES)
+    .doc(key)
+    .set(
+      {
+        name: profile.name || null,
+        birthDate: profile.birthDate || null,
+        personaId,
+        bucket: bkt.name,
+        count: uploaded.length,
+        images: uploaded,
+        updatedAt: FieldValue.serverTimestamp()
+      },
+      { merge: true }
+    )
+  return { key, count: uploaded.length, images: uploaded }
+}
+
+/**
+ * 생성된 영상을 Storage에 업로드하고 'generatedVideos' 컬렉션에 프로필별로 기록한다(이미지와 동일 형식).
+ * kind='clips': videos/<id>.mp4 전부 업로드 → videos 배열. kind='reel': reel.mp4 업로드 → reel 필드. 둘 다 merge.
+ *
+ * @param {object} p
+ * @param {object} p.profile   { name, birthDate, id? }
+ * @param {string} p.personaId
+ * @param {string} p.dir       로컬 라이브러리 디렉터리(<dir>/videos/*.mp4, <dir>/reel.mp4)
+ * @param {Array}  [p.images]  manifest.images (장면 메타 age/year/scene 부여용)
+ * @param {'clips'|'reel'} [p.kind]
+ * @param {object} [p.reelMeta] { durationSec, clipCount }
+ * @param {string} [p.bucket] @param {(e:object)=>void} [p.onProgress]
+ * @returns {Promise<object>}
+ */
+export async function uploadPersonaVideos({ profile, personaId, dir, images, kind = 'clips', reelMeta = null, bucket, onProgress = () => {} }) {
+  if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  const bkt = getStorage(app).bucket(bucket || defaultBucket)
+  const key = panoramaDocKey(profile)
+  const doc = db.collection(COLLECTION_VIDEOS).doc(key)
+  const base = { name: profile.name || null, birthDate: profile.birthDate || null, personaId, bucket: bkt.name, updatedAt: FieldValue.serverTimestamp() }
+
+  if (kind === 'reel') {
+    const objectPath = `generated-videos/${key}/reel.mp4`
+    const { url, storagePath } = await uploadFileToStorage(bkt, path.join(dir, 'reel.mp4'), objectPath, 'video/mp4')
+    await doc.set({ ...base, reel: { url, storagePath, ...(reelMeta ? { durationSec: reelMeta.durationSec, clipCount: reelMeta.clipCount } : {}) } }, { merge: true })
+    onProgress({ type: 'upload-reel', url })
+    return { key, reel: url }
+  }
+
+  // clips — 실제 존재하는 videos/*.mp4만 스캔
+  const metaById = new Map((images || []).map((im) => [im.id, im]))
+  let files = []
+  try {
+    files = (await fs.readdir(path.join(dir, 'videos'))).filter((f) => f.endsWith('.mp4'))
+  } catch {
+    /* videos 디렉터리 없음 */
+  }
+  const uploaded = []
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i]
+    const id = f.replace(/\.mp4$/, '')
+    const im = metaById.get(id) || {}
+    const objectPath = `generated-videos/${key}/${f}`
+    const { url, storagePath } = await uploadFileToStorage(bkt, path.join(dir, 'videos', f), objectPath, 'video/mp4')
+    uploaded.push({ id, age: im.age ?? null, year: im.year ?? null, scene: im.scene ?? null, isPast: im.isPast ?? null, url, storagePath })
+    onProgress({ type: 'upload', done: i + 1, total: files.length, id })
+  }
+  await doc.set({ ...base, count: uploaded.length, videos: uploaded }, { merge: true })
+  return { key, count: uploaded.length, videos: uploaded }
 }
 
 /** 생성 대기 프로필 조회. 기본은 status=='submitted'. includeErrors면 'error'도 재시도 대상에 포함. */

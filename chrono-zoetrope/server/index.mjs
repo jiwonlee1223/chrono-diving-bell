@@ -194,6 +194,39 @@ function bootstrapPayload() {
   }
 }
 
+// ── 페르소나 목록(사용자 선택 카드용) ────────────────────────────────
+// 로컬 라이브러리에 실제로 생성된 페르소나만 = 곧바로 체험 가능. 생성 순서(createdAt 오름차순).
+async function listPersonas() {
+  const out = []
+  let entries
+  try {
+    entries = await fs.readdir(libraryRoot, { withFileTypes: true })
+  } catch {
+    return out
+  }
+  for (const e of entries) {
+    if (!e.isDirectory() || e.name.startsWith('_') || e.name.startsWith('.')) continue
+    const dir = path.join(libraryRoot, e.name)
+    let manifest
+    try {
+      manifest = JSON.parse(await fs.readFile(path.join(dir, 'manifest.json'), 'utf-8'))
+    } catch {
+      continue
+    }
+    const images = (manifest.images || []).filter((im) => !im.failed)
+    if (images.length === 0) continue
+    out.push({
+      personaId: manifest.personaId || e.name,
+      name: manifest.profile?.name || e.name,
+      birthDate: manifest.profile?.birthDate || null,
+      createdAt: manifest.createdAt || null,
+      hasReel: existsSync(path.join(dir, 'reel.mp4'))
+    })
+  }
+  out.sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0))
+  return out
+}
+
 // ── HTTP 헬퍼 (admin-server 패턴) ────────────────────────────────────
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -279,6 +312,20 @@ const server = http.createServer(async (req, res) => {
     // ---- 부트스트랩 ----
     if (req.method === 'GET' && url.pathname === '/api/bootstrap') {
       return sendJson(res, 200, bootstrapPayload())
+    }
+
+    // ---- 사용자 선택: 페르소나 카드 목록 (생성 순서) ----
+    if (req.method === 'GET' && url.pathname === '/api/personas') {
+      return sendJson(res, 200, await listPersonas())
+    }
+
+    // ---- 사용자 선택: 카드 클릭 → 해당 참가자 로드 + 체험(reel 데모) 시작 ----
+    if (req.method === 'POST' && url.pathname === '/api/select') {
+      const body = await readBody(req)
+      const pid = body?.personaId
+      if (!pid) return sendJson(res, 400, { error: 'personaId 필요' })
+      await applySessionSelection(pid)
+      return sendJson(res, 200, { ok: true, personaId: pid })
     }
 
     // ---- SSE 상태 스트림 (main→renderer 방송 대체) ----

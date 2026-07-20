@@ -33,17 +33,28 @@ import {
   buildKontextWorkflow,
   buildSdxlWorkflow,
   buildGeminiSeamFixWorkflow,
+  buildSurroundSeamBlendWorkflow,
   randomSeed
 } from '../src/main/comfyui/workflows.js'
 import {
   initFirebase,
   listenProfiles,
   resetOrphanGenerating,
-  updateProfileFields
+  updateProfileFields,
+  uploadPersonaVideos
 } from '../src/main/comfyui/firestore-source.js'
 import { processProfile } from '../src/main/comfyui/profile-worker.js'
-import { composeScenePromptFor, personaId, SEAM_BAND_PROMPT } from '../src/main/comfyui/prompt-builder.js'
-import { readSession, writeSession } from '../src/main/session-pointer.js'
+import {
+  composeScenePromptFor,
+  composeSurroundPrompts,
+  composeSurroundGazePrompts,
+  personaId,
+  SEAM_BAND_PROMPT,
+  SEAM_BLEND_PROMPT
+} from '../src/main/comfyui/prompt-builder.js'
+import { generateSurroundPanorama, assembleStrip } from '../src/main/comfyui/panorama-tiles.js'
+import { generateSurroundPanoramaFlux2 } from '../src/main/comfyui/panorama-flux2.js'
+import { generateEquirectPanorama, cropToPanorama } from '../src/main/comfyui/equirect-panorama.js'
 import { VideoRegenerator } from '../src/main/comfyui/video-cache.js'
 import { ReelBuilder } from '../src/main/comfyui/reel-builder.js'
 
@@ -93,6 +104,8 @@ async function regenerate(pid, id) {
 
   if (wf === 'gemini') return regenerateGemini(pid, manifest, entry)
   if (wf === 'seamfix') return regenerateSeamfix(pid, manifest, entry)
+  if (wf === 'surround') return regenerateSurround(pid, manifest, entry)
+  if (wf === 'equirect') return regenerateEquirect(pid, manifest, entry)
 
   const client = new ComfyUIClient({ host: config.host, timeoutMs: config.timeoutMs })
   try {
@@ -165,6 +178,51 @@ async function regenerateGemini(pid, manifest, entry) {
   return { entry }
 }
 
+// equirect 재생성 — Gemini 360 equirect를 새로 뽑고(시드 없음, 확률만 다시) 4:1 crop + (옵션) seamfix.
+// 원본(src, 21:9)을 보관해 이후 "edge 재연결"(reseamEquirect)이 재생성 없이 crop/seamfix만 다시 할 수 있다.
+async function regenerateEquirect(pid, manifest, entry) {
+  const gclient = new GeminiClient({
+    apiKey: await resolveGeminiApiKey(config.gemini),
+    model: manifest.gemini?.model || config.gemini?.model,
+    textModel: config.gemini?.textModel,
+    timeoutMs: config.timeoutMs
+  })
+  const eqSeamfix = config.equirect?.seamfix ?? manifest.equirect?.seamfix ?? false
+  const client = eqSeamfix ? new ComfyUIClient({ host: config.host, timeoutMs: config.timeoutMs }) : null
+  const dir = path.join(LIBRARY, pid)
+  const t0 = Date.now()
+  try {
+    const { src, panorama, workflow } = await generateEquirectPanorama({
+      gclient,
+      client,
+      prompt: entry.prompt,
+      panorama: manifest.image,
+      sourceAspect: config.equirect?.sourceAspect ?? manifest.equirect?.sourceAspect ?? '21:9',
+      imageSize: manifest.gemini?.imageSize || config.gemini?.imageSize || '2K',
+      model: manifest.gemini?.sceneModel || config.gemini?.sceneModel || undefined,
+      seamfix: eqSeamfix,
+      pid,
+      sceneId: entry.id
+    })
+    const srcFile = `${entry.id}.src.png`
+    await Promise.all([
+      fs.writeFile(path.join(dir, srcFile), src),
+      fs.writeFile(path.join(dir, entry.file), panorama),
+      ...(workflow ? [fs.writeFile(path.join(dir, `${path.basename(entry.file, '.png')}.workflow.json`), JSON.stringify(workflow, null, 2))] : [])
+    ])
+    entry.srcFile = srcFile
+    entry.seed = null
+    entry.promptId = null
+    entry.elapsedMs = Date.now() - t0
+    entry.rev = (entry.rev || 0) + 1
+    delete entry.failed
+    await writeManifest(pid, manifest)
+    return { entry }
+  } finally {
+    client?.close()
+  }
+}
+
 // seamfix 이음매 보정 단계만 — 주어진 Gemini 원본 버퍼를 업로드해 Flux Fill 워크플로우를 돌리고
 // 보정본(-pano)을 장면 파일로 저장한다. regenerateSeamfix(재생성)와 reseam(재연결)이 공유한다.
 async function applySeamFix(pid, manifest, entry, srcBuffer, client) {
@@ -227,14 +285,244 @@ async function regenerateSeamfix(pid, manifest, entry) {
   }
 }
 
-// edge 재연결(seamfix 전용) — Gemini는 다시 만들지 않고, 보관된 원본으로 이음매 보정만 재실행한다.
-// "Gemini는 만족스러운데 seamless 연결만 문제"일 때 값싸게(재과금 없이) 다시 붙인다.
+// surround 서라운드 재생성 — 엔진(flux2/gemini)에 따라 전체를 다시 굴린다.
+async function regenerateSurround(pid, manifest, entry) {
+  const t0 = Date.now()
+  const tileSize = manifest.surround?.tileSize || Math.round(manifest.image.width / 4)
+  const gclient = new GeminiClient({
+    apiKey: await resolveGeminiApiKey(config.gemini),
+    model: manifest.gemini?.model || config.gemini?.model,
+    textModel: config.gemini?.textModel,
+    timeoutMs: config.timeoutMs
+  })
+  const sceneModel = manifest.gemini?.sceneModel || config.gemini?.sceneModel || undefined
+  const imageSize = manifest.gemini?.imageSize || config.gemini?.imageSize || '2K'
+
+  if ((manifest.surround?.outpaint ?? 'flux2') === 'flux2') {
+    // Flux.2 양쪽 브리지: Gemini 정면·맞은편 2장 + Flux.2 브리지 2장을 단일 워크플로우로.
+    const client = new ComfyUIClient({ host: config.host, timeoutMs: config.timeoutMs })
+    try {
+      const { aerial, front, back, panorama, workflow } = await generateSurroundPanoramaFlux2({
+        gclient,
+        client,
+        prompts: composeSurroundGazePrompts(manifest.profile, entry),
+        tileSize,
+        imageSize,
+        model: manifest.gemini?.model || config.gemini?.model,
+        bandWidth: config.surround?.bandWidth ?? manifest.surround?.bandWidth,
+        feather: config.surround?.feather ?? manifest.surround?.feather,
+        pid,
+        sceneId: entry.id
+      })
+      await writeTileSet(pid, entry, aerial ? { front, back, aerial } : { front, back })
+      await Promise.all([
+        fs.writeFile(path.join(LIBRARY, pid, entry.file), panorama),
+        fs.writeFile(path.join(LIBRARY, pid, `${path.basename(entry.file, '.png')}.workflow.json`), JSON.stringify(workflow, null, 2))
+      ])
+    } finally {
+      client.close()
+    }
+  } else {
+    // (구) Gemini 캔버스 아웃페인팅 + 4접합선 블렌드(옵션).
+    const prompts = composeSurroundPrompts(manifest.profile, entry)
+    const { tiles, panorama } = await generateSurroundPanorama({ gclient, prompts, tileSize, imageSize, model: sceneModel })
+    await writeTileSet(pid, entry, tiles)
+    entry.promptId = await finalizeSurroundPanorama(pid, manifest, entry, panorama)
+  }
+  entry.seed = null
+  if (!entry.promptId) entry.promptId = null
+  entry.elapsedMs = Date.now() - t0
+  entry.rev = (entry.rev || 0) + 1 // 클라이언트 캐시 버스팅용
+  delete entry.failed
+  await writeManifest(pid, manifest)
+  return { entry }
+}
+
+// 타일 버퍼 맵({key: Buffer})을 `${base}.${key}.png`로 저장하고 entry.tiles를 갱신한다.
+// gemini({front,right,back,left})·flux2({front,o1,o2,o3}) 양쪽 키셋을 처리한다.
+async function writeTileSet(pid, entry, bufs) {
+  const dir = path.join(LIBRARY, pid)
+  const base = path.basename(entry.file, '.png')
+  const tiles = {}
+  await Promise.all(
+    Object.entries(bufs).map(async ([k, buf]) => {
+      tiles[k] = `${base}.${k}.png`
+      await fs.writeFile(path.join(dir, tiles[k]), buf)
+    })
+  )
+  entry.tiles = tiles
+}
+
+// 조립본을 entry.file로 저장한다. surround.seamBlend가 켜져 있으면 ComfyUI Flux Fill로 4개 접합선을 블렌드,
+// 아니면 조립본 그대로 저장. 블렌드 promptId(또는 null)를 반환한다.
+async function finalizeSurroundPanorama(pid, manifest, entry, panorama) {
+  const dest = path.join(LIBRARY, pid, entry.file)
+  if (!manifest.surround?.seamBlend) {
+    await fs.writeFile(dest, panorama)
+    return null
+  }
+  const client = new ComfyUIClient({ host: config.host, timeoutMs: config.timeoutMs })
+  try {
+    const uploaded = await client.uploadImage(panorama, `${pid}-${entry.id}-assembled.png`)
+    const wf = buildSurroundSeamBlendWorkflow({
+      referenceImage: uploaded.name,
+      bandPrompt: SEAM_BLEND_PROMPT,
+      width: manifest.image.width,
+      height: manifest.image.height,
+      tileCount: 4,
+      // 운영 중 조정을 우선: config.surround → manifest.surround → workflow 기본(200/100).
+      bandWidth: config.surround?.bandWidth ?? manifest.surround?.bandWidth,
+      feather: config.surround?.feather ?? manifest.surround?.feather,
+      seed: randomSeed(),
+      filenamePrefix: `chrono-zoetrope/${pid}/${path.basename(entry.file, '.png')}`
+    })
+    const { promptId, images } = await client.generate(wf)
+    const corrected = images.find((im) => /-pano_/.test(im.filename)) || images[0]
+    await fs.writeFile(dest, corrected.data)
+    return promptId
+  } finally {
+    client.close()
+  }
+}
+
+// edge 재연결 — 워크플로우·엔진별로 갈린다. 공통: Gemini 앵커/원본은 유지, 재과금 없음.
+//   seamfix         : 보관된 Gemini 원본으로 Flux Fill 이음매 보정만 재실행.
+//   surround(flux2) : 보관된 앵커(front)를 두고 Flux.2 아웃페인팅 체인 + wrap을 다시 돌림.
+//   surround(gemini): 보관된 타일 4장을 재조립하고 4접합선만 Flux Fill로 다시 블렌드.
 async function reseam(pid, id) {
   const manifest = await readManifest(pid)
+  if (manifest.workflow === 'surround') return restitchSurround(pid, manifest, id)
+  if (manifest.workflow === 'seamfix') return reseamSeamfix(pid, manifest, id)
+  if (manifest.workflow === 'equirect') return reseamEquirect(pid, manifest, id)
+  throw new Error('edge 재연결은 equirect·surround·seamfix 워크플로우에서만 가능합니다')
+}
+
+// equirect edge 재연결 — 보관된 Gemini 원본(src, 21:9)에서 재생성 없이 crop/seamfix만 다시 한다(무과금).
+async function reseamEquirect(pid, manifest, id) {
   const entry = (manifest.images || []).find((img) => img.id === id)
   if (!entry) throw new Error(`항목 없음: ${id}`)
-  if (manifest.workflow !== 'seamfix')
-    throw new Error('edge 재연결은 seamfix 워크플로우에서만 가능합니다')
+  if (!entry.srcFile) throw new Error('보관된 Gemini 원본(src)이 없습니다 (이 장 이전 버전) — 전체 재생성이 필요합니다')
+  const dir = path.join(LIBRARY, pid)
+  const t0 = Date.now()
+  let src
+  try {
+    src = await fs.readFile(path.join(dir, entry.srcFile))
+  } catch {
+    throw new Error('원본(src) 파일을 찾을 수 없습니다 — 전체 재생성이 필요합니다')
+  }
+  const { width: W, height: H } = manifest.image
+  let panorama = await cropToPanorama(src, W, H)
+  let workflow = null
+  const eqSeamfix = config.equirect?.seamfix ?? manifest.equirect?.seamfix ?? false
+  if (eqSeamfix) {
+    const client = new ComfyUIClient({ host: config.host, timeoutMs: config.timeoutMs })
+    try {
+      const up = await client.uploadImage(panorama, `${pid}-${entry.id}-eq.png`)
+      workflow = buildGeminiSeamFixWorkflow({
+        referenceImage: up.name,
+        prompt: SEAM_BLEND_PROMPT,
+        bandPrompt: SEAM_BLEND_PROMPT,
+        width: W,
+        height: H,
+        bandWidth: eqSeamfix.bandWidth,
+        feather: eqSeamfix.feather,
+        bandModel: 'flux-fill',
+        seed: randomSeed(),
+        filenamePrefix: `chrono-zoetrope/${pid}/${path.basename(entry.file, '.png')}`
+      })
+      const out = await client.generate(workflow)
+      panorama = (out.images.find((im) => /-pano_/.test(im.filename)) || out.images[0]).data
+    } finally {
+      client.close()
+    }
+  }
+  await Promise.all([
+    fs.writeFile(path.join(dir, entry.file), panorama),
+    ...(workflow ? [fs.writeFile(path.join(dir, `${path.basename(entry.file, '.png')}.workflow.json`), JSON.stringify(workflow, null, 2))] : [])
+  ])
+  entry.elapsedMs = Date.now() - t0
+  entry.rev = (entry.rev || 0) + 1
+  await writeManifest(pid, manifest)
+  return { entry }
+}
+
+async function restitchSurround(pid, manifest, id) {
+  const entry = (manifest.images || []).find((img) => img.id === id)
+  if (!entry) throw new Error(`항목 없음: ${id}`)
+  const dir = path.join(LIBRARY, pid)
+  const t0 = Date.now()
+  const tileSize = manifest.surround?.tileSize || Math.round(manifest.image.width / 4)
+
+  if ((manifest.surround?.outpaint ?? 'flux2') === 'flux2') {
+    // Flux.2 브리지: 보관된 앵커 2장(front·back)을 두고 브리지만 다시 돌린다(Gemini 호출 없음).
+    if (!entry.tiles?.front || !entry.tiles?.back)
+      throw new Error('보관된 앵커 타일(front·back)이 없습니다 (이 장 이전 버전) — 전체 재생성이 필요합니다')
+    let frontAnchor, backAnchor
+    try {
+      ;[frontAnchor, backAnchor] = await Promise.all([
+        fs.readFile(path.join(dir, entry.tiles.front)),
+        fs.readFile(path.join(dir, entry.tiles.back))
+      ])
+    } catch {
+      throw new Error('앵커 타일 파일을 찾을 수 없습니다 — 전체 재생성이 필요합니다')
+    }
+    const client = new ComfyUIClient({ host: config.host, timeoutMs: config.timeoutMs })
+    try {
+      const { front, back, panorama, workflow } = await generateSurroundPanoramaFlux2({
+        gclient: null, // 앵커 2장을 재사용하므로 Gemini 호출 없음
+        client,
+        prompts: composeSurroundGazePrompts(manifest.profile, entry),
+        frontAnchor,
+        backAnchor,
+        tileSize,
+        bandWidth: config.surround?.bandWidth ?? manifest.surround?.bandWidth,
+        feather: config.surround?.feather ?? manifest.surround?.feather,
+        pid,
+        sceneId: entry.id
+      })
+      await writeTileSet(pid, entry, { front, back })
+      await Promise.all([
+        fs.writeFile(path.join(dir, entry.file), panorama),
+        fs.writeFile(path.join(dir, `${path.basename(entry.file, '.png')}.workflow.json`), JSON.stringify(workflow, null, 2))
+      ])
+    } finally {
+      client.close()
+    }
+    entry.promptId = null
+  } else {
+    // (구) Gemini 캔버스 아웃페인팅: 보관된 타일 4장 재조립 + 4접합선 Flux Fill 재블렌드.
+    if (!manifest.surround?.seamBlend)
+      throw new Error('접합선 블렌드가 꺼져 있어 재연결할 이음매가 없습니다 (전체 재생성을 쓰세요)')
+    const tiles = entry.tiles
+    if (!tiles?.front || !tiles?.right || !tiles?.back || !tiles?.left)
+      throw new Error('보관된 타일이 없습니다 (이 장 이전 버전) — 전체 재생성이 필요합니다')
+    let bufs
+    try {
+      bufs = await Promise.all([
+        fs.readFile(path.join(dir, tiles.left)),
+        fs.readFile(path.join(dir, tiles.front)),
+        fs.readFile(path.join(dir, tiles.right)),
+        fs.readFile(path.join(dir, tiles.back))
+      ])
+    } catch {
+      throw new Error('타일 파일을 찾을 수 없습니다 — 전체 재생성이 필요합니다')
+    }
+    const panorama = await assembleStrip(bufs, tileSize) // [타일4 | 타일1 | 타일2 | 타일3]
+    entry.promptId = await finalizeSurroundPanorama(pid, manifest, entry, panorama)
+  }
+
+  entry.elapsedMs = Date.now() - t0
+  entry.rev = (entry.rev || 0) + 1
+  delete entry.failed
+  await writeManifest(pid, manifest)
+  return { entry }
+}
+
+// seamfix edge 재연결 — Gemini는 다시 만들지 않고, 보관된 원본으로 이음매 보정만 재실행한다.
+// "Gemini는 만족스러운데 seamless 연결만 문제"일 때 값싸게(재과금 없이) 다시 붙인다.
+async function reseamSeamfix(pid, manifest, id) {
+  const entry = (manifest.images || []).find((img) => img.id === id)
+  if (!entry) throw new Error(`항목 없음: ${id}`)
   if (!entry.srcFile)
     throw new Error('보관된 Gemini 원본이 없습니다 (이 장 이전 버전) — 전체 재생성이 필요합니다')
   let srcBuffer
@@ -392,6 +680,15 @@ async function pumpVideo() {
       await writeManifest(pid, manifest)
       videoLast = { pid, kind, ok: true, at: Date.now() }
       logAction(`✓ 영상 생성 완료: ${pid} — ${done}/${total}`)
+      // Firebase 'generatedVideos' 컬렉션에 클립 업로드 (이미지와 동일 형식). 실패해도 잡은 성공 유지.
+      if (firebaseReady && config.firebase?.uploadGenerated !== false) {
+        try {
+          const up = await uploadPersonaVideos({ profile: manifest.profile, personaId: pid, dir: personaDir, images: manifest.images, kind: 'clips' })
+          logAction(`  ↑ Firebase 영상 업로드: ${up.count}개 → 'generatedVideos'/${up.key}`)
+        } catch (e) {
+          logAction(`  ⚠ Firebase 영상 업로드 실패(로컬 보존됨): ${e.message}`)
+        }
+      }
     } else {
       // 릴 합성: seedance → 루프 이어붙여 fast-forward | wan → 크로스페이드
       videoJob = { pid, kind, phase: 'concat', done: 0, total: scenes.length }
@@ -412,6 +709,14 @@ async function pumpVideo() {
       await writeManifest(pid, manifest)
       videoLast = { pid, kind, ok: true, durationSec: meta.durationSec, at: Date.now() }
       logAction(`✓ 릴 완료: ${pid} — ${meta.durationSec.toFixed(1)}s (${meta.clipCount}개)`)
+      if (firebaseReady && config.firebase?.uploadGenerated !== false) {
+        try {
+          const up = await uploadPersonaVideos({ profile: manifest.profile, personaId: pid, dir: personaDir, images: manifest.images, kind: 'reel', reelMeta: meta })
+          logAction(`  ↑ Firebase 릴 업로드 → 'generatedVideos'/${up.key}`)
+        } catch (e) {
+          logAction(`  ⚠ Firebase 릴 업로드 실패(로컬 보존됨): ${e.message}`)
+        }
+      }
     }
   } catch (err) {
     const cancelled = Boolean(err.cancelled) || videoCancel
@@ -538,7 +843,7 @@ async function maybeStartNext() {
 
 // Firebase 연결 실패해도 서버는 뜬다(검토 기능만). 큐/자동생성만 비활성화.
 try {
-  await initFirebase({ serviceAccountPath: saPath, projectId: config.firebase?.projectId })
+  await initFirebase({ serviceAccountPath: saPath, projectId: config.firebase?.projectId, storageBucket: config.firebase?.storageBucket })
   firebaseReady = true
   if (!VIEW_ONLY) {
     // 이전 실행이 생성 도중 죽어 generating에 갇힌 프로필 복구 → 큐가 다시 잡고,
@@ -671,29 +976,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { queued: true, id })
     }
 
-    // ── 세션 참가자(연구자용 "로그인") ────────────────────────────────
-    // 4창 런타임은 이 선택(_session.json)을 읽어 해당 참가자의 생애를 재생한다.
-    // 선택은 오직 여기(연구자 admin)에서만 이뤄진다 — 4창에는 선택 화면이 뜨지 않는다.
-
-    // GET /api/session → 현재 세션 참가자
-    if (req.method === 'GET' && url.pathname === '/api/session') {
-      return send(res, 200, (await readSession(LIBRARY)) || { personaId: null })
-    }
-
-    // POST /api/session { personaId } → 세션 참가자 설정. 런타임이 IDLE이면 즉시 반영된다.
-    if (req.method === 'POST' && url.pathname === '/api/session') {
-      const { personaId: pid } = await readBody(req)
-      if (!pid) return send(res, 400, { error: 'personaId 필요' })
-      let manifest
-      try {
-        manifest = await readManifest(pid)
-      } catch {
-        return send(res, 404, { error: `persona 없음: ${pid}` })
-      }
-      const sel = await writeSession(LIBRARY, { personaId: pid, name: manifest.profile?.name || null })
-      logAction(`◆ 세션 참가자 설정 → ${sel.name || pid}`)
-      return send(res, 200, sel)
-    }
+    // (세션 참가자 설정 기능은 제거됨 — 참가자 선택은 관람 런타임(8788)의 카드 화면에서 한다.)
 
     // GET /api/personas → persona 목록
     if (req.method === 'GET' && url.pathname === '/api/personas') {
@@ -811,7 +1094,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(
     `[admin] http://localhost:${PORT}  (library: ${LIBRARY}, workflow: ${config.workflow}` +
-      `${['gemini', 'hybrid', 'seamfix'].includes(config.workflow) ? `, gemini: ${config.gemini?.model}` : ''}` +
-      `${config.workflow === 'gemini' ? '' : `, comfyui: ${config.host}`})`
+      `${['gemini', 'hybrid', 'seamfix', 'surround'].includes(config.workflow) ? `, gemini: ${config.gemini?.model}` : ''}` +
+      `${['gemini', 'surround'].includes(config.workflow) ? '' : `, comfyui: ${config.host}`})`
   )
 })

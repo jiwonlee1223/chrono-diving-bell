@@ -52,15 +52,15 @@ const saPath = config.firebase?.serviceAccountPath
   : undefined
 
 try {
-  await initFirebase({ serviceAccountPath: saPath, projectId: config.firebase?.projectId })
+  await initFirebase({ serviceAccountPath: saPath, projectId: config.firebase?.projectId, storageBucket: config.firebase?.storageBucket })
 } catch (err) {
   console.error(`\n[설정 오류] ${err.message}\n\n서비스 계정 키 준비는 scripts/FIRESTORE.md 참조.`)
   process.exit(1)
 }
 log(
   `Firebase 연결됨. library=${OUT_DIR}, workflow=${config.workflow}` +
-    (['gemini', 'seamfix'].includes(config.workflow) ? ` gemini=${config.gemini?.model}` : '') +
-    (config.workflow === 'gemini' ? '' : ` comfyui=${config.host}`)
+    (['gemini', 'seamfix', 'surround'].includes(config.workflow) ? ` gemini=${config.gemini?.model}` : '') +
+    (['gemini', 'surround'].includes(config.workflow) ? '' : ` comfyui=${config.host}`)
 )
 
 // 이전 실행이 생성 도중 죽어 generating에 갇힌 프로필 복구 (resume이 이어서 생성).

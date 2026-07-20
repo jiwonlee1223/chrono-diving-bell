@@ -33,6 +33,85 @@
         pointer-events: none;
         z-index: 10;
       }
+      /* 사용자 선택 화면(로그인) — 참가자 카드. 표시 중엔 커서가 보인다(카드 클릭용). */
+      #selectScreen {
+        position: fixed;
+        inset: 0;
+        z-index: 30;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 28px;
+        background: rgba(0, 0, 0, 0.82);
+        cursor: default;
+        transition: opacity 0.5s;
+      }
+      #selectScreen.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+      #selectTitle {
+        color: rgba(255, 255, 255, 0.7);
+        font:
+          300 20px/1.4 system-ui,
+          -apple-system,
+          sans-serif;
+        letter-spacing: 0.08em;
+      }
+      #cards {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 16px;
+        justify-content: center;
+        align-items: stretch;
+        max-width: 88vw;
+        max-height: 70vh;
+        overflow-y: auto;
+        padding: 4px;
+      }
+      .card {
+        min-width: 150px;
+        padding: 20px 22px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.04);
+        color: #eee;
+        cursor: pointer;
+        text-align: left;
+        transition:
+          background 0.15s,
+          border-color 0.15s,
+          transform 0.1s;
+      }
+      .card:hover {
+        background: rgba(255, 200, 120, 0.12);
+        border-color: rgba(255, 200, 120, 0.5);
+      }
+      .card:active {
+        transform: scale(0.98);
+      }
+      .card .cname {
+        font:
+          500 19px/1.2 system-ui,
+          sans-serif;
+      }
+      .card .cbirth {
+        margin-top: 6px;
+        font:
+          300 13px/1.2 system-ui,
+          sans-serif;
+        color: rgba(255, 255, 255, 0.5);
+      }
+      .card .cnoreel {
+        margin-top: 8px;
+        font: 300 11px/1 system-ui, sans-serif;
+        color: rgba(255, 150, 120, 0.7);
+      }
+      #cardsEmpty {
+        color: rgba(255, 255, 255, 0.4);
+        font: 300 15px system-ui, sans-serif;
+      }
       /* 테스트용 수동 트리거 버튼(측면 아래 = 좌하단). 관람 흐름과 무관, 눈에 안 띄게. */
       #demoBtn {
         position: fixed;
@@ -60,6 +139,10 @@
   <body>
     <canvas id="view"></canvas>
     <div id="flash"></div>
+    <div id="selectScreen">
+      <div id="selectTitle">체험할 사람을 선택하세요</div>
+      <div id="cards"></div>
+    </div>
     <button id="demoBtn" type="button" title="reel 데모 수동 실행(테스트)">▶</button>
     <script type="module" src="./src/renderer.js"></script>
   </body>

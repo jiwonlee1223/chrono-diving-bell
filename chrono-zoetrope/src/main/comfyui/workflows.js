@@ -13,9 +13,17 @@ export const MODELS = {
   kontextClip: ['clip_l.safetensors', 't5xxl_fp8_e4m3fn.safetensors'],
   kontextVae: 'ae.safetensors',
   sdxl: 'realvisxlV40_v40LightningBakedvae.safetensors',
+  // BrushNet gap-fill(같은 방 두 시점 사이 메우기 실험). SDXL random-mask + 사실체 SDXL 베이스.
+  sdxlInpaintBase: 'epicrealism-xl.safetensors',
+  brushnet: 'brushnet_random_mask_sdxl.safetensors',
   // Flux Fill — 전용 inpainting diffusion 모델. B안 seam 보정 띠를 Gemini에 근접한 화질로 채운다
   // (SDXL Lightning 대비 왜곡·뭉갬 크게 감소). CLIP/VAE는 kontext와 공유(flux 계열).
   fluxFill: 'fluxFillFP8_v10.safetensors',
+  // Flux.2 dev — surround 아웃페인팅 엔진. 앵커(Gemini) 옆을 마스크 아웃페인팅으로 '진짜' 이어 그린다
+  // (Gemini 재생성과 달리 기존 픽셀에 조건화 → 원근·내용 연속). 전용 인코더(mistral)·VAE(flux2) 사용.
+  flux2Unet: 'flux2_dev_fp8mixed.safetensors',
+  flux2Clip: 'mistral_3_small_flux2_bf16.safetensors',
+  flux2Vae: 'flux2-vae.safetensors',
   // Wan2.2 I2V 14B: high/low noise 2-패스 + lightx2v 4-step 증류 LoRA (실서버 확인, 2026-07).
   wanHigh: 'wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors',
   wanLow: 'wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors',
@@ -32,7 +40,8 @@ export const PANORAMA_NEGATIVE =
 
 // Wan2.2 공식 템플릿 계열의 표준 네거티브(중국어). 정적 화면·저품질·자막 억제.
 export const WAN_NEGATIVE =
-  '色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走'
+  // 뒤쪽 추가분(2026-07-19): 说话/张嘴/念白… = 말하기·입벙긋·대사·카메라 응대. 주인공이 사진 밖 사용자에게 말 거는 것 방지.
+  '色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走，说话，张嘴，张嘴说话，念白，对着镜头说话，对口型，嘴巴动'
 
 export function randomSeed() {
   return Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)
@@ -730,6 +739,384 @@ export function buildGeminiSeamFixWorkflow({
   return g
 }
 
+/**
+ * Flux Fill 단측 아웃페인팅 — Path B(rotate-and-outpaint / 생성형 Street View)용.
+ *
+ * 앵커 이미지를 한쪽(left|right)으로 pad하고 그 pad 영역만 이웃 픽셀에 조건화해 채운다.
+ * gap-fill(양쪽 고정, 블러)이 아니라 continuation(한쪽만 고정)이라 선명하다 — 방위각 연속을 만드는 핵심.
+ * SaveImage가 (srcWidth + pad) × height 전체를 저장하니, 호출자가 새 pad 영역만 crop해서 슬라이딩한다.
+ * 프롬프트는 composeSurroundFlux2Continuation 권장('빈칸 채워라' 금지, '옆으로 이어 그려라' 내용 지시).
+ *
+ * @param {object} p
+ * @param {string} p.referenceImage  업로드된 앵커 이름 (client.uploadImage().name)
+ * @param {string} p.prompt          연속 프롬프트
+ * @param {number} p.srcWidth        앵커 폭(px) — ImageScale로 강제 정규화
+ * @param {number} p.height
+ * @param {'right'|'left'} p.side     확장 방향
+ * @param {number} p.pad             이번 스텝에 이어 그릴 폭(px)
+ * @param {number} p.feather         pad 경계 페더(px)
+ * @param {number} p.denoise         기본 1.0 (Flux Fill)
+ * @param {number} p.fluxGuidance    기본 30
+ * @param {number} p.steps           기본 20
+ * @param {number} p.seed
+ * @param {string} p.filenamePrefix  `${prefix}-ext` 로 저장
+ */
+export function buildFluxFillOutpaintWorkflow({
+  referenceImage,
+  prompt,
+  srcWidth,
+  height = 1024,
+  side = 'right',
+  pad = 512,
+  feather = 64,
+  denoise = 1.0,
+  fluxGuidance = 30,
+  steps = 20,
+  seed = randomSeed(),
+  filenamePrefix
+}) {
+  const padL = side === 'left' ? pad : 0
+  const padR = side === 'right' ? pad : 0
+  return {
+    100: { class_type: 'LoadImage', inputs: { image: referenceImage }, _meta: { title: 'Anchor' } },
+    101: {
+      class_type: 'ImageScale',
+      inputs: { image: ['100', 0], upscale_method: 'lanczos', width: srcWidth, height, crop: 'disabled' },
+      _meta: { title: 'Normalize Anchor' }
+    },
+    102: {
+      class_type: 'ImagePadForOutpaint',
+      inputs: { image: ['101', 0], left: padL, top: 0, right: padR, bottom: 0, feathering: feather },
+      _meta: { title: `Pad ${side} ${pad}` }
+    },
+    110: { class_type: 'UNETLoader', inputs: { unet_name: MODELS.fluxFill, weight_dtype: 'default' }, _meta: { title: 'Load Flux Fill' } },
+    111: {
+      class_type: 'DualCLIPLoader',
+      inputs: { clip_name1: MODELS.kontextClip[0], clip_name2: MODELS.kontextClip[1], type: 'flux' },
+      _meta: { title: 'Load CLIP (flux)' }
+    },
+    112: { class_type: 'VAELoader', inputs: { vae_name: MODELS.kontextVae }, _meta: { title: 'Load VAE (ae)' } },
+    113: { class_type: 'CLIPTextEncode', inputs: { text: prompt, clip: ['111', 0] }, _meta: { title: 'Continuation Prompt' } },
+    114: { class_type: 'FluxGuidance', inputs: { conditioning: ['113', 0], guidance: fluxGuidance }, _meta: { title: 'Flux Guidance' } },
+    115: { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['113', 0] }, _meta: { title: 'Negative (zeroed)' } },
+    116: {
+      class_type: 'InpaintModelConditioning',
+      inputs: { positive: ['114', 0], negative: ['115', 0], vae: ['112', 0], pixels: ['102', 0], mask: ['102', 1], noise_mask: true },
+      _meta: { title: 'Flux Fill Conditioning' }
+    },
+    117: {
+      class_type: 'KSampler',
+      inputs: {
+        model: ['110', 0],
+        positive: ['116', 0],
+        negative: ['116', 1],
+        latent_image: ['116', 2],
+        seed,
+        steps,
+        cfg: 1,
+        sampler_name: 'euler',
+        scheduler: 'simple',
+        denoise
+      },
+      _meta: { title: `Outpaint ${side}` }
+    },
+    118: { class_type: 'VAEDecode', inputs: { samples: ['117', 0], vae: ['112', 0] }, _meta: { title: 'Decode' } },
+    119: { class_type: 'SaveImage', inputs: { images: ['118', 0], filename_prefix: `${filenamePrefix}-ext` }, _meta: { title: 'Save Extended' } }
+  }
+}
+
+/**
+ * BrushNet gap-fill — 조인 주변 crop(width×height)의 중앙 세로 밴드를 BrushNet(SDXL)로 채운다.
+ * "서로 다른 두 시점 사이(gap)를 메우기"의 BrushNet 버전. Flux Fill(gap=블러) 대비 문맥 이중분기라
+ * 큰 마스크에 더 일관적일 것으로 기대. easy-nodes 파이프라인 사용(fullLoader→applyInpaint→preSampling→kSampler).
+ *
+ * SDXL은 4096폭에서 반복 아티팩트가 나므로 호출자가 조인 주변만 crop(≤2048)해 넘긴다. mask 밖은 보존.
+ *
+ * @param {object} p
+ * @param {string} p.referenceImage  업로드된 crop 이름
+ * @param {string} p.prompt          밴드 프롬프트(SEAM_BLEND_PROMPT 권장 — 새 인물·사물 금지, 표면 연장)
+ * @param {number} p.width           crop 폭(≤2048 권장)
+ * @param {number} p.height
+ * @param {number} p.bandWidth       중앙 마스크 밴드 폭
+ * @param {number} p.feather         밴드 좌우 페더
+ * @param {string} p.ckpt            SDXL 체크포인트
+ * @param {string} p.vae             VAE(SDXL)
+ * @param {string} p.brushnet        BrushNet 모델
+ * @param {number} p.steps @param {number} p.cfg @param {number} p.denoise @param {number} p.scale
+ * @param {number} p.seed @param {string} p.filenamePrefix
+ */
+export function buildBrushNetGapFillWorkflow({
+  referenceImage,
+  prompt,
+  negative = PANORAMA_NEGATIVE,
+  width = 1536,
+  height = 1024,
+  bandWidth = 768,
+  feather = 96,
+  ckpt = 'sd_xl_base_1.0.safetensors',
+  vae = 'sdxl.vae.safetensors',
+  inpaintMode = 'brushnet_random', // 'brushnet_random'|'fooocus_inpaint'|'powerpaint'|'normal'
+  fn = 'text guided', // powerpaint용 function(brushnet/fooocus는 무시)
+  encode = 'vae_encode_inpaint',
+  steps = 25,
+  cfg = 7,
+  denoise = 1.0,
+  scale = 1.0,
+  seed = randomSeed(),
+  filenamePrefix
+}) {
+  const bandX = Math.floor((width - bandWidth) / 2)
+  return {
+    100: { class_type: 'LoadImage', inputs: { image: referenceImage }, _meta: { title: 'Join Crop' } },
+    101: {
+      class_type: 'ImageScale',
+      inputs: { image: ['100', 0], upscale_method: 'lanczos', width, height, crop: 'disabled' },
+      _meta: { title: 'Normalize' }
+    },
+    105: { class_type: 'SolidMask', inputs: { value: 0.0, width, height }, _meta: { title: 'Black' } },
+    106: { class_type: 'SolidMask', inputs: { value: 1.0, width: bandWidth, height }, _meta: { title: 'Band' } },
+    107: {
+      class_type: 'MaskComposite',
+      inputs: { destination: ['105', 0], source: ['106', 0], x: bandX, y: 0, operation: 'add' },
+      _meta: { title: 'Center Band Mask' }
+    },
+    108: { class_type: 'FeatherMask', inputs: { mask: ['107', 0], left: feather, top: 0, right: feather, bottom: 0 }, _meta: { title: 'Feather' } },
+    110: {
+      class_type: 'easy fullLoader',
+      inputs: {
+        ckpt_name: ckpt,
+        config_name: 'Default',
+        vae_name: vae,
+        clip_skip: -2,
+        lora_name: 'None',
+        lora_model_strength: 1,
+        lora_clip_strength: 1,
+        resolution: 'width x height (custom)',
+        empty_latent_width: width,
+        empty_latent_height: height,
+        positive: prompt,
+        positive_token_normalization: 'none',
+        positive_weight_interpretation: 'comfy',
+        negative,
+        negative_token_normalization: 'none',
+        negative_weight_interpretation: 'comfy',
+        batch_size: 1,
+        a1111_prompt_style: false
+      },
+      _meta: { title: 'Load SDXL (easy)' }
+    },
+    111: {
+      class_type: 'easy applyInpaint',
+      inputs: {
+        pipe: ['110', 0],
+        image: ['101', 0],
+        mask: ['108', 0],
+        inpaint_mode: inpaintMode,
+        encode,
+        grow_mask_by: 6,
+        dtype: 'float16',
+        fitting: 1.0,
+        function: fn,
+        scale,
+        start_at: 0,
+        end_at: 10000,
+        noise_mask: true
+      },
+      _meta: { title: `Apply Inpaint (${inpaintMode})` }
+    },
+    112: {
+      class_type: 'easy preSampling',
+      // easy preSampling seed 최대 = 2^50. randomSeed()가 더 클 수 있어 클램프.
+      inputs: { pipe: ['111', 0], steps, cfg, sampler_name: 'dpmpp_2m', scheduler: 'karras', denoise, seed: seed % 1125899906842624 },
+      _meta: { title: 'PreSampling' }
+    },
+    113: {
+      class_type: 'easy kSampler',
+      inputs: { pipe: ['112', 0], image_output: 'Save', link_id: 0, save_prefix: `${filenamePrefix}-brush` },
+      _meta: { title: 'Sample (BrushNet)' }
+    }
+  }
+}
+
+/**
+ * 서라운드(surround) 조립본의 타일 접합선을 Flux Fill로 한 번에 블렌딩한다.
+ *
+ * surround는 90° 타일 4장을 Gemini 캔버스 아웃페인팅으로 이어 4:1로 조립한다(panorama-tiles.js).
+ * 조립본에는 접합선이 4곳 — 내부 3곳(x=tileSize,2·tileSize,3·tileSize)과 등 뒤 wrap 1곳(x=0/width 경계)이다.
+ * 이 워크플로우는 조립본을 **tileSize/2 만큼 roll**해서 4곳 접합선을 전부 '내부'로 옮긴다
+ * (wrap 경계가 (0+½)·tileSize로 오고, 나머지도 (k+½)·tileSize로 균등 배치. 새로 생긴 양끝은
+ *  tile3 한가운데라 연속이라 새 이음매가 안 생긴다). 그 4개 세로 띠만 Flux Fill로 다시 그려 잇고 roll back.
+ *
+ * 밴드 프롬프트는 SEAM_BLEND_PROMPT 권장 — seamfix의 '민무늬 벽'(SEAM_BAND_PROMPT)과 달리, 접합선이
+ * 방 한가운데를 지나므로 '양쪽에 이미 있는 표면·사물을 이어 섞으라'고만 지시한다(새 인물·사물 금지).
+ *
+ * @param {object} p
+ * @param {string} p.referenceImage  업로드된 조립 파노라마 이름 (client.uploadImage().name)
+ * @param {string} p.bandPrompt      접합선 띠 프롬프트 (SEAM_BLEND_PROMPT 권장)
+ * @param {number} p.width           조립본 가로(4:1 → 4·tileSize). ImageScale로 강제 정규화.
+ * @param {number} p.height
+ * @param {number} p.tileCount       타일 수(기본 4). 접합선 = tileCount곳.
+ * @param {number} p.bandWidth       접합선 띠 폭(px). 좁을수록 원본 보존↑. 기본 200.
+ * @param {number} p.feather         띠 좌우 페더(px). 기본 100.
+ * @param {number} p.seed
+ * @param {'flux-fill'|'sdxl'} p.bandModel  기본 flux-fill.
+ * @param {number} p.denoise         미지정 시 모델별 기본(flux 1.0 / sdxl 0.7).
+ * @param {number} p.fluxGuidance
+ * @param {string} p.filenamePrefix  `${prefix}-pano`(보정본) `${prefix}-raw`(입력 조립본)
+ * @param {boolean} p.seamCheck      [A|A] 검증 이미지 추가
+ */
+export function buildSurroundSeamBlendWorkflow({
+  referenceImage,
+  bandPrompt,
+  negative = PANORAMA_NEGATIVE,
+  width = 4096,
+  height = 1024,
+  tileCount = 4,
+  bandWidth = 200,
+  feather = 100,
+  seed = randomSeed(),
+  bandModel = 'flux-fill',
+  denoise,
+  fluxGuidance = 30,
+  steps,
+  cfg = 1.5,
+  sdxlCheckpoint = MODELS.sdxl,
+  filenamePrefix,
+  seamCheck = false
+}) {
+  const tileSize = Math.round(width / tileCount)
+  const roll = Math.round(tileSize / 2) // 접합선을 전부 내부로 옮기는 roll 량
+  const restW = width - roll
+  // roll 후 접합선 중심: (k+½)·tileSize (k=0..tileCount-1). k=0이 원래 wrap 경계.
+  const bandCenters = Array.from({ length: tileCount }, (_, k) => Math.round((k + 0.5) * tileSize))
+
+  const g = {
+    100: { class_type: 'LoadImage', inputs: { image: referenceImage }, _meta: { title: 'Surround Panorama' } },
+    101: {
+      class_type: 'ImageScale',
+      inputs: { image: ['100', 0], upscale_method: 'lanczos', width, height, crop: 'disabled' },
+      _meta: { title: 'Normalize' }
+    },
+    // roll right by `roll`: [old[width-roll..width] | old[0..width-roll]] → 4접합선이 전부 내부로
+    102: { class_type: 'ImageCrop', inputs: { image: ['101', 0], width: restW, height, x: 0, y: 0 }, _meta: { title: 'Left Part' } },
+    103: { class_type: 'ImageCrop', inputs: { image: ['101', 0], width: roll, height, x: restW, y: 0 }, _meta: { title: 'Right Part' } },
+    104: {
+      class_type: 'easy imageConcat',
+      inputs: { image1: ['103', 0], image2: ['102', 0], direction: 'right', match_image_size: false },
+      _meta: { title: 'Rolled' }
+    },
+    // 4개 세로 띠 마스크: 검정 캔버스 + 각 접합선 위치에 흰 띠 add → 페더
+    130: { class_type: 'SolidMask', inputs: { value: 0.0, width, height }, _meta: { title: 'Black Canvas' } },
+    131: { class_type: 'SolidMask', inputs: { value: 1.0, width: bandWidth, height }, _meta: { title: 'White Band' } }
+  }
+  // MaskComposite 체인으로 4개 띠를 누적한다(132..).
+  let maskRef = ['130', 0]
+  bandCenters.forEach((center, i) => {
+    const node = 132 + i
+    g[node] = {
+      class_type: 'MaskComposite',
+      inputs: { destination: maskRef, source: ['131', 0], x: Math.max(0, center - Math.round(bandWidth / 2)), y: 0, operation: 'add' },
+      _meta: { title: `Band @${center}` }
+    }
+    maskRef = [String(node), 0]
+  })
+  const featherNode = 132 + bandCenters.length
+  g[featherNode] = {
+    class_type: 'FeatherMask',
+    inputs: { mask: maskRef, left: feather, top: 0, right: feather, bottom: 0 },
+    _meta: { title: 'Feather Bands' }
+  }
+  const maskOut = [String(featherNode), 0]
+
+  // ── inpaint 코어(모델별) → 보정된 rolled 이미지 ref ──
+  let fixedRef
+  if (bandModel === 'flux-fill') {
+    const dn = denoise ?? 1.0
+    Object.assign(g, {
+      110: { class_type: 'UNETLoader', inputs: { unet_name: MODELS.fluxFill, weight_dtype: 'default' }, _meta: { title: 'Load Flux Fill' } },
+      111: {
+        class_type: 'DualCLIPLoader',
+        inputs: { clip_name1: MODELS.kontextClip[0], clip_name2: MODELS.kontextClip[1], type: 'flux' },
+        _meta: { title: 'Load CLIP (flux)' }
+      },
+      112: { class_type: 'VAELoader', inputs: { vae_name: MODELS.kontextVae }, _meta: { title: 'Load VAE (ae)' } },
+      113: { class_type: 'CLIPTextEncode', inputs: { text: bandPrompt, clip: ['111', 0] }, _meta: { title: 'Band Prompt' } },
+      114: { class_type: 'FluxGuidance', inputs: { conditioning: ['113', 0], guidance: fluxGuidance }, _meta: { title: 'Flux Guidance' } },
+      115: { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['113', 0] }, _meta: { title: 'Negative (zeroed)' } },
+      116: {
+        class_type: 'InpaintModelConditioning',
+        inputs: { positive: ['114', 0], negative: ['115', 0], vae: ['112', 0], pixels: ['104', 0], mask: maskOut, noise_mask: true },
+        _meta: { title: 'Flux Fill Conditioning' }
+      },
+      117: {
+        class_type: 'KSampler',
+        inputs: {
+          model: ['110', 0],
+          positive: ['116', 0],
+          negative: ['116', 1],
+          latent_image: ['116', 2],
+          seed,
+          steps: steps ?? 20,
+          cfg: 1,
+          sampler_name: 'euler',
+          scheduler: 'simple',
+          denoise: dn
+        },
+        _meta: { title: 'Blend Bands (Flux Fill)' }
+      },
+      118: { class_type: 'VAEDecode', inputs: { samples: ['117', 0], vae: ['112', 0] }, _meta: { title: 'Decode' } }
+    })
+    fixedRef = ['118', 0]
+  } else {
+    const dn = denoise ?? 0.7
+    Object.assign(g, {
+      110: { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: sdxlCheckpoint }, _meta: { title: 'Load SDXL' } },
+      113: { class_type: 'CLIPTextEncode', inputs: { text: bandPrompt, clip: ['110', 1] }, _meta: { title: 'Band Prompt' } },
+      114: { class_type: 'CLIPTextEncode', inputs: { text: negative, clip: ['110', 1] }, _meta: { title: 'Negative' } },
+      115: { class_type: 'VAEEncode', inputs: { pixels: ['104', 0], vae: ['110', 2] }, _meta: { title: 'Encode Rolled' } },
+      116: { class_type: 'SetLatentNoiseMask', inputs: { samples: ['115', 0], mask: maskOut }, _meta: { title: 'Mask Bands' } },
+      117: {
+        class_type: 'KSampler',
+        inputs: {
+          model: ['110', 0],
+          positive: ['113', 0],
+          negative: ['114', 0],
+          latent_image: ['116', 0],
+          seed,
+          steps: steps ?? 10,
+          cfg,
+          sampler_name: 'dpmpp_sde',
+          scheduler: 'karras',
+          denoise: dn
+        },
+        _meta: { title: 'Blend Bands (SDXL)' }
+      },
+      118: { class_type: 'VAEDecode', inputs: { samples: ['117', 0], vae: ['110', 2] }, _meta: { title: 'Decode' } }
+    })
+    fixedRef = ['118', 0]
+  }
+
+  // ── roll back by `roll` (inverse) → 접합선이 원위치로 ──
+  Object.assign(g, {
+    120: { class_type: 'ImageCrop', inputs: { image: fixedRef, width: restW, height, x: roll, y: 0 }, _meta: { title: 'Left Part (fixed)' } },
+    121: { class_type: 'ImageCrop', inputs: { image: fixedRef, width: roll, height, x: 0, y: 0 }, _meta: { title: 'Right Part (fixed)' } },
+    122: {
+      class_type: 'easy imageConcat',
+      inputs: { image1: ['120', 0], image2: ['121', 0], direction: 'right', match_image_size: false },
+      _meta: { title: 'Roll Back → Final' }
+    },
+    123: { class_type: 'SaveImage', inputs: { images: ['122', 0], filename_prefix: `${filenamePrefix}-pano` }, _meta: { title: 'Save Blended' } },
+    124: { class_type: 'SaveImage', inputs: { images: ['101', 0], filename_prefix: `${filenamePrefix}-raw` }, _meta: { title: 'Save Raw Assembled' } }
+  })
+  if (seamCheck) {
+    g[125] = { class_type: 'easy imageConcat', inputs: { image1: ['122', 0], image2: ['122', 0], direction: 'right', match_image_size: false }, _meta: { title: 'Seam (blended)' } }
+    g[126] = { class_type: 'SaveImage', inputs: { images: ['125', 0], filename_prefix: `${filenamePrefix}-seam` }, _meta: { title: 'Save Seam (blended)' } }
+    g[127] = { class_type: 'easy imageConcat', inputs: { image1: ['101', 0], image2: ['101', 0], direction: 'right', match_image_size: false }, _meta: { title: 'Seam (raw)' } }
+    g[128] = { class_type: 'SaveImage', inputs: { images: ['127', 0], filename_prefix: `${filenamePrefix}-rawseam` }, _meta: { title: 'Save Seam (raw)' } }
+  }
+  return g
+}
+
 // ── Seedance (ByteDance API 노드 — comfy.org 브로커링, client의 apiKey 필요) ──────────
 // 릴의 "기억→기억" 전이 생성. first/last 프레임으로 두 장면 사이를 모델이 이어준다.
 
@@ -742,19 +1129,52 @@ export const SEEDANCE_DEFAULTS = Object.freeze({
 /**
  * 루프 컨텍스트 프롬프트 — 한 장면(기억)이 살아 움직이되 처음으로 되돌아오는 seamless 루프.
  * FLF의 first=last=같은 이미지로 만들면 끝이 시작과 이어져 무한 루프가 된다.
- * 3인칭 부감·타인 얼굴 지움(붓자국) 유지. 감정·의미 서술 없음(§1).
+ * 1인칭 몰입·타인 얼굴 지움(붓자국) 유지. 감정·의미 서술 없음(§1). (seedance는 4:1 미지원이라 파노라마엔 비활성 — wan 사용.)
  * @param {{ scene: string, age?: number }} s
  */
 export function composeSeedanceLoopPrompt(s) {
   const at = s.age != null ? ` — around age ${s.age}` : ''
   return (
     `A living memory that breathes and gently loops. This moment${at}: ${s.scene}. ` +
-    `Seen from a slightly elevated high angle looking gently down, quietly observing this life from just above. ` +
-    `The central person breathes and moves softly, hair and clothing stir in a faint breeze, ambient life drifts — ` +
-    `and everything eases back to exactly where it began so the motion loops seamlessly. ` +
-    `Every other person's face stays soft, blurred and indistinct, wiped away like a brushstroke, never sharp. ` +
+    `Seen from within the moment at eye level, standing inside the scene as it surrounds the viewer on every side (first-person immersion, not a high angle). ` +
+    `The central person facing the viewer stays in place and only breathes and shifts softly; ` +
+    `every other person moves naturally — walking, stepping and going about the moment around them — ` +
+    `while their faces stay soft, blurred and indistinct, wiped away like a brushstroke, never sharp. ` +
+    `Hair and clothing stir in a faint breeze, ambient life drifts, and the motion loops gently and seamlessly. ` +
     `Warm faded film grain, gentle unhurried motion, cinematic, no text, no captions.`
   )
+}
+
+// ── Wan I2V 모션 프롬프트 (씬 컨텍스트 반영) ─────────────────────────────────────
+// 기존엔 video-cache가 config의 고정 promptPrefix 뒤에 ' Scene: {scene}.'만 붙였다. 여기서는
+// 그 고정 불변부(promptPrefix: 투영 유지·시점 고정·주인공 정지/미세모션·타인은 자연스럽게 걸음·
+// 타인 얼굴 smear)를 base로 그대로 두고, 뒤에 '이 씬에서 무엇이 어떻게 움직이는가'라는 주변 모션
+// 구절만 씬 텍스트에 맞춰 결정론적으로 덧붙인다.
+//
+// §1(해석적 자율성) 준수: 이 로직은 서사·의미·감정을 저작하지 않는다. scene 문자열의 감각적 단서
+// (날씨·물·장소·사물)에서 물리적 움직임만 유도할 뿐이다. 같은 scene이면 항상 같은 구절이 나오고,
+// 의미 부여는 넣지 않는다 — 움직임의 '재료'만 흩어 놓는다. 새 단서를 넣고 싶으면 이 배열만 고친다.
+const WAN_MOTION_CUES = [
+  { re: /\brain\b|umbrella|puddle/i, cue: 'fine rain keeps falling and dimples the puddles' },
+  { re: /\bsnow\b/i, cue: 'snow drifts down slowly through the air' },
+  { re: /steam|\bbath\b|basin|noodle|cooking|\btea\b|coffee|grilled|\brice\b|kitchen/i, cue: 'steam and warm air rise and curl' },
+  { re: /field|ridge|\bhik|garden|\btree|ginkgo|veranda|highway|cosmos|\bpark\b|market|street|alley|breeze|window/i, cue: 'grass, leaves, curtains and clothing stir in a light breeze' },
+  { re: /playground|court|relay|bicycle|swing|\brun\b|running|\bwalk|\bdance|sports/i, cue: 'easy continuous movement carries through the moment' },
+  { re: /cafeteria|reunion|friends|classroom|office|library|\bhall\b|\btable\b|market|street|station|\bshop/i, cue: 'the people around move about naturally, coming and going' }
+]
+
+/**
+ * Wan2.2 I2V 모션 프롬프트를 씬 컨텍스트에 맞춰 조립한다.
+ * 고정 불변부(promptPrefix) + ' Scene: {scene}.' + 씬에 걸리는 주변 모션 구절.
+ * @param {{ scene?: string }} image  라이브러리 이미지(장면 텍스트 포함)
+ * @param {{ promptPrefix?: string }} opts  config montage.regen.wan.promptPrefix
+ */
+export function composeWanMotionPrompt(image, { promptPrefix = '' } = {}) {
+  const scene = image && image.scene ? String(image.scene) : ''
+  const sceneClause = scene ? ` Scene: ${scene}.` : ''
+  const cues = WAN_MOTION_CUES.filter((c) => c.re.test(scene)).map((c) => c.cue)
+  const ambient = cues.length ? ` In this scene, ${cues.join('; ')}.` : ''
+  return `${promptPrefix}${sceneClause}${ambient}`.trim()
 }
 
 /**
@@ -769,7 +1189,7 @@ export function composeSeedanceTransitionPrompt(a, b) {
     `A single life flashing by, one memory dissolving into the next. ` +
     `The scene begins in this moment — ${a.scene}${at}, held softly for a breath, ` +
     `then dreamlike melts and transforms into the next memory — ${b.scene}${bt}. ` +
-    `Seen from a slightly elevated high angle looking gently down, quietly observing this life from just above. ` +
+    `Seen from within the moment at eye level, standing inside the scene as it surrounds the viewer on every side (first-person immersion, not a high angle). ` +
     `The central person is the subject and stays visible; every other person's face remains soft, blurred and indistinct, ` +
     `wiped away like a brushstroke, never sharp. Warm faded film grain, gentle drifting motion, cinematic, no text, no captions.`
   )
