@@ -62,12 +62,23 @@ export async function generateLifeLibrary(profile, opts = {}) {
     signal, //          외부 취소(중지 버튼) — 장면 사이·생성 요청에서 확인해 중단한다
     gemini = {},
     seamfix = {}, //     이음매 밴드 { bandWidth, feather } — 미지정 키는 workflow 기본(256/96)
+    pid: pidOverride, //     라이브러리 디렉토리 이름을 personaId() 해시 대신 이걸로 쓴다(있으면).
+    plan: planOverride, //   있으면 buildScenePlan(occupation·고정 10단계 템플릿) 대신 이걸 쓴다 —
+    //                       cdb-crafter처럼 프로필 스키마가 다른 호출자를 위한 확장 지점.
+    promptFor, //            있으면 (profile, item) => string 으로 프롬프트를 직접 조립한다 —
+    //                       composeScenePromptFor(occupation 스키마 전제) 대신 쓴다.
+    skipSeamfix = false, //  seamfix 모드 전용: true면 ComfyUI 이음매 보정을 건너뛰고 Gemini
+    //                       원본을 그대로 장면 파일로 쓴다(Gemini 프롬프트만 먼저 확인할 때).
+    referencesFor, //        있으면 (item) => Buffer[] 로 장면별 레퍼런스 이미지를 Gemini 장면
+    //                       생성(gemini·seamfix)에 실어 보낸다 — 기본은 항상 빈 배열(장면 생성엔
+    //                       레퍼런스를 안 씀, 레퍼런스는 성별감지·kontext 편집 입력 전용이었다).
+    //                       cdb-crafter처럼 과거~현재 단계마다 그 순간의 실제 사진이 있을 때 씀.
     onProgress = () => {}
   } = opts
 
   profile = { ...profile } // 성별 자동 감지가 gender를 채울 수 있으므로 호출자 객체를 오염시키지 않는다
 
-  const pid = personaId(profile)
+  const pid = pidOverride || personaId(profile)
   const dir = path.join(outDir, pid)
   await fs.mkdir(dir, { recursive: true })
 
@@ -79,7 +90,9 @@ export async function generateLifeLibrary(profile, opts = {}) {
   const isGemini = mode === 'gemini'
   const isSeamfix = mode === 'seamfix' // B안: Gemini 파노라마 생성 + ComfyUI Flux Fill 이음매 보정
   const useGeminiScene = isGemini || isSeamfix // 장면 픽셀을 Gemini가 만든다(seamfix는 그 뒤 보정)
-  const useComfy = !isGemini // kontext·sdxl·seamfix (seamfix는 보정에 ComfyUI 사용)
+  // kontext·sdxl·seamfix가 ComfyUI를 쓴다 — 단 seamfix+skipSeamfix는 이음매 보정 자체를
+  // 안 하므로 ComfyUI가 필요 없다(연결 확인도 생략).
+  const useComfy = !isGemini && !(isSeamfix && skipSeamfix)
   // seamfix 소스는 360° 둘레라 2:1 와이드가 필요하다 → 라이브러리 기본 16:9 대신 파노라마 크기 사용.
   const effImage = isSeamfix ? opts.panorama || { width: 2048, height: 1024 } : image
   // Gemini는 픽셀 크기 대신 종횡비로 지정한다 — 실제 출력 크기(effImage)에 가장 가까운
@@ -107,7 +120,7 @@ export async function generateLifeLibrary(profile, opts = {}) {
       () => false
     )
 
-  const fullPlan = buildScenePlan(profile, { perStage })
+  const fullPlan = planOverride || buildScenePlan(profile, { perStage })
   const plan = fullPlan.slice(0, Math.min(limit, fullPlan.length))
   onProgress({ type: 'plan', total: plan.length })
 
@@ -190,7 +203,8 @@ export async function generateLifeLibrary(profile, opts = {}) {
       const item = plan[i]
       // gemini는 시드 개념이 없다. seamfix는 보정 단계(ComfyUI)에 시드가 필요하므로 발급한다.
       const seed = isGemini ? null : randomSeed()
-      const prompt = composeScenePromptFor(mode, profile, item)
+      const prompt = promptFor ? promptFor(profile, item) : composeScenePromptFor(mode, profile, item)
+      const references = referencesFor ? referencesFor(item) : []
       const localFile = path.join(dir, `${item.id}.png`)
 
       // 재개: 이전 실행에서 성공한 장면은 건너뛴다. failed 표시된 장은 다시 시도한다.
@@ -220,10 +234,12 @@ export async function generateLifeLibrary(profile, opts = {}) {
         }
         try {
           if (isGemini) {
-            // 3인칭 부감 장면은 레퍼런스 없이 순수 텍스트→이미지 (prompt-builder 주석 참조)
+            // 3인칭 부감 장면은 기본적으로 레퍼런스 없이 순수 텍스트→이미지 (prompt-builder 주석
+            // 참조) — referencesFor가 주어졌을 때만(cdb-crafter 과거~현재 단계) 그 순간의 실제
+            // 사진을 함께 보낸다.
             const data = await gclient.generateImage({
               prompt,
-              references: [],
+              references,
               aspectRatio: geminiAspect,
               imageSize,
               model: sceneModel,
@@ -234,7 +250,7 @@ export async function generateLifeLibrary(profile, opts = {}) {
             // B안: Gemini로 1인칭 360° 파노라마 생성 → ComfyUI Flux Fill로 좌우 이음매 보정.
             const data = await gclient.generateImage({
               prompt,
-              references: [],
+              references,
               aspectRatio: geminiAspect, // 파노라마 비율로 자동 선택(4096×1024→'4:1')
               imageSize,
               model: sceneModel,
@@ -243,26 +259,32 @@ export async function generateLifeLibrary(profile, opts = {}) {
             // Gemini 원본 보관 — admin "edge 재연결"이 재생성 없이 이 원본으로 이음매만 다시 보정한다.
             srcFile = `${item.id}.src.png`
             await fs.writeFile(path.join(dir, srcFile), data)
-            const uploaded = await client.uploadImage(data, `${pid}-${item.id}-src.png`)
-            const wf = buildGeminiSeamFixWorkflow({
-              referenceImage: uploaded.name,
-              prompt,
-              bandPrompt: SEAM_BAND_PROMPT, // 이음매 띠에 인물 안 그리게(기괴함 방지)
-              width: effImage.width,
-              height: effImage.height,
-              bandWidth: seamfix.bandWidth, // config 미지정이면 workflow 기본(256)
-              feather: seamfix.feather, //   config 미지정이면 workflow 기본(96)
-              bandModel: 'flux-fill',
-              seed,
-              filenamePrefix: `chrono-zoetrope/${pid}/${item.id}`
-            })
-            const out = await client.generate(wf, {
-              onProgress: (p) => onProgress({ type: 'image-progress', item, ...p })
-            })
-            promptId = out.promptId
-            // 워크플로우는 보정본(-pano)과 원본(-raw)을 저장한다 — 보정본을 장면 파일로 쓴다.
-            const corrected = out.images.find((im) => /-pano_/.test(im.filename)) || out.images[0]
-            await fs.writeFile(localFile, corrected.data)
+            if (skipSeamfix) {
+              // 이음매 안 붙은 원본을 그대로 장면 파일로 — srcFile이 남아 있으니 나중에 admin의
+              // "edge 재연결" 버튼 한 번으로 ComfyUI 보정만 마저 돌릴 수 있다(Gemini 재과금 없음).
+              await fs.writeFile(localFile, data)
+            } else {
+              const uploaded = await client.uploadImage(data, `${pid}-${item.id}-src.png`)
+              const wf = buildGeminiSeamFixWorkflow({
+                referenceImage: uploaded.name,
+                prompt,
+                bandPrompt: SEAM_BAND_PROMPT, // 이음매 띠에 인물 안 그리게(기괴함 방지)
+                width: effImage.width,
+                height: effImage.height,
+                bandWidth: seamfix.bandWidth, // config 미지정이면 workflow 기본(256)
+                feather: seamfix.feather, //   config 미지정이면 workflow 기본(96)
+                bandModel: 'flux-fill',
+                seed,
+                filenamePrefix: `chrono-zoetrope/${pid}/${item.id}`
+              })
+              const out = await client.generate(wf, {
+                onProgress: (p) => onProgress({ type: 'image-progress', item, ...p })
+              })
+              promptId = out.promptId
+              // 워크플로우는 보정본(-pano)과 원본(-raw)을 저장한다 — 보정본을 장면 파일로 쓴다.
+              const corrected = out.images.find((im) => /-pano_/.test(im.filename)) || out.images[0]
+              await fs.writeFile(localFile, corrected.data)
+            }
           } else {
             const wf =
               mode === 'kontext'

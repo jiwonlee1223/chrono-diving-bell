@@ -39,9 +39,10 @@ import {
   initFirebase,
   listenProfiles,
   resetOrphanGenerating,
+  resetOrphanLifeGraphGenerating,
   updateProfileFields
 } from '../src/main/comfyui/firestore-source.js'
-import { processProfile } from '../src/main/comfyui/profile-worker.js'
+import { processProfile, processLifeGraphSession } from '../src/main/comfyui/profile-worker.js'
 import { composeScenePromptFor, personaId, SEAM_BAND_PROMPT } from '../src/main/comfyui/prompt-builder.js'
 import { readSession, writeSession } from '../src/main/session-pointer.js'
 import { VideoRegenerator } from '../src/main/comfyui/video-cache.js'
@@ -449,7 +450,7 @@ function clipStatus(pid, manifest) {
 
 // 큐 뷰: 아직 안 끝난 것(submitted/generating/error) + 지금 생성 중인 것.
 function queueView() {
-  return profiles
+  const legacy = profiles
     .filter((p) => p.id === current || ['submitted', 'generating', 'error'].includes(p.status))
     .map((p) => ({
       id: p.id,
@@ -458,6 +459,42 @@ function queueView() {
       createdAt: toMillis(p.createdAt),
       error: p.error || null
     }))
+  return [...legacy, ...lifeGraphQueueRows()]
+}
+
+// cdb-crafter(인생그래프 앱) 제출 — occupation 기반 옛 스키마와 달리 문서 하나에 세션
+// 최대 3개(first/second/third)가 순차로 채워진다. 세션마다 독립된 `${key}Status` 필드로
+// submitted → generating → done | error 생명주기를 가진다(firestore-source.js 참조) —
+// 1번 제출되면 1번 줄이, 2번 제출되면 2번 줄이 큐에 따로 뜬다. done이 되면 목록에서 빠진다
+// (occupation 큐와 동일한 "아직 안 끝난 것만" 규칙).
+const LIFE_GRAPH_SESSION_KEYS = ['first', 'second', 'third']
+const LIFE_GRAPH_SESSION_ORDINALS = ['첫번째', '두번째', '세번째']
+
+// 세션의 "실효 상태" — {key}Status가 없어도 {key}SubmittedAt만 있으면 submitted로 본다.
+// (이 admin-server.mjs 배선 이전에 이미 제출된 문서는 SubmittedAt만 있고 Status가 없어서,
+// 여기서 둘을 따로 판정하면 큐에는 "대기"로 보이는데 자동생성은 절대 못 집는 모순이 생긴다.)
+function lifeGraphSessionStatus(p, key) {
+  return p[`${key}Status`] || (p[`${key}SubmittedAt`] ? 'submitted' : null)
+}
+
+function lifeGraphQueueRows() {
+  const rows = []
+  for (const p of profiles) {
+    LIFE_GRAPH_SESSION_KEYS.forEach((key, i) => {
+      const rowId = `${p.id}#${key}`
+      const status = rowId === current ? 'generating' : lifeGraphSessionStatus(p, key)
+      if (!['submitted', 'generating', 'error'].includes(status)) return
+      rows.push({
+        id: rowId,
+        kind: 'lifegraph', // admin/index.html이 이 값으로 "생성" 버튼을 붙일지 판단한다
+        name: `${p.name || p.id} · ${LIFE_GRAPH_SESSION_ORDINALS[i]}`,
+        status,
+        createdAt: toMillis(p[`${key}SubmittedAt`]),
+        error: p[`${key}Error`] || null
+      })
+    })
+  }
+  return rows
 }
 
 // error 프로필 자동 재시도: 세션당 pid별 시도 횟수를 세어 상한까지만 다시 굴린다(무한루프 방지).
@@ -536,6 +573,59 @@ async function maybeStartNext() {
   else maybeStartNext() // 큐에 남은 게 있으면 이어서
 }
 
+// cdb-crafter(인생그래프 앱) 세션 생성 — occupation 큐와 달리 자동으로 안 돈다. 큐에 "대기"로
+// 뜬 항목을 admin에서 "생성" 버튼으로 직접 눌러야 시작한다(/api/lifegraph/generate). 그 외엔
+// maybeStartNext와 같은 current 잠금을 공유해 ComfyUI/Gemini를 두 큐가 동시에 때리지 않는다.
+// 동기 부분(검증)에서 바로 던지고, 실제 생성은 기다리지 않고 백그라운드로 돌린다 — HTTP 요청이
+// 수 분짜리 생성이 끝날 때까지 매달려 있지 않게(admin UI는 /api/queue 폴링으로 진행을 본다).
+function startLifeGraphSession(pid, sessionKey) {
+  if (!firebaseReady) throw new Error('Firebase 미연결')
+  if (current) throw new Error('다른 생성이 진행 중입니다 — 끝난 뒤 다시 시도하세요')
+  const p = profiles.find((x) => x.id === pid)
+  if (!p) throw new Error(`프로필 없음: ${pid}`)
+  if (lifeGraphSessionStatus(p, sessionKey) !== 'submitted')
+    throw new Error(`이미 처리 중이거나 완료된 세션입니다: ${pid}#${sessionKey}`)
+
+  current = `${pid}#${sessionKey}` // 첫 await 전에 동기적으로 잠가 중복 클릭을 막는다
+  currentInfo = {
+    pid,
+    personaId: pid, // life-graph는 personaId() 해시가 아니라 크래프터가 준 id를 그대로 라이브러리 폴더명으로 쓴다
+    name: p.name || null,
+    done: 0,
+    total: 0,
+    startedAt: Date.now()
+  }
+  p[`${sessionKey}Status`] = 'generating' // 로컬 낙관적 갱신 — 다음 스냅샷 전까지 재클릭 방지
+  logAction(`▶ 인생그래프 생성 시작(수동): ${currentInfo.name || '?'} (${pid} · ${sessionKey})`)
+
+  currentAbort = new AbortController()
+  ;(async () => {
+    const res = await processLifeGraphSession(p, sessionKey, {
+      config,
+      outDir: LIBRARY,
+      signal: currentAbort.signal,
+      log: logAction,
+      onProgress: (e) => {
+        if (e.type === 'image-done') {
+          currentInfo.done = e.done
+          currentInfo.total = e.total
+        }
+      }
+    })
+    currentAbort = null
+    lastResult = { pid, ok: res.ok, cancelled: res.cancelled || false, error: res.error || null, at: Date.now() }
+    logAction(
+      res.cancelled
+        ? `⏸ 인생그래프 생성 중지됨: ${pid}`
+        : res.ok
+          ? `✓ 인생그래프 생성 완료: ${pid}`
+          : `✗ 인생그래프 생성 실패: ${pid} — ${res.error || '(claim 실패)'}`
+    )
+    current = null
+    currentInfo = null
+  })()
+}
+
 // Firebase 연결 실패해도 서버는 뜬다(검토 기능만). 큐/자동생성만 비활성화.
 try {
   await initFirebase({ serviceAccountPath: saPath, projectId: config.firebase?.projectId })
@@ -547,10 +637,13 @@ try {
     const orphans = await resetOrphanGenerating()
     if (orphans.length > 0)
       console.log(`[admin] 중단됐던 생성 ${orphans.length}건을 큐로 복구 (이어서 생성): ${orphans.join(', ')}`)
+    const lgOrphans = await resetOrphanLifeGraphGenerating()
+    if (lgOrphans.length > 0)
+      console.log(`[admin] 중단됐던 인생그래프 생성 ${lgOrphans.length}건을 큐로 복구: ${lgOrphans.join(', ')}`)
   }
   listenProfiles((list) => {
     profiles = list
-    maybeStartNext()
+    maybeStartNext() // 인생그래프 세션은 자동 시작 없음 — admin "생성" 버튼(/api/lifegraph/generate)으로만
   })
   console.log(
     VIEW_ONLY
@@ -563,7 +656,11 @@ try {
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`)
-  const parts = url.pathname.split('/').filter(Boolean)
+  // url.pathname은 비ASCII 문자를 퍼센트 인코딩된 채로 준다(WHATWG URL이 자동 디코딩 안 함) —
+  // 옛 personaId()는 해시라 늘 ASCII였지만, cdb-crafter의 personaId는 이름을 그대로 쓰므로
+  // 한글이 그대로 들어간다. 디코딩 안 하면 /img, /media, /api/personas/{pid}가 실제 파일
+  // 경로(한글 폴더명)와 안 맞아 ENOENT가 난다 — 여기 한 곳에서 전부 디코딩해 해결한다.
+  const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent)
   try {
     // GET / → 검토 UI
     if (req.method === 'GET' && parts.length === 0) {
@@ -669,6 +766,22 @@ const server = http.createServer(async (req, res) => {
       logAction(`↻ 수동 재실행 요청: ${id} (submitted로 되돌림)`)
       maybeStartNext()
       return send(res, 200, { queued: true, id })
+    }
+
+    // POST /api/lifegraph/generate { id } → id는 "personaId#sessionKey"(큐 목록의 id와 동일).
+    // 인생그래프 세션은 자동 생성이 없으므로 이 버튼이 유일한 시작 지점이다.
+    if (req.method === 'POST' && url.pathname === '/api/lifegraph/generate') {
+      if (VIEW_ONLY) return send(res, 400, { error: '뷰어 모드에서는 생성 불가' })
+      if (!firebaseReady) return send(res, 400, { error: 'Firebase 미연결' })
+      const { id } = await readBody(req)
+      const [pid, sessionKey] = String(id || '').split('#')
+      if (!pid || !sessionKey) return send(res, 400, { error: 'id 필요 (형식: personaId#sessionKey)' })
+      try {
+        startLifeGraphSession(pid, sessionKey)
+      } catch (err) {
+        return send(res, 400, { error: err.message })
+      }
+      return send(res, 200, { started: true, id })
     }
 
     // ── 세션 참가자(연구자용 "로그인") ────────────────────────────────

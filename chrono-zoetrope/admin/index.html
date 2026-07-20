@@ -430,6 +430,24 @@
         opacity: 0.5;
         cursor: default;
       }
+      .gen-btn {
+        margin-left: 2px;
+        font-size: 11px;
+        font-weight: 600;
+        cursor: pointer;
+        padding: 2px 8px;
+        border-radius: 999px;
+        border: 1px solid rgba(120, 220, 150, 0.5);
+        background: transparent;
+        color: #8de8a8;
+      }
+      .gen-btn:hover {
+        background: rgba(120, 220, 150, 0.16);
+      }
+      .gen-btn:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
       #queue-now button {
         margin-left: 6px;
       }
@@ -902,6 +920,27 @@
           setStatus(`재실행 실패: ${e.message}`)
         }
       }
+      // 인생그래프 세션은 자동 생성이 없다 — 이 버튼이 유일한 시작 지점(/api/lifegraph/generate).
+      async function startLifeGraph(id, btn) {
+        if (btn) {
+          btn.disabled = true
+          btn.textContent = '시작 중…'
+        }
+        try {
+          await api('/api/lifegraph/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id })
+          })
+          setStatus(`생성 시작: ${id}`)
+        } catch (e) {
+          setStatus(`생성 시작 실패: ${e.message}`)
+          if (btn) {
+            btn.disabled = false
+            btn.textContent = '생성'
+          }
+        }
+      }
       // 재렌더되는 버튼들 — 이벤트 위임
       document.addEventListener('click', (e) => {
         const t = e.target
@@ -911,6 +950,7 @@
         else if (t.id === 'video-pause') pauseVideo()
         else if (t.id === 'video-stop') stopVideo()
         else if (t.classList.contains('retry-btn')) retryProfile(t.dataset.id, t)
+        else if (t.classList.contains('gen-btn')) startLifeGraph(t.dataset.id, t)
       })
 
       // 사이드바에서 persona 선택 (이벤트 위임)
@@ -1086,6 +1126,10 @@
                 `<span class="badge ${q.status}">${QLABEL[q.status] || q.status}</span>` +
                 (q.status === 'error' && !data.viewOnly
                   ? `<button class="retry-btn" data-id="${q.id}">재실행</button>`
+                  : '') +
+                // 인생그래프 세션은 자동 생성이 없다 — "대기" 상태에 이 버튼이 유일한 시작 지점.
+                (q.kind === 'lifegraph' && q.status === 'submitted' && !data.viewOnly
+                  ? `<button class="gen-btn" data-id="${q.id}">생성</button>`
                   : '') +
                 `</div>`
             )

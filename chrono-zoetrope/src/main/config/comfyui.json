@@ -8,6 +8,8 @@
   "$seamfix": "이음매 보정 밴드. bandWidth=이음매(좌우 wrap 접합부)를 Flux Fill로 덮어써 재생성하는 세로 띠 폭(px, panorama.width 기준). 넓힐수록 사람·복잡 가구가 이음매에 남을 확률↓, 단 단순면(벽/기둥) 스트립이 더 넓게 들어가고 inpaint 자국 위험↑. 4096 기준 256=6.25%(±11°), 384=9.4%(±17°), 512=12.5%(±22°). feather=띠 좌우 블렌드 폭(px).",
   "seamfix": { "bandWidth": 256, "feather": 96 },
   "perStage": 3,
+  "$lifeGraphSkipSeamfix": "cdb-crafter 인생그래프 세션 생성 전용 옵션(occupation 플로우엔 영향 없음). true면 ComfyUI 이음매 보정을 건너뛰고 Gemini 원본을 그대로 저장한다 — 프롬프트/장면만 먼저 확인할 때. 나중에 admin의 'edge 재연결' 버튼으로 이미지별로 마저 보정할 수 있다(Gemini 재과금 없음).",
+  "lifeGraphSkipSeamfix": false,
   "outDir": "library",
   "timeoutMs": 300000,
   "sceneRetries": 1,

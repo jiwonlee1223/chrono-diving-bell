@@ -135,6 +135,57 @@ export async function setProfileStatus(personaId, status, extra = {}) {
     .update({ status, ...extra, updatedAt: FieldValue.serverTimestamp() })
 }
 
+// ── cdb-crafter(인생그래프 앱) 세션별 claim ──────────────────────────────
+//
+// occupation 플로우는 문서 하나에 status 필드 하나뿐이라 위 claimProfile 등이 그걸 전제한다.
+// 인생그래프 문서는 세션이 최대 3개(first/second/third)라 세션마다 독립된 상태 필드
+// `${key}Status`를 쓴다(생명주기는 같다: submitted → generating → done | error).
+// `${key}SubmittedAt`(saveLifeGraph.js가 세션 제출 시 찍음)과는 별개 — 그건 "제출됨" 마커,
+// 이건 실제 생성 진행 상태.
+
+/** 세션 하나를 원자적으로 claim한다. @returns true=이 워커가 획득, false=이미 다른 곳이 처리 중/완료 */
+export async function claimLifeGraphSession(personaId, sessionKey) {
+  const refDoc = db.collection('profiles').doc(personaId)
+  const statusField = `${sessionKey}Status`
+  const submittedAtField = `${sessionKey}SubmittedAt`
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(refDoc)
+    if (!snap.exists) throw new Error(`프로필 문서 없음: ${personaId}`)
+    const data = snap.data()
+    // {key}Status가 없어도 {key}SubmittedAt만 있으면 submitted로 본다 — 이 claim 배선 이전에
+    // 이미 제출된 문서(Status 필드 자체가 없음) 구제. 명시적으로 다른 상태면(generating/done/error) 거절.
+    const effective = data[statusField] || (data[submittedAtField] ? 'submitted' : null)
+    if (effective !== 'submitted') return false
+    tx.update(refDoc, {
+      [statusField]: 'generating',
+      [`${sessionKey}GenerationStartedAt`]: FieldValue.serverTimestamp()
+    })
+    return true
+  })
+}
+
+/** 세션 상태 갱신 (extra로 imageCount·error 등 부가 필드를 `${key}...` 없이 그대로 기록). */
+export async function setLifeGraphSessionStatus(personaId, sessionKey, status, extra = {}) {
+  await db
+    .collection('profiles')
+    .doc(personaId)
+    .update({ [`${sessionKey}Status`]: status, ...extra, updatedAt: FieldValue.serverTimestamp() })
+}
+
+/** 고아 'generating' 세션 복구 — resetOrphanGenerating과 동일한 이유, 세션별로. */
+export async function resetOrphanLifeGraphGenerating() {
+  const keys = ['first', 'second', 'third']
+  const ids = []
+  for (const key of keys) {
+    const snap = await db.collection('profiles').where(`${key}Status`, '==', 'generating').get()
+    for (const d of snap.docs) {
+      await d.ref.update({ [`${key}Status`]: 'submitted', updatedAt: FieldValue.serverTimestamp() })
+      ids.push(`${d.id}#${key}`)
+    }
+  }
+  return ids
+}
+
 /**
  * photoURLs(토큰 포함 다운로드 URL)를 로컬로 내려받는다.
  *
