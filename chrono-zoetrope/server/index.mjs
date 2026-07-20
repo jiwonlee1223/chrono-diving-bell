@@ -30,6 +30,8 @@ import { loadMontageLibrary } from '../src/main/library-loader.js'
 import { ZoetropeStateMachine } from '../src/main/state-machine.js'
 import { VideoRegenerator } from '../src/main/comfyui/video-cache.js'
 import { readSession, SESSION_FILE } from '../src/main/session-pointer.js'
+import { readCalibration, writeCalibration } from '../src/main/calibration.js'
+import { initFirebase, ensurePersonaMediaFromFirebase } from '../src/main/comfyui/firestore-source.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -49,6 +51,22 @@ const argOf = (name, fallback) => {
 const PORT = parseInt(argOf('--port', '8788'), 10)
 const DIST = path.resolve(root, argOf('--dist', 'dist'))
 const libraryRoot = path.resolve(root, argOf('--library', montageConfig.libraryDir ?? 'library'))
+
+// 설치 캘리브레이션(실린더 정렬용 전역 yaw/pitch) — 런타임 페이지가 실시간 조정·저장한다.
+let calibration = await readCalibration(libraryRoot)
+
+// Firebase 정본 read-through: 세션 참가자의 미디어(파노라마·reel)를 로컬에 없으면 받아 재생한다.
+// 서비스 계정이 없거나 초기화 실패하면 로컬 파일만으로 동작(best-effort).
+let firebaseReady = false
+try {
+  const fb = comfyuiConfig.firebase
+  const saPath = fb?.serviceAccountPath ? path.resolve(root, fb.serviceAccountPath) : undefined
+  await initFirebase({ serviceAccountPath: saPath, projectId: fb?.projectId, storageBucket: fb?.storageBucket })
+  firebaseReady = true
+  console.log('[server] Firebase 연결 — 미디어를 Firebase 정본에서 확보한다')
+} catch (err) {
+  console.warn(`[server] Firebase 미연결 — 로컬 미디어만 사용: ${err.message}`)
+}
 
 // ── 라이브러리 미디어 URL (zoe://media/... → /media/...) ──────────────
 function toMediaUrl(absPath) {
@@ -92,6 +110,20 @@ let pendingPersonaId //   세션 진행 중 들어온 참가자 교체 — IDLE 
 // personaId=null 이면 library-loader가 가장 최근 것을 자동 선택. 실패 시 이전 상태를 유지.
 async function loadPersona(personaId) {
   try {
+    // Firebase 정본에서 미디어를 로컬 캐시로 확보(read-through). 로컬에 이미 있으면 그대로 재사용.
+    // manifest의 profile로 문서 키(이름_생년월일)를 얻으므로 personaId 지정 시에만 수행한다.
+    if (firebaseReady && personaId) {
+      try {
+        const dir = path.join(libraryRoot, personaId)
+        const manifest = JSON.parse(await fs.readFile(path.join(dir, 'manifest.json'), 'utf8'))
+        const r = await ensurePersonaMediaFromFirebase(manifest.profile, dir)
+        if (r.images || r.reel)
+          console.log(`[server] Firebase→로컬 캐시: 이미지 ${r.images}장, reel ${r.reel ? 'O' : '-'}`)
+        if (r.missing.length) console.warn(`[server] Firebase에서 못 받은 미디어: ${r.missing.join(', ')}`)
+      } catch (e) {
+        console.warn(`[server] Firebase 미디어 확보 실패(로컬로 진행): ${e.message}`)
+      }
+    }
     const lib = await loadMontageLibrary({
       rootDir: libraryRoot,
       personaId: personaId ?? undefined
@@ -169,6 +201,14 @@ function runReelDemo(spinupMs = REEL_SPINUP_MS) {
   }, spinupMs)
 }
 
+// 세션 나가기 — 재생을 중단하고 런타임을 대기(IDLE 앰비언트)로 되돌린다.
+function leaveSession() {
+  clearTimeout(reelTimer)
+  pendingPersonaId = undefined // 예약돼 있던 교체도 취소.
+  broadcast(Channels.REEL_DEMO, { phase: 'stop' })
+  console.log('[server] 세션 나가기 — 대기(IDLE)로 복귀')
+}
+
 // ── 부트스트랩 페이로드 (Channels.BOOTSTRAP 핸들러 이관) ──────────────
 // 단일 페이지가 4타일을 렌더하므로 projectors 배열 전체를 준다.
 function bootstrapPayload() {
@@ -185,7 +225,8 @@ function bootstrapPayload() {
             mapping: montageConfig.mapping,
             fitMode: montageConfig.fitMode,
             edgeFeather: montageConfig.edgeFeather,
-            blur: montageConfig.blur
+            blur: montageConfig.blur,
+            calibration // 설치 정렬 오프셋(yaw/pitch) — 셰이더 초기값
           },
           playlist: library.images.map((im) => ({ id: im.id, url: toMediaUrl(im.absPath) })),
           ...sm.snapshot()
@@ -326,6 +367,13 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { preview: devPreview })
     }
 
+    // ---- 설치 캘리브레이션 저장 (런타임 페이지 실시간 조정) ----
+    if (req.method === 'POST' && url.pathname === '/api/calibration') {
+      const body = await readBody(req)
+      calibration = await writeCalibration(libraryRoot, { yaw: body?.yaw, pitch: body?.pitch })
+      return sendJson(res, 200, { ok: true, calibration })
+    }
+
     // reel 데모 수동 트리거(테스트용 — 참가자 교체 없이 현재 페르소나로 시퀀스 실행).
     if (req.method === 'POST' && url.pathname === '/api/reel-demo') {
       const body = await readBody(req)
@@ -382,9 +430,14 @@ try {
     clearTimeout(watchDebounce)
     watchDebounce = setTimeout(async () => {
       const sel = await readSession(libraryRoot)
-      const next = sel?.personaId ?? montageConfig.personaId ?? null
+      if (!sel) {
+        // 세션 나가기(_session.json 삭제) — 대기로 복귀. 설정 기본 personaId로 자동 폴백하지 않는다.
+        leaveSession()
+        return
+      }
+      const next = sel.personaId
       if (library && next === library.personaId) return // 실질적 변화 없음.
-      console.log(`[server] 세션 선택 변경 감지 → ${sel?.name || next || '(자동)'}`)
+      console.log(`[server] 세션 선택 변경 감지 → ${sel.name || next}`)
       applySessionSelection(next)
     }, 200)
   })

@@ -22,10 +22,18 @@ import { getStorage } from 'firebase-admin/storage'
 
 let app = null
 let db = null
+let defaultBucket = null //   업로드용 기본 Storage 버킷 이름 (config.firebase.storageBucket)
 
-/** Admin SDK 초기화. serviceAccountPath 또는 GOOGLE_APPLICATION_CREDENTIALS 필요. */
-export async function initFirebase({ serviceAccountPath, projectId } = {}) {
-  if (db) return db
+// 생성물 링크를 기록하는 Firestore 컬렉션 이름(프로필별 문서 = 이름_생년월일6자). 여기서만 바꾸면 된다.
+export const COLLECTION_IMAGES = 'generatedPanoramaImages'
+export const COLLECTION_VIDEOS = 'generatedVideos'
+
+/** Admin SDK 초기화. serviceAccountPath 또는 GOOGLE_APPLICATION_CREDENTIALS 필요. storageBucket은 생성물 업로드용. */
+export async function initFirebase({ serviceAccountPath, projectId, storageBucket } = {}) {
+  if (db) {
+    if (storageBucket) defaultBucket = storageBucket
+    return db
+  }
   const saPath = serviceAccountPath || process.env.GOOGLE_APPLICATION_CREDENTIALS
   if (!saPath) {
     throw new Error(
@@ -39,7 +47,10 @@ export async function initFirebase({ serviceAccountPath, projectId } = {}) {
   } catch (err) {
     throw new Error(`서비스 계정 키를 읽을 수 없다 (${saPath}): ${err.message}`)
   }
-  app = initializeApp({ credential: cert(sa), projectId: projectId || sa.project_id })
+  // 기본 버킷: config → '{projectId}.firebasestorage.app'. Admin SDK 업로드는 storage.googleapis.com 경유라
+  // 캠퍼스망 firebasestorage SNI 차단과 무관하게 동작한다(실측 확인).
+  defaultBucket = storageBucket || `${projectId || sa.project_id}.firebasestorage.app`
+  app = initializeApp({ credential: cert(sa), projectId: projectId || sa.project_id, storageBucket: defaultBucket })
   db = getFirestore(app)
   return db
 }
@@ -223,6 +234,70 @@ export async function ensureLocalClipsFromFirebase(profile, dir, { ids, onProgre
   return { paths, missing }
 }
 
+/** 'generatedPanoramaImages' 문서(프로필별) 조회. { images:[{id,storagePath,url,...}], count, ... } 또는 null. */
+export async function fetchPersonaImages(profile) {
+  if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  const snap = await db.collection(COLLECTION_IMAGES).doc(panoramaDocKey(profile)).get()
+  return snap.exists ? snap.data() : null
+}
+
+const fileExists = (p) => fs.access(p).then(() => true, () => false)
+
+/**
+ * 런타임 재생용 미디어를 Firebase 정본에서 로컬 캐시로 확보한다(read-through).
+ * 파노라마 이미지(<dir>/<file>)와 reel(<dir>/reel.mp4)을 없을 때만 내려받는다 — 있으면 로컬 재사용.
+ * 파일명은 storagePath의 basename(업로드 시 objectPath 말단 = manifest의 im.file과 동일)에서 얻는다.
+ * @returns {Promise<{ images:number, reel:boolean, missing:string[] }>}
+ */
+export async function ensurePersonaMediaFromFirebase(profile, dir, { onProgress = () => {} } = {}) {
+  await fs.mkdir(dir, { recursive: true })
+  const result = { images: 0, reel: false, missing: [] }
+
+  // 파노라마 이미지
+  let imgDoc = null
+  try {
+    imgDoc = await fetchPersonaImages(profile)
+  } catch {
+    /* 문서 없음/조회 실패 → 로컬만으로 진행 */
+  }
+  const imgs = imgDoc?.images || []
+  for (let i = 0; i < imgs.length; i++) {
+    const im = imgs[i]
+    const file = im.file || (im.storagePath || im.url || '').split('/').pop()?.split('?')[0]
+    if (!file) continue
+    const local = path.join(dir, file)
+    if (await fileExists(local)) continue
+    try {
+      await downloadStorageObject(im, local)
+      result.images++
+      onProgress({ phase: 'image', done: result.images, total: imgs.length, file })
+    } catch {
+      result.missing.push(file)
+    }
+  }
+
+  // reel
+  let vidDoc = null
+  try {
+    vidDoc = await fetchPersonaVideos(profile)
+  } catch {
+    /* 문서 없음 */
+  }
+  const reelRef = vidDoc?.reel
+  if (reelRef?.storagePath || reelRef?.url) {
+    const reelLocal = path.join(dir, 'reel.mp4')
+    if (!(await fileExists(reelLocal))) {
+      try {
+        await downloadStorageObject(reelRef, reelLocal)
+        result.reel = true
+        onProgress({ phase: 'reel', done: 1, total: 1 })
+      } catch {
+        result.missing.push('reel.mp4')
+      }
+    }
+  }
+  return result
+}
 
 /** 생성 대기 프로필 조회. 기본은 status=='submitted'. includeErrors면 'error'도 재시도 대상에 포함. */
 export async function fetchPendingProfiles({ limit = 5, includeErrors = false } = {}) {

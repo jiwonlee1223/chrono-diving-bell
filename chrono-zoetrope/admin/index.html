@@ -566,6 +566,9 @@
             <button id="session-set" title="이 참가자의 생애를 4창 런타임에서 재생합니다">
               이 참가자를 세션으로
             </button>
+            <button id="session-clear" class="hidden" title="현재 세션을 해제하고 런타임을 대기(IDLE)로 되돌립니다">
+              세션 나가기
+            </button>
           </span>
         </header>
         <section id="queue-panel" class="hidden">
@@ -698,6 +701,7 @@
       function renderSessionCtl() {
         const label = $('#session-label')
         const btn = $('#session-set')
+        const clearBtn = $('#session-clear')
         if (sessionPid) {
           const p = personas.find((x) => x.personaId === sessionPid)
           label.innerHTML = `세션: <b>${p?.name || sessionPid}</b>`
@@ -706,6 +710,7 @@
         }
         btn.disabled = !pid || pid === sessionPid
         btn.textContent = pid && pid === sessionPid ? '현재 세션' : '이 참가자를 세션으로'
+        clearBtn.classList.toggle('hidden', !sessionPid) // 세션 있을 때만 '나가기' 노출
       }
 
       // 서버에서 현재 세션 선택을 읽어 온다 (초기 로드 시).
@@ -1021,6 +1026,18 @@
           renderPersonaList()
         } catch (e) {
           setStatus(`세션 설정 실패: ${e.message}`)
+        }
+      })
+      // 세션 나가기 — 현재 선택 해제. 런타임은 대기(IDLE)로 복귀.
+      $('#session-clear').addEventListener('click', async () => {
+        try {
+          await api('/api/session', { method: 'DELETE' })
+          sessionPid = null
+          setStatus('세션 나가기 — 선택 해제 (런타임이 IDLE이면 대기로 복귀)')
+          renderSessionCtl()
+          renderPersonaList()
+        } catch (e) {
+          setStatus(`세션 나가기 실패: ${e.message}`)
         }
       })
       $('#zoom').addEventListener('click', () => $('#zoom').classList.remove('show'))

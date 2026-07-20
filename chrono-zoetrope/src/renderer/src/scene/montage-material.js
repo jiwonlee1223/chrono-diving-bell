@@ -40,6 +40,8 @@ const FRAG = /* glsl */ `
   uniform float uMapping;       // 0 = repeat4, 1 = front, 2 = panorama(360°에 한 번 감김)
   uniform float uFit;           // 0 = width(레터박스), 1 = height(크롭)
   uniform float uEdgeFeather;   // 이미지 가장자리 페더 (어둠 속에 떠 있는 사진)
+  uniform float uYaw;           // 설치 캘리브레이션: 둘레 회전(0..1=360°, wrap). 실린더 안 좌우 정렬.
+  uniform float uPitch;         // 설치 캘리브레이션: 상하 이동(타일 높이 비율, wrap 없음).
 
   // 실린더 UV → 사분면 로컬 x(0..1). 사분면 밖(front 모드)은 -1.
   float quadLocalX(float u) {
@@ -94,7 +96,13 @@ const FRAG = /* glsl */ `
         gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
         return;
       }
-      vec2 cuv = vec2(fract(vUv.x), vUv.y);
+      // 캘리브레이션: 둘레 회전(yaw, wrap)과 상하 이동(pitch). pitch로 밀려 콘텐츠 밖은 검정.
+      float py = vUv.y - uPitch;
+      if (py < 0.0 || py > 1.0) {
+        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+      }
+      vec2 cuv = vec2(fract(vUv.x + uYaw), py);
       vec3 pcol = vec3(0.0);
       if (uHasImage > 0.5) pcol = sampleBlurred(uTexImage, cuv, uBlur);
       if (uHasVideo > 0.5 && uVideoMix > 0.001) {
@@ -105,7 +113,8 @@ const FRAG = /* glsl */ `
       return;
     }
 
-    float lx = quadLocalX(vUv.x);
+    float lx = quadLocalX(vUv.x + uYaw);
+    float qy = vUv.y - uPitch; // 캘리브레이션 상하 이동 (contentUV alpha가 범위 밖을 페이드)
     // 이미지도 영상도 없으면(또는 사분면 밖이면) 검정. 영상만 있어도(reel 데모) 렌더한다.
     if (lx < 0.0 || !hasContent) {
       gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
@@ -115,12 +124,12 @@ const FRAG = /* glsl */ `
     // 이미지가 있으면 그 위에서 시작, 없으면 검정에서 영상으로.
     vec3 col = vec3(0.0);
     if (uHasImage > 0.5) {
-      vec3 iu = contentUV(lx, vUv.y, uImageAspect);
+      vec3 iu = contentUV(lx, qy, uImageAspect);
       col = sampleBlurred(uTexImage, iu.xy, uBlur) * iu.z;
     }
 
     if (uHasVideo > 0.5 && uVideoMix > 0.001) {
-      vec3 vu = contentUV(lx, vUv.y, uVideoAspect);
+      vec3 vu = contentUV(lx, qy, uVideoAspect);
       vec3 vid = texture2D(uTexVideo, vu.xy).rgb * vu.z;
       col = mix(col, vid, uVideoMix);
     }
@@ -147,7 +156,9 @@ export function createMontageMaterial(install, montageConfig) {
         value: montageConfig?.mapping === 'panorama' ? 2 : montageConfig?.mapping === 'front' ? 1 : 0
       },
       uFit: { value: montageConfig?.fitMode === 'height' ? 1 : 0 },
-      uEdgeFeather: { value: montageConfig?.edgeFeather ?? 0.05 }
+      uEdgeFeather: { value: montageConfig?.edgeFeather ?? 0.05 },
+      uYaw: { value: montageConfig?.calibration?.yaw ?? 0 },
+      uPitch: { value: montageConfig?.calibration?.pitch ?? 0 }
     },
     vertexShader: VERT,
     fragmentShader: FRAG,
@@ -162,6 +173,14 @@ export function setMontageImage(material, texture) {
   u.uHasImage.value = texture ? 1 : 0
   const img = texture?.image
   if (img?.width && img?.height) u.uImageAspect.value = img.width / img.height
+}
+
+// 설치 캘리브레이션 실시간 적용 (런타임 페이지 키 입력이 호출). yaw wrap, pitch clamp.
+export function setMontageCalibration(material, { yaw, pitch } = {}) {
+  const u = material.uniforms
+  if (yaw != null) u.uYaw.value = ((yaw % 1) + 1) % 1
+  if (pitch != null) u.uPitch.value = Math.min(0.5, Math.max(-0.5, pitch))
+  return { yaw: u.uYaw.value, pitch: u.uPitch.value }
 }
 
 export function setMontageVideo(material, videoTexture) {

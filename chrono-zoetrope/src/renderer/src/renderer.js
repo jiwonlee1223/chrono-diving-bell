@@ -20,10 +20,12 @@ import { createThreadMaterial, updateThread } from './scene/thread-material.js'
 import {
   createMontageMaterial,
   setMontageImage,
-  setMontageVideo
+  setMontageVideo,
+  setMontageCalibration
 } from './scene/montage-material.js'
 import { createPanoramaPreview } from './scene/panorama-preview.js'
 import { PostPass } from './scene/post-pass.js'
+import { createGhost } from './scene/ghost.js'
 
 // 테스트 패턴·사진 색을 그린 그대로 통과시킨다(색 관리 이중변환 회피).
 THREE.ColorManagement.enabled = false
@@ -278,6 +280,13 @@ async function main() {
       // 가속된 상태에서 reel로 컷 → 1회 재생.
       demoPhase = 'reel'
       playReelOnce(url)
+    } else if (phase === 'stop') {
+      // 세션 나가기 — 재생 중단하고 IDLE 실타래(구름) 앰비언트로 복귀.
+      demoPhase = null
+      teardownVideo()
+      tweenTo(videoMix, 0, 0.6)
+      tweenTo(blur, 0, 0.4)
+      tweenTo(threadSpeedMul, 1, 1.5)
     }
   })
 
@@ -332,6 +341,17 @@ async function main() {
   }
   window.addEventListener('resize', resize)
   resize()
+
+  // 유령 에이전트: 4타일 스트립을 배회하는 앰비언트 발광체(눈코입 없는 부끄부끄, 구름에 가려진 빛).
+  // 렌더 경로(preview/installation)와 무관한 DOM 오버레이라 실행 직후부터 4개 화면을 돌아다닌다.
+  createGhost({
+    getStrip: () => ({
+      x: layout.originX,
+      y: layout.originY,
+      w: layout.tileW * count,
+      h: layout.tileH
+    })
+  })
 
   let currentFrame = -1
   let surfaceMaterial = threadMaterial
@@ -427,12 +447,33 @@ async function main() {
     if (typeof position === 'number') for (const p of posts) p.setVerticalShift(0)
   })
 
+  // ---- 설치 캘리브레이션(실린더 정렬) 실시간 조정 ----
+  //  ← →  : 둘레 회전(yaw)  ↑ ↓ : 상하 이동(pitch)  ·  Shift=거친 스텝  ·  0=리셋
+  //  부트스트랩의 calibration이 셰이더 초기값(createMontageMaterial). 조정값은 debounce로 서버 저장 → 재시작에도 유지.
+  const cal = { ...(montage?.config?.calibration ?? { yaw: 0, pitch: 0 }) }
+  let calSaveTimer = null
+  function applyCalibration() {
+    if (!montageMaterial) return
+    const norm = setMontageCalibration(montageMaterial, cal)
+    cal.yaw = norm.yaw
+    cal.pitch = norm.pitch
+    clearTimeout(calSaveTimer)
+    calSaveTimer = setTimeout(() => window.zoetrope.setCalibration?.(cal), 400)
+  }
+  function nudgeCalibration(dYaw, dPitch) {
+    cal.yaw += dYaw
+    cal.pitch += dPitch
+    applyCalibration()
+  }
+
   // ---- 입력 (§8) : Electron main의 before-input-event를 페이지 keydown으로 이관 ----
   //  Enter → 멈춤/진입/재개 (server 상태 기계가 상태별 의미 결정)
   //  V     → 뷰 토글(파노라마 ↔ 실린더)
   //  Space → 재생/정지 (개발용)
   window.addEventListener('keydown', (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return
+    const yawStep = e.shiftKey ? 0.02 : 0.004 // 0.004 ≈ 1.4°, shift ≈ 7°
+    const pitchStep = e.shiftKey ? 0.02 : 0.004
     if (e.key === 'Enter') {
       e.preventDefault()
       window.zoetrope.sendInput?.('stopEnter')
@@ -442,6 +483,23 @@ async function main() {
     } else if (e.key === ' ' || e.code === 'Space') {
       e.preventDefault()
       window.zoetrope.togglePlay?.()
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault()
+      nudgeCalibration(-yawStep, 0)
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault()
+      nudgeCalibration(yawStep, 0)
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      nudgeCalibration(0, pitchStep)
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      nudgeCalibration(0, -pitchStep)
+    } else if (e.key === '0') {
+      e.preventDefault()
+      cal.yaw = 0
+      cal.pitch = 0
+      applyCalibration()
     }
   })
 

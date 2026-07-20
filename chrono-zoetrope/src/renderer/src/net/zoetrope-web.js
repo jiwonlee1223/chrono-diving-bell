@@ -92,7 +92,9 @@ export function installZoetropeWeb() {
     sendVideoReady: () => postJson('/api/video-ready', { projectorIndex: 0 }),
     sendFreezeReady: () => postJson('/api/freeze-ready', { projectorIndex: 0 }),
     toggleView: () => postJson('/api/view-toggle', {}),
-    togglePlay: () => postJson('/api/toggle-play', {})
+    togglePlay: () => postJson('/api/toggle-play', {}),
+    // 설치 캘리브레이션(yaw/pitch) 저장 — 실시간 조정 후 재시작에도 유지되도록.
+    setCalibration: (cal) => postJson('/api/calibration', cal)
   }
 
   window.zoetrope = zoetrope

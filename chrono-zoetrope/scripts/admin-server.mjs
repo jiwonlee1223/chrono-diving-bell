@@ -48,7 +48,7 @@ import {
 import { recoverClipsFromComfy } from '../src/main/comfyui/recover-clips.js'
 import { processProfile, processLifeGraphSession } from '../src/main/comfyui/profile-worker.js'
 import { composeScenePromptFor, personaId, SEAM_BAND_PROMPT } from '../src/main/comfyui/prompt-builder.js'
-import { readSession, writeSession } from '../src/main/session-pointer.js'
+import { readSession, writeSession, clearSession } from '../src/main/session-pointer.js'
 import { VideoRegenerator } from '../src/main/comfyui/video-cache.js'
 import { ReelBuilder } from '../src/main/comfyui/reel-builder.js'
 
@@ -876,6 +876,13 @@ const server = http.createServer(async (req, res) => {
       const sel = await writeSession(LIBRARY, { personaId: pid, name: manifest.profile?.name || null })
       logAction(`◆ 세션 참가자 설정 → ${sel.name || pid}`)
       return send(res, 200, sel)
+    }
+
+    // DELETE /api/session → 세션 나가기(선택 해제). 런타임은 IDLE 대기로 복귀.
+    if (req.method === 'DELETE' && url.pathname === '/api/session') {
+      await clearSession(LIBRARY)
+      logAction('◇ 세션 나가기 — 선택 해제')
+      return send(res, 200, { personaId: null })
     }
 
     // GET /api/personas → persona 목록

@@ -9,7 +9,7 @@
 //
 // Electron 비의존 순수 Node 모듈 — main·admin 양쪽에서 import 한다.
 
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile, writeFile, unlink } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -42,4 +42,16 @@ export async function writeSession(libraryRoot, { personaId, name = null }) {
   const selection = { personaId, name, selectedAt: new Date().toISOString() }
   await writeFile(sessionPath(libraryRoot), JSON.stringify(selection, null, 2))
   return selection
+}
+
+/**
+ * 세션 나가기 — 현재 선택을 지운다(_session.json 삭제). 런타임은 이 변화를 감지해 대기(IDLE)로 돌아간다.
+ * 파일이 없으면 조용히 넘어간다.
+ */
+export async function clearSession(libraryRoot) {
+  try {
+    await unlink(sessionPath(libraryRoot))
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err
+  }
 }
