@@ -141,7 +141,16 @@ export default function LifeGraph({
         </div>
 
         <div className="graph-area" style={{ height: trackHeight }}>
-          <div className="graph-center-axis" />
+          {Array.from({ length: COLUMN_COUNT }).map((_, col) => (
+            <div
+              key={col}
+              className={
+                "graph-col-line" +
+                (col === (COLUMN_COUNT - 1) / 2 ? " is-center" : "")
+              }
+              style={{ left: `${colToPercent(col)}%` }}
+            />
+          ))}
 
           <svg
             className="graph-lines"

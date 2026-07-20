@@ -4,6 +4,7 @@ import SessionMenu from "./components/SessionMenu";
 import LifeGraph from "./components/LifeGraph";
 import PointModal from "./components/PointModal";
 import SubmitConfirmModal from "./components/SubmitConfirmModal";
+import IntroModal from "./components/IntroModal";
 import {
   computeStages,
   computeFutureStages,
@@ -59,6 +60,9 @@ function App() {
   // { zone: "main" | "future", stageId }
   const [modal, setModal] = useState(null);
 
+  // 첫 인생그래프(과거~현재~첫 미래) 세션을 시작할 때 딱 한 번 보여주는 사용법 안내.
+  const [showIntro, setShowIntro] = useState(false);
+
   const mainInteractive = sessionFutureIndex === 0;
 
   // 미래 쪽에 있을 때만 다크 모드 — 로그인/메뉴/저장완료 화면과 과거~현재 구간은 항상 라이트 모드.
@@ -108,6 +112,7 @@ function App() {
     setModal(null);
     setConfirmSubmitOpen(false);
     setSubmitError("");
+    setShowIntro(isMain);
     setScreen("draw");
   }
 
@@ -388,6 +393,8 @@ function App() {
           error={submitError}
         />
       )}
+
+      {showIntro && <IntroModal onClose={() => setShowIntro(false)} />}
 
       {modal && (
         <PointModal
