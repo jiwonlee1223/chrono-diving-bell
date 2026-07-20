@@ -76,6 +76,11 @@ export async function saveInitialProfile({ profile, stages, futureStages, points
     birthDate,
     age,
     [SESSION_KEYS[0]]: sessionPoints,
+    // admin 큐가 "제출됨"을 감지하는 신호 — 세션마다 따로 찍혀야 admin에 세션별로 한 줄씩 뜬다.
+    [`${SESSION_KEYS[0]}SubmittedAt`]: serverTimestamp(),
+    // admin이 실제로 claim(생성 시작)할 수 있는 상태 필드. submitted → generating → done|error로
+    // admin-server.mjs가 관리한다 — 여기서는 최초 제출만 표시한다.
+    [`${SESSION_KEYS[0]}Status`]: "submitted",
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   };
@@ -103,6 +108,7 @@ export async function saveFollowUpSession({
 
   await updateDoc(profileRef, {
     [key]: sessionPoints,
+    [`${key}SubmittedAt`]: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
 
