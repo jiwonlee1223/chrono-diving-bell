@@ -109,6 +109,21 @@ export function createGhost({ getStrip, zIndex = 31 } = {}) {
   let prevCx = null
   let raf = 0
 
+  // 가시성 램프 — 기본 숨김. show()/hide()로 ~2.5s 부드럽게 나타나고 사라진다.
+  // (유령은 주마등이 끝난 뒤의 idle에서만 등장 = 1인칭 진입 가능 신호. spinup·reel 중엔 숨긴다.)
+  const VIS_RAMP_SEC = 2.5
+  let vis = 0
+  let visTarget = 0
+  let visFrom = 0
+  let visStart = performance.now()
+  function setVis(on) {
+    const target = on ? 1 : 0
+    if (target === visTarget) return
+    visTarget = target
+    visFrom = vis
+    visStart = performance.now()
+  }
+
   function fallbackStrip() {
     // getStrip 미제공/미준비 시: 창 중앙의 4:1 스트립으로 근사.
     const w = window.innerWidth
@@ -152,8 +167,10 @@ export function createGhost({ getStrip, zIndex = 31 } = {}) {
     const sx = breathe * (1 + 0.07 * hop) // 내려갈 때 가로로 눌리고
     const sy = breathe * (1 - 0.07 * hop) //          세로로 납작해진다
     const sway = 4 * Math.sin(t * 0.45) + 2 * facing // 좌우 흔들림 + 진행 방향으로 살짝 기울임
-    const fadeIn = Math.min(1, t / 3.5) // 실행 직후 3.5초간 서서히 나타난다
-    const alpha = fadeIn * (0.42 + 0.12 * Math.sin(t * 0.45)) // 은은한 밝기 호흡
+    // 가시성 램프(smoothstep) — show/hide 시 부드럽게 나타나고/사라진다.
+    const vp = Math.min(1, (now - visStart) / (VIS_RAMP_SEC * 1000))
+    vis = visFrom + (visTarget - visFrom) * (vp * vp * (3 - 2 * vp))
+    const alpha = vis * (0.42 + 0.12 * Math.sin(t * 0.45)) // 은은한 밝기 호흡
 
     const x = cx - GW / 2
     const y = cy - GH / 2
@@ -169,6 +186,8 @@ export function createGhost({ getStrip, zIndex = 31 } = {}) {
 
   return {
     el: layer,
+    show: () => setVis(true), //  주마등 종료 후 idle 진입 시 호출.
+    hide: () => setVis(false), // spinup·reel·세션 나가기 시 호출.
     dispose() {
       cancelAnimationFrame(raf)
       layer.remove()

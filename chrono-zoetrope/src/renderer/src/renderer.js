@@ -130,6 +130,7 @@ async function main() {
   // ---- reel 데모 시퀀스(테스트 경험, §1 긴장 有 — 되돌릴 수 있게 기존 상태기계와 병존) ----
   // demoPhase: null(일반) | 'spinup'(실타래 회전 가속) | 'reel'(reel.mp4 1회 재생 후 멈춤).
   const SPINUP_MAX = 8 // 실타래 회전 최대 배속.
+  const REEL_PLAYBACK_RATE = 3 // 릴(90초)을 3배속 재생 → ~30초.
   let demoPhase = null
   const threadSpeedMul = makeTween(1) // 실타래 시간 배속(가속 연출).
   let threadClock = 0 //                로컬 적분 실타래 시계(배속 변화에도 위상 점프 없음).
@@ -238,6 +239,7 @@ async function main() {
     videoEl.preload = 'auto'
     videoEl.crossOrigin = 'anonymous' // /media ACAO — WebGL 텍스처 오염 방지.
     videoEl.src = url
+    videoEl.playbackRate = REEL_PLAYBACK_RATE // 90초 릴을 배속 재생(3배 → ~30초).
     videoEl.addEventListener(
       'canplaythrough',
       () => {
@@ -247,6 +249,7 @@ async function main() {
         // reel 표시로 즉시 스냅. rAF 누적 트윈에 의존하지 않아 견고하다.
         videoMix.v = videoMix.from = videoMix.to = 1
         triggerFlash() // reel이 드러나는 순간 섬광 — 섬광이 컷을 덮는다.
+        videoEl.playbackRate = REEL_PLAYBACK_RATE
         videoEl.play().catch(() => {})
       },
       { once: true }
@@ -261,6 +264,7 @@ async function main() {
         setTimeout(() => {
           demoPhase = null // 검정에서 실타래(구름) 앰비언트로 (appState=IDLE 따라감)
           teardownVideo()
+          ghost.show() // 주마등 종료 → idle 진입: 유령 등장(1인칭 진입 가능 신호).
         }, 1200)
       },
       { once: true }
@@ -272,6 +276,7 @@ async function main() {
     if (phase === 'spinup') {
       // 실타래 앰비언트로 되돌려 회전을 가속시킨다(주황 구름이 빨라짐).
       demoPhase = 'spinup'
+      ghost.hide() // 주마등 시작 — 유령 숨김.
       teardownVideo()
       tweenTo(videoMix, 0, 0.2)
       tweenTo(blur, 0, 0.2)
@@ -279,10 +284,12 @@ async function main() {
     } else if (phase === 'reel') {
       // 가속된 상태에서 reel로 컷 → 1회 재생.
       demoPhase = 'reel'
+      ghost.hide() // reel 재생 중엔 유령 숨김.
       playReelOnce(url)
     } else if (phase === 'stop') {
-      // 세션 나가기 — 재생 중단하고 IDLE 실타래(구름) 앰비언트로 복귀.
+      // 세션 나가기 — 재생 중단하고 IDLE 실타래(구름) 앰비언트로 복귀. 유령도 숨김.
       demoPhase = null
+      ghost.hide()
       teardownVideo()
       tweenTo(videoMix, 0, 0.6)
       tweenTo(blur, 0, 0.4)
@@ -343,8 +350,9 @@ async function main() {
   resize()
 
   // 유령 에이전트: 4타일 스트립을 배회하는 앰비언트 발광체(눈코입 없는 부끄부끄, 구름에 가려진 빛).
-  // 렌더 경로(preview/installation)와 무관한 DOM 오버레이라 실행 직후부터 4개 화면을 돌아다닌다.
-  createGhost({
+  // 렌더 경로(preview/installation)와 무관한 DOM 오버레이. 기본 숨김 — 주마등(reel) 종료 후 idle에서만
+  // 나타난다(1인칭 진입 가능 신호). spinup·reel 재생 중엔 숨긴다.
+  const ghost = createGhost({
     getStrip: () => ({
       x: layout.originX,
       y: layout.originY,
@@ -379,8 +387,10 @@ async function main() {
     threadClock += dt * tweenUpdate(threadSpeedMul)
 
     // demoPhase가 설정되면 데모가 표면을 결정: 'reel'=영상 재료, 그 외=실타래. 없으면 기존 상태기계.
-    const montageActive =
-      demoPhase === 'reel'
+    // 캘리브레이션 모드면 상태와 무관하게 몽타주(정적 기준 프레임)를 강제한다.
+    const montageActive = calibrationMode
+      ? !!montageMaterial
+      : demoPhase === 'reel'
         ? !!montageMaterial
         : demoPhase === 'spinup'
           ? false
@@ -388,7 +398,16 @@ async function main() {
     setSurfaceMaterial(montageActive ? montageMaterial : threadMaterial)
 
     if (montageActive) {
-      if (demoPhase === 'reel') {
+      if (calibrationMode) {
+        // 정적 기준 프레임(첫 로드된 파노라마)로 고정 — 정렬 중 콘텐츠가 움직이지 않게.
+        const tex = textures.find(Boolean)
+        if (tex && currentFrame !== -2) {
+          currentFrame = -2
+          setMontageImage(montageMaterial, tex)
+        }
+        montageMaterial.uniforms.uBlur.value = 0
+        montageMaterial.uniforms.uVideoMix.value = 0
+      } else if (demoPhase === 'reel') {
         // reel 데모: 영상만(정지 이미지 프레임 갱신 안 함). videoMix가 실타래→reel 크로스페이드.
         montageMaterial.uniforms.uBlur.value = 0
         montageMaterial.uniforms.uVideoMix.value = tweenUpdate(videoMix)
@@ -466,6 +485,23 @@ async function main() {
     applyCalibration()
   }
 
+  // 캘리브레이션 모드(C키): IDLE/reel과 무관하게 정적 기준 프레임(첫 파노라마)을 띄우고 중앙 가이드선을
+  // 표시해, 콘텐츠 재생을 기다리지 않고도 얼굴 위치를 실린더에 맞출 수 있게 한다. frame()이 이 플래그를 본다.
+  let calibrationMode = false
+  const calGuide = document.createElement('div')
+  calGuide.style.cssText =
+    'position:fixed;inset:0;pointer-events:none;display:none;z-index:30;'
+  calGuide.innerHTML =
+    '<div style="position:absolute;left:50%;top:0;bottom:0;width:1px;transform:translateX(-0.5px);background:rgba(0,255,180,.55)"></div>' +
+    '<div style="position:absolute;top:50%;left:0;right:0;height:1px;transform:translateY(-0.5px);background:rgba(0,255,180,.35)"></div>' +
+    '<div style="position:absolute;left:12px;top:10px;font:11px/1.4 monospace;color:rgba(0,255,180,.8)">CALIBRATION · ←→ 회전 · ↑↓ 상하 · Shift 크게 · 0 리셋 · C 종료</div>'
+  document.body.appendChild(calGuide)
+  function toggleCalibrationMode() {
+    calibrationMode = !calibrationMode
+    calGuide.style.display = calibrationMode ? 'block' : 'none'
+    if (calibrationMode) currentFrame = -1 // 기준 프레임 재적용 유도
+  }
+
   // ---- 입력 (§8) : Electron main의 before-input-event를 페이지 keydown으로 이관 ----
   //  Enter → 멈춤/진입/재개 (server 상태 기계가 상태별 의미 결정)
   //  V     → 뷰 토글(파노라마 ↔ 실린더)
@@ -480,6 +516,9 @@ async function main() {
     } else if (e.key === 'v' || e.key === 'V') {
       e.preventDefault()
       window.zoetrope.toggleView?.()
+    } else if (e.key === 'c' || e.key === 'C') {
+      e.preventDefault()
+      toggleCalibrationMode()
     } else if (e.key === ' ' || e.code === 'Space') {
       e.preventDefault()
       window.zoetrope.togglePlay?.()

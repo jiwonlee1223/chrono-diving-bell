@@ -181,7 +181,7 @@ function toggleDevPreview() {
 
 // ── reel 데모 시퀀스(테스트 경험, §1 긴장 有 — 되돌릴 수 있는 경로) ─────
 // 참가자 선택 → 실타래 회전 가속(spinup) → 사전 빌드 reel.mp4 1회 재생.
-const REEL_SPINUP_MS = 3500
+const REEL_SPINUP_MS = 10000 // 세션 지정 → idle(실타래) 배속 가속 구간 10초 → reel 컷.
 let reelTimer = null
 
 function reelMediaUrl() {
