@@ -44,6 +44,186 @@ export async function initFirebase({ serviceAccountPath, projectId } = {}) {
   return db
 }
 
+/** 프로필 → 파노라마 컬렉션 문서 키 '이름_생년월일6자'(예: 김철수_990101). */
+export function panoramaDocKey(profile) {
+  if (profile.id) return profile.id // Firestore 수집 프로필은 이미 이 형식
+  const digits = String(profile.birthDate || '').replace(/\D/g, '') // '1994-03-15' → '19940315'
+  return `${profile.name || 'unknown'}_${digits.slice(2, 8)}` // → 김주만_940315
+}
+
+/** 로컬 파일 1개를 Storage에 올리고 공개 URL(+gs 경로)을 반환. makePublic 실패(균일 접근)면 7일 서명 URL. */
+async function uploadFileToStorage(bkt, localPath, objectPath, contentType) {
+  const file = bkt.file(objectPath)
+  await file.save(await fs.readFile(localPath), { contentType, resumable: false, metadata: { cacheControl: 'public,max-age=31536000' } })
+  let url
+  try {
+    await file.makePublic()
+    url = `https://storage.googleapis.com/${bkt.name}/${objectPath.split('/').map(encodeURIComponent).join('/')}`
+  } catch {
+    ;[url] = await file.getSignedUrl({ action: 'read', expires: Date.now() + 7 * 864e5 })
+  }
+  return { url, storagePath: `gs://${bkt.name}/${objectPath}` }
+}
+
+/**
+ * 생성된 파노라마들을 Firebase Storage에 업로드하고, 링크를 'generatedPanoramaImages' 컬렉션에
+ * 프로필(이름_생년월일6자)별로 기록한다. 로컬 파일은 그대로 두되 Firebase가 정본 링크를 갖는다.
+ *
+ * @param {object} p
+ * @param {object} p.profile   { name, birthDate, id? }
+ * @param {string} p.personaId 내부 pid(p-해시)
+ * @param {string} p.dir       로컬 라이브러리 디렉터리(파일 읽기용)
+ * @param {Array}  p.images    manifest.images (각 { id, age, year, scene, isPast, file, failed? })
+ * @param {string} [p.bucket]  버킷 override(기본 defaultBucket)
+ * @param {(e:object)=>void} [p.onProgress]
+ * @returns {Promise<{ key:string, count:number, images:Array }>}
+ */
+export async function uploadPersonaPanoramas({ profile, personaId, dir, images, bucket, onProgress = () => {} }) {
+  if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  const bkt = getStorage(app).bucket(bucket || defaultBucket)
+  const key = panoramaDocKey(profile)
+  const ok = (images || []).filter((im) => !im.failed && im.file)
+  const uploaded = []
+  for (let i = 0; i < ok.length; i++) {
+    const im = ok[i]
+    const local = path.join(dir, im.file)
+    const objectPath = `generated-panoramas/${key}/${im.file}`
+    const { url, storagePath } = await uploadFileToStorage(bkt, local, objectPath, 'image/png')
+    uploaded.push({ id: im.id, age: im.age, year: im.year, scene: im.scene, isPast: im.isPast ?? null, url, storagePath })
+    onProgress({ type: 'upload', done: i + 1, total: ok.length, id: im.id })
+  }
+  await db
+    .collection(COLLECTION_IMAGES)
+    .doc(key)
+    .set(
+      {
+        name: profile.name || null,
+        birthDate: profile.birthDate || null,
+        personaId,
+        bucket: bkt.name,
+        count: uploaded.length,
+        images: uploaded,
+        updatedAt: FieldValue.serverTimestamp()
+      },
+      { merge: true }
+    )
+  return { key, count: uploaded.length, images: uploaded }
+}
+
+/**
+ * 생성된 영상을 Storage에 업로드하고 'generatedVideos' 컬렉션에 프로필별로 기록한다(이미지와 동일 형식).
+ * kind='clips': videos/<id>.mp4 전부 업로드 → videos 배열. kind='reel': reel.mp4 업로드 → reel 필드. 둘 다 merge.
+ *
+ * @param {object} p
+ * @param {object} p.profile   { name, birthDate, id? }
+ * @param {string} p.personaId
+ * @param {string} p.dir       로컬 라이브러리 디렉터리(<dir>/videos/*.mp4, <dir>/reel.mp4)
+ * @param {Array}  [p.images]  manifest.images (장면 메타 age/year/scene 부여용)
+ * @param {'clips'|'reel'} [p.kind]
+ * @param {object} [p.reelMeta] { durationSec, clipCount }
+ * @param {string} [p.bucket] @param {(e:object)=>void} [p.onProgress]
+ * @returns {Promise<object>}
+ */
+export async function uploadPersonaVideos({ profile, personaId, dir, images, kind = 'clips', reelMeta = null, bucket, onProgress = () => {} }) {
+  if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  const bkt = getStorage(app).bucket(bucket || defaultBucket)
+  const key = panoramaDocKey(profile)
+  const doc = db.collection(COLLECTION_VIDEOS).doc(key)
+  const base = { name: profile.name || null, birthDate: profile.birthDate || null, personaId, bucket: bkt.name, updatedAt: FieldValue.serverTimestamp() }
+
+  if (kind === 'reel') {
+    const objectPath = `generated-videos/${key}/reel.mp4`
+    const { url, storagePath } = await uploadFileToStorage(bkt, path.join(dir, 'reel.mp4'), objectPath, 'video/mp4')
+    await doc.set({ ...base, reel: { url, storagePath, ...(reelMeta ? { durationSec: reelMeta.durationSec, clipCount: reelMeta.clipCount } : {}) } }, { merge: true })
+    onProgress({ type: 'upload-reel', url })
+    return { key, reel: url }
+  }
+
+  // clips — 실제 존재하는 videos/*.mp4만 스캔
+  const metaById = new Map((images || []).map((im) => [im.id, im]))
+  let files = []
+  try {
+    files = (await fs.readdir(path.join(dir, 'videos'))).filter((f) => f.endsWith('.mp4'))
+  } catch {
+    /* videos 디렉터리 없음 */
+  }
+  const uploaded = []
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i]
+    const id = f.replace(/\.mp4$/, '')
+    const im = metaById.get(id) || {}
+    const objectPath = `generated-videos/${key}/${f}`
+    const { url, storagePath } = await uploadFileToStorage(bkt, path.join(dir, 'videos', f), objectPath, 'video/mp4')
+    uploaded.push({ id, age: im.age ?? null, year: im.year ?? null, scene: im.scene ?? null, isPast: im.isPast ?? null, url, storagePath })
+    onProgress({ type: 'upload', done: i + 1, total: files.length, id })
+  }
+  await doc.set({ ...base, count: uploaded.length, videos: uploaded }, { merge: true })
+  return { key, count: uploaded.length, videos: uploaded }
+}
+
+// ── Firebase 정본 읽기(정본화: 로컬 library는 캐시) ──────────────────────────────
+// gs://bucket/object → { bucket, objectPath }. 형식이 다르면 null.
+function parseGsPath(gs) {
+  const m = /^gs:\/\/([^/]+)\/(.+)$/.exec(gs || '')
+  return m ? { bucket: m[1], objectPath: m[2] } : null
+}
+
+/** 'generatedVideos' 문서(프로필별) 조회. { videos:[{id,storagePath,url,...}], reel, count, ... } 또는 null. */
+export async function fetchPersonaVideos(profile) {
+  if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  const snap = await db.collection(COLLECTION_VIDEOS).doc(panoramaDocKey(profile)).get()
+  return snap.exists ? snap.data() : null
+}
+
+/**
+ * Storage 객체 1개를 로컬로 내려받는다. storagePath(gs://…) 우선, 없으면 url(firebasestorage 형식) 파싱.
+ * Admin SDK(storage.googleapis.com 경유)라 캠퍼스망 firebasestorage SNI 차단과 무관하다.
+ */
+export async function downloadStorageObject({ storagePath, url }, destPath) {
+  if (!app) throw new Error('initFirebase 먼저 호출해야 한다')
+  const ref = parseGsPath(storagePath) || parseStorageURL(url)
+  if (!ref) throw new Error(`Storage 경로를 해석할 수 없다: ${storagePath || url}`)
+  await fs.mkdir(path.dirname(destPath), { recursive: true })
+  await getStorage(app).bucket(ref.bucket).file(ref.objectPath).download({ destination: destPath })
+  return destPath
+}
+
+/**
+ * Firebase 'generatedVideos' 문서의 클립들을 로컬 캐시(<dir>/videos/<id>.mp4)로 보장한다.
+ * 이미 있으면 건너뛰고, 없으면 Storage에서 받아 채운다 — 로컬을 Firebase의 read-through 캐시로 만드는 핵심.
+ * @param {object} p  { profile, dir, ids?, onProgress? }  ids 미지정 시 문서의 전 클립.
+ * @returns {Promise<{ paths: Map<string,string>, missing: string[] }>}  id→localPath, 문서에 없던 id
+ */
+export async function ensureLocalClipsFromFirebase(profile, dir, { ids, onProgress = () => {} } = {}) {
+  const data = await fetchPersonaVideos(profile)
+  if (!data) throw new Error(`Firebase에 영상 문서가 없다: ${panoramaDocKey(profile)}`)
+  const byId = new Map((data.videos || []).map((v) => [v.id, v]))
+  const wanted = ids && ids.length ? ids : [...byId.keys()]
+  const videosDir = path.join(dir, 'videos')
+  await fs.mkdir(videosDir, { recursive: true })
+  const paths = new Map()
+  const missing = []
+  for (let i = 0; i < wanted.length; i++) {
+    const id = wanted[i]
+    onProgress({ phase: 'fetch', done: i, total: wanted.length, id })
+    const local = path.join(videosDir, `${id}.mp4`)
+    if (await fs.access(local).then(() => true, () => false)) {
+      paths.set(id, local)
+      continue
+    }
+    const v = byId.get(id)
+    if (!v) {
+      missing.push(id)
+      continue
+    }
+    await downloadStorageObject(v, local)
+    paths.set(id, local)
+  }
+  onProgress({ phase: 'fetch', done: wanted.length, total: wanted.length })
+  return { paths, missing }
+}
+
+
 /** 생성 대기 프로필 조회. 기본은 status=='submitted'. includeErrors면 'error'도 재시도 대상에 포함. */
 export async function fetchPendingProfiles({ limit = 5, includeErrors = false } = {}) {
   const statuses = includeErrors ? ['submitted', 'error'] : ['submitted']

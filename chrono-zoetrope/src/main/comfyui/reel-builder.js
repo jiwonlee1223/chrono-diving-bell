@@ -6,7 +6,7 @@
 //  2) concat: 장면 순서(출생→죽음)대로 xfade 체인. 오디오 없음(§1 침묵).
 //
 // 총길이 맞추기: 장면당 표시 길이 d = (target + (N-1)·c)/N.
-//   d < 클립원본 → 트림, d > 원본 → 슬로모션(maxStretch 상한, 넘으면 릴이 target보다 짧아짐).
+//   d < 클립원본 → fast-forward(클립 전체를 d초로 배속, 뒷부분 버리지 않음), d > 원본 → 슬로모션(maxStretch 상한, 넘으면 릴이 target보다 짧아짐).
 //
 // ffmpeg/ffprobe 필요. Electron 비의존 순수 Node.
 
@@ -93,14 +93,18 @@ export class ReelBuilder {
 
     let c = this.reel.crossfadeSec ?? 1.2
     let d = (target + (N - 1) * c) / N // 목표 총길이를 맞추는 장면당 표시 길이
-    let speed = 1 // setpts 배율 (>1 = 슬로모션)
-    if (d > rawLen) {
-      speed = Math.min(d / rawLen, maxStretch)
-      d = rawLen * speed // 상한이면 릴이 target보다 짧아짐(허용)
+    // setpts 배율(PTS multiplier): >1 = 슬로모션, <1 = fast-forward. 클립이 d보다 길면 뒷부분을
+    // 트림해 버리지 않고 통째로 배속해 d초에 담는다 — 30개 전부의 모션이 온전히, 빠르게 스쳐 간다.
+    let speed
+    if (d >= rawLen) {
+      speed = Math.min(d / rawLen, maxStretch) // 클립이 짧으면 슬로모션(상한 넘으면 릴이 target보다 짧아짐)
+      d = rawLen * speed
+    } else {
+      speed = d / rawLen // 클립이 길면 fast-forward: 원본 전체를 d초로 압축(내용 손실 없음)
     }
     c = Math.min(c, d * 0.45) // 크로스페이드는 장면 길이보다 짧아야 함
 
-    // 각 입력을 균일 규격(16fps·yuv420p·SAR1)으로 정규화 후 d초로 트림.
+    // 각 입력을 배속(setpts) → 균일 규격(16fps·yuv420p·SAR1) → d초 정렬(배속 후 길이=d, trim은 안전판).
     const norm = (i) =>
       `[${i}:v]setpts=${speed.toFixed(4)}*PTS,fps=16,format=yuv420p,setsar=1,settb=AVTB,` +
       `trim=0:${d.toFixed(4)},setpts=PTS-STARTPTS[v${i}]`

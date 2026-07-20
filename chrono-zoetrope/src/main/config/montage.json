@@ -15,7 +15,7 @@
     "revealSec": 5.0
   },
   "reel": {
-    "$comment": "주마등 릴 — 죽기 직전 스쳐 가는 기억들. 장면당 1개 영상 → 이어붙여 릴. 두 모드(regen.mode): seedance = 장면별 10초 seamless 루프를 순서대로 잇고 targetSec으로 fast-forward | wan = 개별 클립 + 크로스페이드. admin에서 '영상 생성'→'릴 생성' 버튼. targetSec=릴 총길이. crossfadeSec/maxStretch/transition은 wan 전용.",
+    "$comment": "주마등 릴 — 죽기 직전 스쳐 가는 기억들. 장면당 1개 영상 → 30개 전부 이어붙여 릴. 두 모드(regen.mode): seedance = 장면별 10초 루프를 순서대로 잇고 targetSec으로 균일 fast-forward | wan = 개별 클립을 크로스페이드로 잇되, 클립이 길면 통째로 배속(fast-forward)해 targetSec에 맞춤(트림으로 뒷부분 버리지 않음). admin에서 '영상 생성'→'릴 생성' 버튼. targetSec=릴 총길이. crossfadeSec/maxStretch/transition은 wan 전용.",
     "targetSec": 90,
     "crossfadeSec": 1.2,
     "maxStretch": 1.25,

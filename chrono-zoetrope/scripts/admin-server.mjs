@@ -40,8 +40,12 @@ import {
   listenProfiles,
   resetOrphanGenerating,
   resetOrphanLifeGraphGenerating,
-  updateProfileFields
+  updateProfileFields,
+  uploadPersonaVideos,
+  ensureLocalClipsFromFirebase,
+  fetchPersonaVideos
 } from '../src/main/comfyui/firestore-source.js'
+import { recoverClipsFromComfy } from '../src/main/comfyui/recover-clips.js'
 import { processProfile, processLifeGraphSession } from '../src/main/comfyui/profile-worker.js'
 import { composeScenePromptFor, personaId, SEAM_BAND_PROMPT } from '../src/main/comfyui/prompt-builder.js'
 import { readSession, writeSession } from '../src/main/session-pointer.js'
@@ -362,7 +366,8 @@ async function pumpVideo() {
   try {
     const mode = montage.regen.mode // 'seedance' | 'wan' | 'mock'
     const sd = mode === 'seedance'
-    if (sd && !COMFY_API_KEY)
+    // recover는 ComfyUI history에서 회수만 하므로 Seedance 키가 필요 없다.
+    if (sd && kind !== 'recover' && !COMFY_API_KEY)
       throw new Error('Seedance API 키 없음 — secrets/comfy-api-key.txt 필요 (또는 regen.mode를 wan으로)')
 
     const manifest = await readManifest(pid)
@@ -393,12 +398,68 @@ async function pumpVideo() {
       await writeManifest(pid, manifest)
       videoLast = { pid, kind, ok: true, at: Date.now() }
       logAction(`✓ 영상 생성 완료: ${pid} — ${done}/${total}`)
+      // Firebase 'generatedVideos' 컬렉션에 클립 업로드 (이미지와 동일 형식). 실패해도 잡은 성공 유지.
+      if (firebaseReady && config.firebase?.uploadGenerated !== false) {
+        try {
+          const up = await uploadPersonaVideos({ profile: manifest.profile, personaId: pid, dir: personaDir, images: manifest.images, kind: 'clips' })
+          logAction(`  ↑ Firebase 영상 업로드: ${up.count}개 → 'generatedVideos'/${up.key}`)
+        } catch (e) {
+          logAction(`  ⚠ Firebase 영상 업로드 실패(로컬 보존됨): ${e.message}`)
+          videoLast = { ...(videoLast || {}), firebaseWarn: `클립 업로드 실패: ${e.message}` }
+        }
+      }
+    } else if (kind === 'recover') {
+      // ComfyUI output 복구: 생성은 됐으나 /view 다운로드 실패로 로컬/Firebase가 빈 경우, 서버 output에서 회수.
+      const ids = scenes.map((s) => s.id)
+      videoJob = { pid, kind, phase: 'recover', done: 0, total: ids.length }
+      logAction(`▶ ComfyUI 복구 시작: ${manifest.profile?.name || pid} (${ids.length}장)`)
+      const { recovered, missing } = await recoverClipsFromComfy({
+        host: config.host,
+        ids,
+        videosDir: path.join(personaDir, 'videos'),
+        onProgress: (e) => (videoJob = { pid, kind, ...e })
+      })
+      manifest.clips = {
+        mode,
+        done: recovered.length,
+        total: ids.length,
+        builtAt: new Date().toISOString(),
+        recoveredAt: new Date().toISOString()
+      }
+      await writeManifest(pid, manifest)
+      videoLast = { pid, kind, ok: true, at: Date.now() }
+      logAction(
+        `✓ 복구 완료: ${pid} — ${recovered.length}/${ids.length}` +
+          (missing.length ? ` (누락 ${missing.join(', ')})` : '')
+      )
+      if (firebaseReady && config.firebase?.uploadGenerated !== false && recovered.length > 0) {
+        try {
+          const up = await uploadPersonaVideos({ profile: manifest.profile, personaId: pid, dir: personaDir, images: manifest.images, kind: 'clips' })
+          logAction(`  ↑ Firebase 영상 업로드: ${up.count}개 → 'generatedVideos'/${up.key}`)
+        } catch (e) {
+          logAction(`  ⚠ Firebase 영상 업로드 실패(로컬 보존됨): ${e.message}`)
+          videoLast = { ...(videoLast || {}), firebaseWarn: `클립 업로드 실패: ${e.message}` }
+        }
+      }
     } else {
       // 릴 합성: seedance → 루프 이어붙여 fast-forward | wan → 크로스페이드
       videoJob = { pid, kind, phase: 'concat', done: 0, total: scenes.length }
       logAction(`▶ 릴 합성 시작 [${mode}]: ${manifest.profile?.name || pid}`)
       const outPath = path.join(personaDir, 'reel.mp4')
-      const clipPaths = scenes.map((s) => regenerator.cachedPath(s.id))
+      // 클립 소스 = Firebase 정본(로컬 캐시 우선, 없으면 Storage에서 받아 채움). Firebase 미연결·문서없음이면 로컬 폴백.
+      let clipPaths = scenes.map((s) => regenerator.cachedPath(s.id))
+      if (firebaseReady) {
+        try {
+          const { paths, missing } = await ensureLocalClipsFromFirebase(manifest.profile, personaDir, {
+            ids: scenes.map((s) => s.id),
+            onProgress: (e) => (videoJob = { pid, kind, ...e })
+          })
+          if (missing.length) logAction(`  ⚠ Firebase 문서에 없는 클립 ${missing.length}개: ${missing.join(', ')}`)
+          clipPaths = scenes.map((s) => paths.get(s.id) || regenerator.cachedPath(s.id))
+        } catch (e) {
+          logAction(`  ⚠ Firebase 클립 조회 실패 — 로컬 캐시로 합성: ${e.message}`)
+        }
+      }
       const meta = sd
         ? await builder.concatSimple(clipPaths, outPath, { onProgress: (e) => (videoJob = { pid, kind, ...e }) })
         : await builder.concat(clipPaths, outPath, { onProgress: (e) => (videoJob = { pid, kind, ...e }) })
@@ -413,6 +474,15 @@ async function pumpVideo() {
       await writeManifest(pid, manifest)
       videoLast = { pid, kind, ok: true, durationSec: meta.durationSec, at: Date.now() }
       logAction(`✓ 릴 완료: ${pid} — ${meta.durationSec.toFixed(1)}s (${meta.clipCount}개)`)
+      if (firebaseReady && config.firebase?.uploadGenerated !== false) {
+        try {
+          const up = await uploadPersonaVideos({ profile: manifest.profile, personaId: pid, dir: personaDir, images: manifest.images, kind: 'reel', reelMeta: meta })
+          logAction(`  ↑ Firebase 릴 업로드 → 'generatedVideos'/${up.key}`)
+        } catch (e) {
+          logAction(`  ⚠ Firebase 릴 업로드 실패(로컬 보존됨): ${e.message}`)
+          videoLast = { ...(videoLast || {}), firebaseWarn: `릴 업로드 실패: ${e.message}` }
+        }
+      }
     }
   } catch (err) {
     const cancelled = Boolean(err.cancelled) || videoCancel
@@ -835,7 +905,20 @@ const server = http.createServer(async (req, res) => {
 
       if (req.method === 'GET' && parts.length === 3) {
         const m = await readManifest(pid)
-        m._clipStatus = clipStatus(pid, m) // 사전 생성 클립 진행도 (영상 패널 표시용)
+        m._clipStatus = clipStatus(pid, m) // 로컬 캐시 기준 진행도 (영상 패널 표시용)
+        // Firebase 정본 상태(☁) — 로컬 캐시와 별개로 "Firebase에 실제로 올라간 수"를 보여준다.
+        if (firebaseReady) {
+          try {
+            const fb = await fetchPersonaVideos(m.profile)
+            m._firebase = {
+              clips: fb?.videos?.length || 0,
+              reel: Boolean(fb?.reel),
+              total: (m.images || []).filter((i) => !i.failed).length
+            }
+          } catch {
+            m._firebase = null
+          }
+        }
         return send(res, 200, m)
       }
 
@@ -907,11 +990,18 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, { queued: true, pid, kind: 'clips' })
       }
 
-      // 주마등 릴 합성 — 사전 생성된 클립들을 90초 릴로. 클립이 있어야 함.
+      // 주마등 릴 합성 — Firebase 정본 클립(없으면 로컬)으로 90초 릴 합성.
       if (req.method === 'POST' && parts[3] === 'reel') {
         await readManifest(pid) // 존재 확인
         enqueueVideo(pid, 'reel')
         return send(res, 200, { queued: true, pid, kind: 'reel' })
+      }
+
+      // ComfyUI 복구 — 생성됐으나 다운로드 실패한 클립을 서버 output에서 회수 → 로컬 + Firebase.
+      if (req.method === 'POST' && parts[3] === 'recover-clips') {
+        await readManifest(pid) // 존재 확인
+        enqueueVideo(pid, 'recover')
+        return send(res, 200, { queued: true, pid, kind: 'recover' })
       }
     }
 

@@ -838,6 +838,7 @@
         const job = (videoState && videoState.job) || {}
         const buildingClips = b && b.pid === pid && b.kind === 'clips'
         const buildingReel = b && b.pid === pid && b.kind === 'reel'
+        const buildingRecover = b && b.pid === pid && b.kind === 'recover'
         const qHas = (kind) => videoState && (videoState.queue || []).some((v) => v.pid === pid && v.kind === kind)
 
         // ── ① 영상 생성 행 (seedance-flf=전이 | wan=클립) ──
@@ -848,6 +849,8 @@
             `<span class="video-label">영상 ${unit} <b>${job.done || 0}/${job.total || cs.clipsTotal}</b> 생성 중…</span>` +
             `<button id="video-pause" class="stop-btn">일시정지</button>` +
             `<button id="video-stop" class="stop-btn">중단</button>`
+        } else if (buildingRecover) {
+          clipRow = `<span class="video-label">ComfyUI 복구 <b>${job.done || 0}/${job.total || cs.clipsTotal}</b> …</span>`
         } else {
           const label = qHas('clips')
             ? '대기 중…'
@@ -857,9 +860,17 @@
                 ? `이어서 생성 (${cs.clipsDone}/${cs.clipsTotal})`
                 : '영상 완료 ✓'
           const done = cs.clipsDone >= cs.clipsTotal && cs.clipsTotal > 0
+          // 부족분이 있으면 ComfyUI 서버 output에서 회수하는 복구 버튼 노출(생성됐으나 다운로드 실패한 경우).
+          const recoverBtn =
+            !done && !qHas('recover')
+              ? `<button id="video-recover" title="ComfyUI 서버에 남은 클립을 회수해 로컬+Firebase로 복구">ComfyUI에서 복구</button>`
+              : qHas('recover')
+                ? `<button disabled>복구 대기 중…</button>`
+                : ''
           clipRow =
             `<span class="video-label">영상 ${unit} <b>${cs.clipsDone}/${cs.clipsTotal}</b>${done ? ' · 완료' : ''}</span>` +
-            `<button id="video-genclips"${qHas('clips') || done ? ' disabled' : ''}>${label}</button>`
+            `<button id="video-genclips"${qHas('clips') || done ? ' disabled' : ''}>${label}</button>` +
+            recoverBtn
         }
 
         // ── ② 릴 합성 행 ──
@@ -880,10 +891,22 @@
             ? `<video controls playsinline preload="metadata" src="/media/${pid}/${reel.file}?rev=${reel.rev || 0}"></video>`
             : ''
 
+        // ── ☁ Firebase 정본 상태 (로컬 캐시와 별개) ──
+        let fbRow = ''
+        const fb = manifest._firebase
+        if (fb) {
+          const behind = fb.clips < fb.total
+          fbRow =
+            `<div class="video-row"><span class="video-label" style="opacity:.85">` +
+            `☁ Firebase <b>${fb.clips}/${fb.total}</b> 클립 · reel ${fb.reel ? '✓' : '✗'}` +
+            (behind ? ` <span style="color:#e0a030">— 로컬보다 부족(복구/재업로드 필요)</span>` : '') +
+            `</span></div>`
+        }
+
         return (
           `<section class="video-panel"><div class="video-head"><h2>주마등 영상</h2></div>` +
           `<div class="video-row">${clipRow}</div>` +
-          `<div class="video-row">${reelRow}</div>${player}</section>`
+          `<div class="video-row">${reelRow}</div>${fbRow}${player}</section>`
         )
       }
       // #reel-slot 안만 갱신 — 진행률 폴링이 장면 그리드를 건드리지 않게.
@@ -903,7 +926,9 @@
       const genClips = () =>
         postVideo(`/api/personas/${pid}/clips`, '영상 클립 생성 시작 — 진행은 영상 패널에 표시 (장당 ~1분, 30장이면 수십 분)', '영상 생성 실패')
       const buildReel = () =>
-        postVideo(`/api/personas/${pid}/reel`, '릴 합성 시작 — 사전 생성된 클립을 90초로 합칩니다', '릴 합성 실패')
+        postVideo(`/api/personas/${pid}/reel`, '릴 합성 시작 — Firebase 클립(없으면 로컬)으로 90초 합성', '릴 합성 실패')
+      const recoverClips = () =>
+        postVideo(`/api/personas/${pid}/recover-clips`, 'ComfyUI 복구 시작 — 서버 output에서 회수해 로컬+Firebase로 복구', '복구 실패')
       const pauseVideo = () =>
         postVideo('/api/video/stop', '일시정지 요청 — 현재 클립까지 마치고 멈춥니다 (이어서 생성 가능)', '일시정지 실패', { kind: 'pause' })
       const stopVideo = () =>
@@ -946,6 +971,7 @@
         const t = e.target
         if (!t) return
         if (t.id === 'reel-build') buildReel()
+        else if (t.id === 'video-recover') recoverClips()
         else if (t.id === 'video-genclips') genClips()
         else if (t.id === 'video-pause') pauseVideo()
         else if (t.id === 'video-stop') stopVideo()
@@ -1029,12 +1055,13 @@
             if (vl.ok && vl.pid === pid)
               loadManifest().catch(() => {}) // 클립 완료→_clipStatus 갱신, 릴 완료→플레이어
             else mountVideo()
-            const label = vl.kind === 'reel' ? '릴' : '영상 클립'
+            const label = vl.kind === 'reel' ? '릴' : vl.kind === 'recover' ? '복구' : '영상 클립'
             setStatus(
               vl.cancelled
                 ? `${label} ${vl.pauseKind === 'pause' ? '일시정지' : '중단'}됨: ${vl.pid}`
                 : vl.ok
-                  ? `${label} 완료: ${vl.pid}${vl.durationSec ? ` (${vl.durationSec.toFixed(1)}초)` : ''}`
+                  ? `${label} 완료: ${vl.pid}${vl.durationSec ? ` (${vl.durationSec.toFixed(1)}초)` : ''}` +
+                    (vl.firebaseWarn ? ` · ⚠ ${vl.firebaseWarn}` : '')
                   : `${label} 실패: ${vl.error}`
             )
           }
