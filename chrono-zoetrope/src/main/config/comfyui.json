@@ -9,7 +9,7 @@
   "seamfix": { "bandWidth": 256, "feather": 96 },
   "perStage": 3,
   "$lifeGraphSkipSeamfix": "cdb-crafter 인생그래프 세션 생성 전용 옵션(occupation 플로우엔 영향 없음). true면 ComfyUI 이음매 보정을 건너뛰고 Gemini 원본을 그대로 저장한다 — 프롬프트/장면만 먼저 확인할 때. 나중에 admin의 'edge 재연결' 버튼으로 이미지별로 마저 보정할 수 있다(Gemini 재과금 없음).",
-  "lifeGraphSkipSeamfix": false,
+  "lifeGraphSkipSeamfix": true,
   "outDir": "library",
   "timeoutMs": 300000,
   "sceneRetries": 1,

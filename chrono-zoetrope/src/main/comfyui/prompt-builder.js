@@ -153,6 +153,24 @@ function hashString(s) {
   return h >>> 0
 }
 
+/**
+ * 나이별 폴백 장면 문구 — 인생그래프(cdb-crafter) 세션에서 그 단계에 사용자 글이 없을 때 쓴다.
+ * AI가 없는 데이터로 새로 지어내는 대신, 여기 STAGES에 미리 써둔 감각 재료 풀에서
+ * 결정론적으로 count개를 고른다(§1 — occupation 플로우와 동일한 원칙).
+ * @param {number} age            STAGES에 있는 나이(3·7·14·18·25·32·45·55·68·82)여야 매치된다.
+ * @param {string} seedString     결정론 시드(보통 `${name}|${birthDate}|${age}`).
+ * @param {number} [count=3]
+ * @returns {string[]}  0개(매칭 나이 없음) 또는 count개.
+ */
+export function fallbackScenesForAge(age, seedString, count = 3) {
+  const stage = STAGES.find((s) => s.age === age)
+  if (!stage) return []
+  const rand = mulberry32(hashString(seedString))
+  return pick(rand, stage.scenes, Math.min(count, stage.scenes.length)).map((s) =>
+    s.replaceAll('{occ}', 'worker')
+  ) // 인생그래프 프로필엔 occupation이 없다
+}
+
 /** 프로필의 안정 식별자 (출력 디렉토리·시드에 사용). */
 export function personaId(profile) {
   const h = hashString(`${profile.name}|${profile.birthDate}`)

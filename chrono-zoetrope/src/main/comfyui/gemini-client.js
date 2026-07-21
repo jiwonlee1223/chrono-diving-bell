@@ -193,4 +193,20 @@ export class GeminiClient {
     if (texts.length === 0) throw new Error(`Gemini describeImage 응답에 텍스트 없음: ${JSON.stringify(out).slice(0, 500)}`)
     return texts.join('\n')
   }
+
+  /**
+   * 텍스트만으로 텍스트 응답 (인생그래프 장면 합성용). textModel로 요청한다.
+   * @param {object} p
+   * @param {string} p.prompt
+   * @param {string} [p.model]  기본 this.textModel
+   * @param {AbortSignal} [p.signal]
+   * @returns {Promise<string>}
+   */
+  async generateText({ prompt, model = this.textModel, signal }) {
+    const body = { contents: [{ parts: [{ text: prompt }] }] }
+    const out = await this.#post(`/v1beta/models/${model}:generateContent`, body, 'generateText', signal)
+    const texts = (out.candidates?.[0]?.content?.parts || []).map((p) => p.text).filter(Boolean)
+    if (texts.length === 0) throw new Error(`Gemini generateText 응답에 텍스트 없음: ${JSON.stringify(out).slice(0, 500)}`)
+    return texts.join('\n')
+  }
 }

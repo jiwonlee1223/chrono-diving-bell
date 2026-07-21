@@ -10,7 +10,13 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { generateLifeLibrary } from './life-library.js'
 import { composePanoramaScenePrompt } from './prompt-builder.js'
-import { buildLifeGraphPlan, collectSessionPhotoURLs, collectStagePhotoURLs } from './life-graph-plan.js'
+import {
+  buildLifeGraphPlan,
+  collectSessionPhotoURLs,
+  collectStagePhotoURLs,
+  synthesizeAgeScenes
+} from './life-graph-plan.js'
+import { GeminiClient, resolveGeminiApiKey } from './gemini-client.js'
 import {
   claimProfile,
   downloadPhotos,
@@ -174,6 +180,17 @@ export async function processLifeGraphSession(
     }
     if (stageIds.length > 0) log(`  단계별 사진 ${stageIds.length}장 다운로드 (${stageIds.join(', ')})`)
 
+    // 1.8) 1차 합성 — 세션의 7단계 text 전체를 한 번에 LLM에 넣어, 옛 occupation 플로우의
+    // STAGES와 같은 골격(나이 3·7·14·18·25·32·45·55·68·82마다 장면 후보 3개)으로 이 사람 고유의
+    // 장면 데이터를 만든다. 텍스트가 없는 단계는 life-graph-plan.js가 옛 STAGES 후보 풀로 폴백한다.
+    const synthClient = new GeminiClient({
+      apiKey: await resolveGeminiApiKey(config.gemini),
+      textModel: config.gemini?.textModel,
+      timeoutMs: config.timeoutMs
+    })
+    const ageScenes = await synthesizeAgeScenes(synthClient, profile, sessionPoints)
+    log(`  나이별 장면 합성 완료: ${Object.keys(ageScenes).length}개 나이 (LLM), 나머지는 폴백`)
+
     // 2) 생애 라이브러리 생성 — occupation 템플릿(buildScenePlan) 대신 이 세션의 실제 장면
     // plan을, composeScenePromptFor 대신 파노라마 프롬프트 함수를 그대로 넘긴다. Gemini/ComfyUI
     // 호출부(retry·resume·manifest 기록)는 generateLifeLibrary 내부 코드 그대로 — 안 건드림.
@@ -191,7 +208,7 @@ export async function processLifeGraphSession(
         signal,
         gemini: config.gemini,
         pid,
-        plan: buildLifeGraphPlan(profile, sessionPoints, { perStage: 1 }), // 단계당 1장으로 복귀
+        plan: buildLifeGraphPlan(profile, sessionPoints, ageScenes), // 나이 10개 × 3장 = 최대 30장
         // 그 단계에 실제 사진이 있으면(과거~현재만 해당) "이 사진을 실제로 써서 변형하라"는
         // 지시문이 붙은 프롬프트를, 없으면(미래 등) 원래의 순수 텍스트 프롬프트를 그대로 쓴다.
         promptFor: (profile, item) =>
