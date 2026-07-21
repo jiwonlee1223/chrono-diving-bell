@@ -1,7 +1,21 @@
+import { useRef } from "react";
+
 export default function IntroModal({ onClose }) {
+  // 드래그로 텍스트를 선택하다 커서가 backdrop 위에서 풀리면 모달이 닫혀버리는 오작동 방지 —
+  // mousedown이 실제로 backdrop 자체에서 시작했을 때만 닫는다.
+  const mouseDownOnBackdrop = useRef(false);
+
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+    <div
+      className="modal-backdrop"
+      onMouseDown={(e) => {
+        mouseDownOnBackdrop.current = e.target === e.currentTarget;
+      }}
+      onClick={(e) => {
+        if (mouseDownOnBackdrop.current && e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="modal-card">
         <div className="modal-header">
           <span>그리기 전에</span>
           <button type="button" className="modal-close" onClick={onClose} aria-label="닫기">
