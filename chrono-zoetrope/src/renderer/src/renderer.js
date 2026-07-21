@@ -20,10 +20,12 @@ import { createThreadMaterial, updateThread } from './scene/thread-material.js'
 import {
   createMontageMaterial,
   setMontageImage,
-  setMontageVideo
+  setMontageVideo,
+  setMontageCalibration
 } from './scene/montage-material.js'
 import { createPanoramaPreview } from './scene/panorama-preview.js'
 import { PostPass } from './scene/post-pass.js'
+import { createGhost } from './scene/ghost.js'
 
 // 테스트 패턴·사진 색을 그린 그대로 통과시킨다(색 관리 이중변환 회피).
 THREE.ColorManagement.enabled = false
@@ -128,6 +130,7 @@ async function main() {
   // ---- reel 데모 시퀀스(테스트 경험, §1 긴장 有 — 되돌릴 수 있게 기존 상태기계와 병존) ----
   // demoPhase: null(일반) | 'spinup'(실타래 회전 가속) | 'reel'(reel.mp4 1회 재생 후 멈춤).
   const SPINUP_MAX = 8 // 실타래 회전 최대 배속.
+  const REEL_PLAYBACK_RATE = 3 // 릴(90초)을 3배속 재생 → ~30초.
   let demoPhase = null
   const threadSpeedMul = makeTween(1) // 실타래 시간 배속(가속 연출).
   let threadClock = 0 //                로컬 적분 실타래 시계(배속 변화에도 위상 점프 없음).
@@ -225,61 +228,78 @@ async function main() {
     })
   }
 
-  // ---- reel 데모: reel.mp4 1회 재생(loop 없음) → 끝나면 IDLE 실타래(구름)로 복귀 ----
-  function playReelOnce(url) {
+  // ---- reel 배속 재생. 종료(→유령 idle)는 서버가 국면으로 방송하므로 여기선 재생만 한다. ----
+  //  seekSec: 새로고침 재개 시 영상 위치(실경과 × 배속). flash: 시작 섬광(재개 땐 생략).
+  function playReelOnce(url, { seekSec = 0, playbackRate = REEL_PLAYBACK_RATE, flash = true } = {}) {
     teardownVideo()
     if (!url || !montageMaterial) return // reel 없거나 몽타주 재료 없으면 스킵.
     videoEl = document.createElement('video')
     videoEl.muted = true
-    videoEl.loop = false // 1회 재생.
+    videoEl.loop = false
     videoEl.playsInline = true
     videoEl.preload = 'auto'
     videoEl.crossOrigin = 'anonymous' // /media ACAO — WebGL 텍스처 오염 방지.
     videoEl.src = url
+    videoEl.playbackRate = playbackRate
     videoEl.addEventListener(
       'canplaythrough',
       () => {
         videoTexture = new THREE.VideoTexture(videoEl)
         videoTexture.colorSpace = THREE.NoColorSpace
         setMontageVideo(montageMaterial, videoTexture)
-        // reel 표시로 즉시 스냅. rAF 누적 트윈에 의존하지 않아 견고하다.
-        videoMix.v = videoMix.from = videoMix.to = 1
-        triggerFlash() // reel이 드러나는 순간 섬광 — 섬광이 컷을 덮는다.
+        videoMix.v = videoMix.from = videoMix.to = 1 // reel 표시로 즉시 스냅
+        if (seekSec > 0 && isFinite(videoEl.duration)) {
+          videoEl.currentTime = Math.min(seekSec, Math.max(0, videoEl.duration - 0.05))
+        }
+        if (flash) triggerFlash() // reel이 드러나는 순간 섬광
+        videoEl.playbackRate = playbackRate
         videoEl.play().catch(() => {})
       },
       { once: true }
     )
-    // 끝나면 검정으로 페이드 후 IDLE 실타래(구름)로 복귀. 다음 참가자 대기 상태.
-    videoEl.addEventListener(
-      'ended',
-      () => {
-        videoEl?.pause()
-        tweenTo(videoMix, 0, 1.2) // reel → 검정 페이드
-        tweenTo(threadSpeedMul, 1, 3.0) // 구름 회전 정상 속도로 감속
-        setTimeout(() => {
-          demoPhase = null // 검정에서 실타래(구름) 앰비언트로 (appState=IDLE 따라감)
-          teardownVideo()
-        }, 1200)
-      },
-      { once: true }
-    )
+    // 끝나면 마지막 프레임에서 멈춰 유지 — 서버의 'ghost' 국면 방송이 앰비언트+유령으로 전환한다.
+    videoEl.addEventListener('ended', () => videoEl?.pause(), { once: true })
     videoEl.load()
   }
 
-  window.zoetrope.onReelDemo?.(({ phase, url, spinupMs } = {}) => {
+  // 서버 소유 1차 흐름 국면 적용. immediate=true는 부트스트랩 재개(트윈 없이 그 국면으로 점프).
+  //  idle: 앰비언트(유령 숨김, admin 세션 나가기) · spinup: 실타래 배속 · reel: 배속 재생 · ghost: 유령 뜬 idle
+  function applyDemo(payload, immediate = false) {
+    const phase = payload?.phase ?? 'idle'
+    const elapsedSec = Math.max(0, (payload?.elapsedMs ?? 0) / 1000)
+    const dur = (s) => (immediate ? 0.001 : s)
     if (phase === 'spinup') {
-      // 실타래 앰비언트로 되돌려 회전을 가속시킨다(주황 구름이 빨라짐).
       demoPhase = 'spinup'
+      ghost.hide()
       teardownVideo()
-      tweenTo(videoMix, 0, 0.2)
-      tweenTo(blur, 0, 0.2)
-      tweenTo(threadSpeedMul, SPINUP_MAX, Math.max(0.5, (spinupMs ?? 3500) / 1000))
+      tweenTo(videoMix, 0, dur(0.2))
+      tweenTo(blur, 0, dur(0.2))
+      const total = (payload?.spinupMs ?? 10000) / 1000
+      threadSpeedMul.v = 1 + (SPINUP_MAX - 1) * Math.min(1, elapsedSec / total) // 재개 시 진행률 반영
+      tweenTo(threadSpeedMul, SPINUP_MAX, Math.max(0.3, total - elapsedSec))
     } else if (phase === 'reel') {
-      // 가속된 상태에서 reel로 컷 → 1회 재생.
       demoPhase = 'reel'
-      playReelOnce(url)
+      ghost.hide()
+      const rate = payload?.playbackRate ?? REEL_PLAYBACK_RATE
+      playReelOnce(payload?.url, { seekSec: elapsedSec * rate, playbackRate: rate, flash: !immediate })
+    } else if (phase === 'ghost') {
+      demoPhase = null
+      teardownVideo()
+      tweenTo(videoMix, 0, dur(0.6))
+      tweenTo(blur, 0, dur(0.4))
+      tweenTo(threadSpeedMul, 1, dur(1.5))
+      ghost.show() // 유령 등장 = 1인칭 진입 가능 신호.
+    } else {
+      // idle (admin 세션 나가기) — 앰비언트, 유령 숨김.
+      demoPhase = null
+      ghost.hide()
+      teardownVideo()
+      tweenTo(videoMix, 0, dur(0.6))
+      tweenTo(blur, 0, dur(0.4))
+      tweenTo(threadSpeedMul, 1, dur(1.5))
     }
-  })
+  }
+  window.zoetrope.onReelDemo?.((payload) => applyDemo(payload, false))
 
   // 테스트용 수동 트리거 버튼(좌하단) — 참가자 교체 없이 현재 페르소나로 데모 시퀀스 실행.
   document.getElementById('demoBtn')?.addEventListener('click', () => {
@@ -333,6 +353,21 @@ async function main() {
   window.addEventListener('resize', resize)
   resize()
 
+  // 유령 에이전트: 4타일 스트립을 배회하는 앰비언트 발광체(눈코입 없는 부끄부끄, 구름에 가려진 빛).
+  // 렌더 경로(preview/installation)와 무관한 DOM 오버레이. 기본 숨김 — 주마등(reel) 종료 후 idle에서만
+  // 나타난다(1인칭 진입 가능 신호). spinup·reel 재생 중엔 숨긴다.
+  const ghost = createGhost({
+    getStrip: () => ({
+      x: layout.originX,
+      y: layout.originY,
+      w: layout.tileW * count,
+      h: layout.tileH
+    })
+  })
+
+  // 새로고침 재개: 서버가 준 현재 1차 흐름 국면으로 즉시 점프(진행 중인 reel은 위치까지 이어감).
+  if (boot.demo && boot.demo.phase && boot.demo.phase !== 'idle') applyDemo(boot.demo, true)
+
   let currentFrame = -1
   let surfaceMaterial = threadMaterial
   function setSurfaceMaterial(mat) {
@@ -359,8 +394,10 @@ async function main() {
     threadClock += dt * tweenUpdate(threadSpeedMul)
 
     // demoPhase가 설정되면 데모가 표면을 결정: 'reel'=영상 재료, 그 외=실타래. 없으면 기존 상태기계.
-    const montageActive =
-      demoPhase === 'reel'
+    // 캘리브레이션 모드면 상태와 무관하게 몽타주(정적 기준 프레임)를 강제한다.
+    const montageActive = calibrationMode
+      ? !!montageMaterial
+      : demoPhase === 'reel'
         ? !!montageMaterial
         : demoPhase === 'spinup'
           ? false
@@ -368,7 +405,16 @@ async function main() {
     setSurfaceMaterial(montageActive ? montageMaterial : threadMaterial)
 
     if (montageActive) {
-      if (demoPhase === 'reel') {
+      if (calibrationMode) {
+        // 정적 기준 프레임(첫 로드된 파노라마)로 고정 — 정렬 중 콘텐츠가 움직이지 않게.
+        const tex = textures.find(Boolean)
+        if (tex && currentFrame !== -2) {
+          currentFrame = -2
+          setMontageImage(montageMaterial, tex)
+        }
+        montageMaterial.uniforms.uBlur.value = 0
+        montageMaterial.uniforms.uVideoMix.value = 0
+      } else if (demoPhase === 'reel') {
         // reel 데모: 영상만(정지 이미지 프레임 갱신 안 함). videoMix가 실타래→reel 크로스페이드.
         montageMaterial.uniforms.uBlur.value = 0
         montageMaterial.uniforms.uVideoMix.value = tweenUpdate(videoMix)
@@ -427,21 +473,79 @@ async function main() {
     if (typeof position === 'number') for (const p of posts) p.setVerticalShift(0)
   })
 
+  // ---- 설치 캘리브레이션(실린더 정렬) 실시간 조정 ----
+  //  ← →  : 둘레 회전(yaw)  ↑ ↓ : 상하 이동(pitch)  ·  Shift=거친 스텝  ·  0=리셋
+  //  부트스트랩의 calibration이 셰이더 초기값(createMontageMaterial). 조정값은 debounce로 서버 저장 → 재시작에도 유지.
+  const cal = { ...(montage?.config?.calibration ?? { yaw: 0, pitch: 0 }) }
+  let calSaveTimer = null
+  function applyCalibration() {
+    if (!montageMaterial) return
+    const norm = setMontageCalibration(montageMaterial, cal)
+    cal.yaw = norm.yaw
+    cal.pitch = norm.pitch
+    clearTimeout(calSaveTimer)
+    calSaveTimer = setTimeout(() => window.zoetrope.setCalibration?.(cal), 400)
+  }
+  function nudgeCalibration(dYaw, dPitch) {
+    cal.yaw += dYaw
+    cal.pitch += dPitch
+    applyCalibration()
+  }
+
+  // 캘리브레이션 모드(C키): IDLE/reel과 무관하게 정적 기준 프레임(첫 파노라마)을 띄우고 중앙 가이드선을
+  // 표시해, 콘텐츠 재생을 기다리지 않고도 얼굴 위치를 실린더에 맞출 수 있게 한다. frame()이 이 플래그를 본다.
+  let calibrationMode = false
+  const calGuide = document.createElement('div')
+  calGuide.style.cssText =
+    'position:fixed;inset:0;pointer-events:none;display:none;z-index:30;'
+  calGuide.innerHTML =
+    '<div style="position:absolute;left:50%;top:0;bottom:0;width:1px;transform:translateX(-0.5px);background:rgba(0,255,180,.55)"></div>' +
+    '<div style="position:absolute;top:50%;left:0;right:0;height:1px;transform:translateY(-0.5px);background:rgba(0,255,180,.35)"></div>' +
+    '<div style="position:absolute;left:12px;top:10px;font:11px/1.4 monospace;color:rgba(0,255,180,.8)">CALIBRATION · ←→ 회전 · ↑↓ 상하 · Shift 크게 · 0 리셋 · C 종료</div>'
+  document.body.appendChild(calGuide)
+  function toggleCalibrationMode() {
+    calibrationMode = !calibrationMode
+    calGuide.style.display = calibrationMode ? 'block' : 'none'
+    if (calibrationMode) currentFrame = -1 // 기준 프레임 재적용 유도
+  }
+
   // ---- 입력 (§8) : Electron main의 before-input-event를 페이지 keydown으로 이관 ----
   //  Enter → 멈춤/진입/재개 (server 상태 기계가 상태별 의미 결정)
   //  V     → 뷰 토글(파노라마 ↔ 실린더)
   //  Space → 재생/정지 (개발용)
   window.addEventListener('keydown', (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return
+    const yawStep = e.shiftKey ? 0.02 : 0.004 // 0.004 ≈ 1.4°, shift ≈ 7°
+    const pitchStep = e.shiftKey ? 0.02 : 0.004
     if (e.key === 'Enter') {
       e.preventDefault()
       window.zoetrope.sendInput?.('stopEnter')
     } else if (e.key === 'v' || e.key === 'V') {
       e.preventDefault()
       window.zoetrope.toggleView?.()
+    } else if (e.key === 'c' || e.key === 'C') {
+      e.preventDefault()
+      toggleCalibrationMode()
     } else if (e.key === ' ' || e.code === 'Space') {
       e.preventDefault()
       window.zoetrope.togglePlay?.()
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault()
+      nudgeCalibration(-yawStep, 0)
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault()
+      nudgeCalibration(yawStep, 0)
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      nudgeCalibration(0, pitchStep)
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      nudgeCalibration(0, -pitchStep)
+    } else if (e.key === '0') {
+      e.preventDefault()
+      cal.yaw = 0
+      cal.pitch = 0
+      applyCalibration()
     }
   })
 

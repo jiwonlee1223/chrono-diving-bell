@@ -10,6 +10,7 @@
     "admin": "node scripts/admin-server.mjs",
     "admin:view": "node scripts/admin-server.mjs --view-only",
     "gen:firestore": "node scripts/generate-from-firestore.mjs --once",
+    "sync:manifests": "node scripts/sync-manifests-to-firebase.mjs",
     "worker": "node scripts/generate-from-firestore.mjs --watch",
     "worker:listen": "node scripts/generate-from-firestore.mjs --listen",
     "lint": "eslint --cache .",

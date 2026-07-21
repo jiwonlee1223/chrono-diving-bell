@@ -177,6 +177,29 @@
         color: #7de08c;
         font-weight: 600;
       }
+      /* 리스트 항목 뱃지 — 로컬/클라우드 위치와 생성 상태를 한눈에. */
+      .pitem .pbadge {
+        font-size: 10px;
+        margin-left: 6px;
+        padding: 0 5px;
+        border-radius: 4px;
+        vertical-align: middle;
+      }
+      .pitem .pb-cloud {
+        color: #8fc7ff;
+        border: 1px solid rgba(143, 199, 255, 0.4);
+      }
+      .pitem .pb-pending {
+        color: #ffd27d;
+        border: 1px solid rgba(255, 210, 125, 0.4);
+      }
+      .pitem .pb-error {
+        color: #ff9a9a;
+        border: 1px solid rgba(255, 154, 154, 0.4);
+      }
+      .pitem.notready .pname {
+        opacity: 0.65;
+      }
 
       main {
         padding: 20px 22px 60px;
@@ -566,6 +589,9 @@
             <button id="session-set" title="이 참가자의 생애를 4창 런타임에서 재생합니다">
               이 참가자를 세션으로
             </button>
+            <button id="session-clear" class="hidden" title="현재 세션을 해제하고 런타임을 대기(IDLE)로 되돌립니다">
+              세션 나가기
+            </button>
           </span>
         </header>
         <section id="queue-panel" class="hidden">
@@ -629,20 +655,48 @@
           : personas
         if (shown.length === 0) {
           el.innerHTML = `<div class="side-empty">${
-            personas.length === 0 ? '아직 생성된 persona가 없습니다.' : '검색 결과 없음'
+            personas.length === 0 ? '아직 제출/생성된 사용자가 없습니다.' : '검색 결과 없음'
           }</div>`
           return
         }
         el.innerHTML = shown
-          .map(
-            (p) =>
-              `<button class="pitem${p.personaId === pid ? ' active' : ''}" data-pid="${p.personaId}">` +
-              `<span class="pname">${p.name || p.personaId}</span>` +
-              `<span class="pmeta">${p.total}장 · ${timeAgo(p.createdAt)}` +
+          .map((p) => {
+            const ready = isReviewable(p)
+            // 뱃지: 로컬에 없고 클라우드 정본만 있으면 ☁(선택 시 자동으로 받아옴),
+            //       아직 생성 전이면 대기/생성중, 실패면 오류.
+            let badge = ''
+            if (ready && !p.local && p.cloud) badge = `<span class="pbadge pb-cloud" title="클라우드 정본 — 선택하면 받아옵니다">☁</span>`
+            else if (!ready) {
+              const st = pendingLabel(p)
+              const cls = st.kind === 'error' ? 'pb-error' : 'pb-pending'
+              badge = `<span class="pbadge ${cls}">${st.text}</span>`
+            }
+            const meta = ready
+              ? `${p.total || p.imageCount || 0}장${p.videoCount ? ` · 🎬${p.videoCount}` : ''}${p.reel ? ' · 릴' : ''} · ${timeAgo(p.createdAt)}`
+              : timeAgo(p.createdAt)
+            return (
+              `<button class="pitem${p.personaId === pid ? ' active' : ''}${ready ? '' : ' notready'}" data-pid="${p.personaId}" data-ready="${ready ? 1 : 0}">` +
+              `<span class="pname">${p.name || p.personaId}${badge}</span>` +
+              `<span class="pmeta">${meta}` +
               `${p.personaId === sessionPid ? ' · <span class="psession">● 세션</span>' : ''}</span>` +
               `</button>`
-          )
+            )
+          })
           .join('')
+      }
+
+      // 리뷰 가능 = manifest 정본이 로컬에 있거나(local) Firebase에 있어(hasManifest) 받아올 수 있는 경우.
+      // (generatedPanoramaImages만 있고 manifest가 없으면 재구성이 안 되므로 '대기'로 둔다 — sync:manifests 필요.)
+      function isReviewable(p) {
+        return Boolean(p.local || p.hasManifest)
+      }
+
+      // 아직 생성 전인 제출의 상태 라벨(직업 flow status 또는 인생그래프 세션 상태 요약).
+      function pendingLabel(p) {
+        const vals = [p.status, ...(p.sessions ? Object.values(p.sessions) : [])].filter(Boolean)
+        if (vals.includes('error')) return { kind: 'error', text: '오류' }
+        if (vals.includes('generating')) return { kind: 'pending', text: '생성중' }
+        return { kind: 'pending', text: '대기' }
       }
 
       // keep=true면 현재 보고 있던 persona 선택을 유지한 채 목록만 갱신한다
@@ -666,13 +720,29 @@
           renderPersonaList()
           return // 선택 유지, manifest 재로딩 생략
         }
-        pid = list[0].personaId
+        // 기본 선택은 '리뷰 가능한' 첫 항목(생성 전 제출은 건너뜀). 없으면 안내만.
+        const firstReady = list.find((p) => isReviewable(p))
+        if (!firstReady) {
+          pid = null
+          renderPersonaList()
+          $('#main').innerHTML =
+            '<p style="color:#888">제출은 있으나 아직 생성된 사용자가 없습니다. 생성이 끝나면 여기서 리뷰할 수 있습니다.</p>'
+          return
+        }
+        pid = firstReady.personaId
         renderPersonaList()
         await loadManifest()
       }
 
       async function loadManifest() {
-        manifest = await api(`/api/personas/${pid}`)
+        try {
+          manifest = await api(`/api/personas/${pid}`)
+        } catch (err) {
+          // 클라우드 정본 받기(hydrate)에 실패했거나 로컬/정본 모두 없을 때.
+          $('#cur-name').textContent = personas.find((x) => x.personaId === pid)?.name || pid
+          $('#main').innerHTML = `<p style="color:#ff9a9a">불러오기 실패: ${err.message}</p>`
+          return
+        }
         render()
       }
 
@@ -698,6 +768,7 @@
       function renderSessionCtl() {
         const label = $('#session-label')
         const btn = $('#session-set')
+        const clearBtn = $('#session-clear')
         if (sessionPid) {
           const p = personas.find((x) => x.personaId === sessionPid)
           label.innerHTML = `세션: <b>${p?.name || sessionPid}</b>`
@@ -706,6 +777,7 @@
         }
         btn.disabled = !pid || pid === sessionPid
         btn.textContent = pid && pid === sessionPid ? '현재 세션' : '이 참가자를 세션으로'
+        clearBtn.classList.toggle('hidden', !sessionPid) // 세션 있을 때만 '나가기' 노출
       }
 
       // 서버에서 현재 세션 선택을 읽어 온다 (초기 로드 시).
@@ -838,6 +910,7 @@
         const job = (videoState && videoState.job) || {}
         const buildingClips = b && b.pid === pid && b.kind === 'clips'
         const buildingReel = b && b.pid === pid && b.kind === 'reel'
+        const buildingRecover = b && b.pid === pid && b.kind === 'recover'
         const qHas = (kind) => videoState && (videoState.queue || []).some((v) => v.pid === pid && v.kind === kind)
 
         // ── ① 영상 생성 행 (seedance-flf=전이 | wan=클립) ──
@@ -848,6 +921,8 @@
             `<span class="video-label">영상 ${unit} <b>${job.done || 0}/${job.total || cs.clipsTotal}</b> 생성 중…</span>` +
             `<button id="video-pause" class="stop-btn">일시정지</button>` +
             `<button id="video-stop" class="stop-btn">중단</button>`
+        } else if (buildingRecover) {
+          clipRow = `<span class="video-label">ComfyUI 복구 <b>${job.done || 0}/${job.total || cs.clipsTotal}</b> …</span>`
         } else {
           const label = qHas('clips')
             ? '대기 중…'
@@ -857,9 +932,17 @@
                 ? `이어서 생성 (${cs.clipsDone}/${cs.clipsTotal})`
                 : '영상 완료 ✓'
           const done = cs.clipsDone >= cs.clipsTotal && cs.clipsTotal > 0
+          // 부족분이 있으면 ComfyUI 서버 output에서 회수하는 복구 버튼 노출(생성됐으나 다운로드 실패한 경우).
+          const recoverBtn =
+            !done && !qHas('recover')
+              ? `<button id="video-recover" title="ComfyUI 서버에 남은 클립을 회수해 로컬+Firebase로 복구">ComfyUI에서 복구</button>`
+              : qHas('recover')
+                ? `<button disabled>복구 대기 중…</button>`
+                : ''
           clipRow =
             `<span class="video-label">영상 ${unit} <b>${cs.clipsDone}/${cs.clipsTotal}</b>${done ? ' · 완료' : ''}</span>` +
-            `<button id="video-genclips"${qHas('clips') || done ? ' disabled' : ''}>${label}</button>`
+            `<button id="video-genclips"${qHas('clips') || done ? ' disabled' : ''}>${label}</button>` +
+            recoverBtn
         }
 
         // ── ② 릴 합성 행 ──
@@ -880,10 +963,22 @@
             ? `<video controls playsinline preload="metadata" src="/media/${pid}/${reel.file}?rev=${reel.rev || 0}"></video>`
             : ''
 
+        // ── ☁ Firebase 정본 상태 (로컬 캐시와 별개) ──
+        let fbRow = ''
+        const fb = manifest._firebase
+        if (fb) {
+          const behind = fb.clips < fb.total
+          fbRow =
+            `<div class="video-row"><span class="video-label" style="opacity:.85">` +
+            `☁ Firebase <b>${fb.clips}/${fb.total}</b> 클립 · reel ${fb.reel ? '✓' : '✗'}` +
+            (behind ? ` <span style="color:#e0a030">— 로컬보다 부족(복구/재업로드 필요)</span>` : '') +
+            `</span></div>`
+        }
+
         return (
           `<section class="video-panel"><div class="video-head"><h2>주마등 영상</h2></div>` +
           `<div class="video-row">${clipRow}</div>` +
-          `<div class="video-row">${reelRow}</div>${player}</section>`
+          `<div class="video-row">${reelRow}</div>${fbRow}${player}</section>`
         )
       }
       // #reel-slot 안만 갱신 — 진행률 폴링이 장면 그리드를 건드리지 않게.
@@ -903,7 +998,9 @@
       const genClips = () =>
         postVideo(`/api/personas/${pid}/clips`, '영상 클립 생성 시작 — 진행은 영상 패널에 표시 (장당 ~1분, 30장이면 수십 분)', '영상 생성 실패')
       const buildReel = () =>
-        postVideo(`/api/personas/${pid}/reel`, '릴 합성 시작 — 사전 생성된 클립을 90초로 합칩니다', '릴 합성 실패')
+        postVideo(`/api/personas/${pid}/reel`, '릴 합성 시작 — Firebase 클립(없으면 로컬)으로 90초 합성', '릴 합성 실패')
+      const recoverClips = () =>
+        postVideo(`/api/personas/${pid}/recover-clips`, 'ComfyUI 복구 시작 — 서버 output에서 회수해 로컬+Firebase로 복구', '복구 실패')
       const pauseVideo = () =>
         postVideo('/api/video/stop', '일시정지 요청 — 현재 클립까지 마치고 멈춥니다 (이어서 생성 가능)', '일시정지 실패', { kind: 'pause' })
       const stopVideo = () =>
@@ -946,6 +1043,7 @@
         const t = e.target
         if (!t) return
         if (t.id === 'reel-build') buildReel()
+        else if (t.id === 'video-recover') recoverClips()
         else if (t.id === 'video-genclips') genClips()
         else if (t.id === 'video-pause') pauseVideo()
         else if (t.id === 'video-stop') stopVideo()
@@ -959,7 +1057,15 @@
         if (!item || item.dataset.pid === pid) return
         pid = item.dataset.pid
         renderPersonaList() // 강조 즉시 이동
-        loadManifest()
+        if (item.dataset.ready === '0') {
+          // 아직 생성 전 — 리뷰할 게 없다. 상태만 안내하고 manifest는 로딩하지 않는다.
+          const p = personas.find((x) => x.personaId === pid)
+          $('#cur-name').textContent = p?.name || pid
+          $('#main').innerHTML =
+            `<p style="color:#c9a86a">아직 생성 전인 제출입니다 (${pendingLabel(p).text}). 생성이 끝나면 여기서 리뷰할 수 있습니다.</p>`
+          return
+        }
+        loadManifest() // 클라우드 정본만 있으면 서버가 자동으로 받아온다(hydrate)
       })
       $('#persona-search').addEventListener('input', (e) => {
         personaFilter = e.target.value
@@ -997,6 +1103,18 @@
           setStatus(`세션 설정 실패: ${e.message}`)
         }
       })
+      // 세션 나가기 — 현재 선택 해제. 런타임은 대기(IDLE)로 복귀.
+      $('#session-clear').addEventListener('click', async () => {
+        try {
+          await api('/api/session', { method: 'DELETE' })
+          sessionPid = null
+          setStatus('세션 나가기 — 선택 해제 (런타임이 IDLE이면 대기로 복귀)')
+          renderSessionCtl()
+          renderPersonaList()
+        } catch (e) {
+          setStatus(`세션 나가기 실패: ${e.message}`)
+        }
+      })
       $('#zoom').addEventListener('click', () => $('#zoom').classList.remove('show'))
       document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') $('#zoom').classList.remove('show')
@@ -1029,12 +1147,13 @@
             if (vl.ok && vl.pid === pid)
               loadManifest().catch(() => {}) // 클립 완료→_clipStatus 갱신, 릴 완료→플레이어
             else mountVideo()
-            const label = vl.kind === 'reel' ? '릴' : '영상 클립'
+            const label = vl.kind === 'reel' ? '릴' : vl.kind === 'recover' ? '복구' : '영상 클립'
             setStatus(
               vl.cancelled
                 ? `${label} ${vl.pauseKind === 'pause' ? '일시정지' : '중단'}됨: ${vl.pid}`
                 : vl.ok
-                  ? `${label} 완료: ${vl.pid}${vl.durationSec ? ` (${vl.durationSec.toFixed(1)}초)` : ''}`
+                  ? `${label} 완료: ${vl.pid}${vl.durationSec ? ` (${vl.durationSec.toFixed(1)}초)` : ''}` +
+                    (vl.firebaseWarn ? ` · ⚠ ${vl.firebaseWarn}` : '')
                   : `${label} 실패: ${vl.error}`
             )
           }

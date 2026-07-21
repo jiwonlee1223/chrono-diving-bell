@@ -30,6 +30,8 @@ import { loadMontageLibrary } from '../src/main/library-loader.js'
 import { ZoetropeStateMachine } from '../src/main/state-machine.js'
 import { VideoRegenerator } from '../src/main/comfyui/video-cache.js'
 import { readSession, SESSION_FILE } from '../src/main/session-pointer.js'
+import { readCalibration, writeCalibration } from '../src/main/calibration.js'
+import { initFirebase, ensurePersonaMediaFromFirebase } from '../src/main/comfyui/firestore-source.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -49,6 +51,25 @@ const argOf = (name, fallback) => {
 const PORT = parseInt(argOf('--port', '8788'), 10)
 const DIST = path.resolve(root, argOf('--dist', 'dist'))
 const libraryRoot = path.resolve(root, argOf('--library', montageConfig.libraryDir ?? 'library'))
+// 파일 없는 배포(Railway 등)엔 library/ 가 없다 — scandir/watch가 넘어지지 않도록 미리 만든다.
+// 페르소나 미디어는 Firebase 정본에서 read-through 로 받는다.
+await fs.mkdir(libraryRoot, { recursive: true })
+
+// 설치 캘리브레이션(실린더 정렬용 전역 yaw/pitch) — 런타임 페이지가 실시간 조정·저장한다.
+let calibration = await readCalibration(libraryRoot)
+
+// Firebase 정본 read-through: 세션 참가자의 미디어(파노라마·reel)를 로컬에 없으면 받아 재생한다.
+// 서비스 계정이 없거나 초기화 실패하면 로컬 파일만으로 동작(best-effort).
+let firebaseReady = false
+try {
+  const fb = comfyuiConfig.firebase
+  const saPath = fb?.serviceAccountPath ? path.resolve(root, fb.serviceAccountPath) : undefined
+  await initFirebase({ serviceAccountPath: saPath, projectId: fb?.projectId, storageBucket: fb?.storageBucket })
+  firebaseReady = true
+  console.log('[server] Firebase 연결 — 미디어를 Firebase 정본에서 확보한다')
+} catch (err) {
+  console.warn(`[server] Firebase 미연결 — 로컬 미디어만 사용: ${err.message}`)
+}
 
 // ── 라이브러리 미디어 URL (zoe://media/... → /media/...) ──────────────
 function toMediaUrl(absPath) {
@@ -92,6 +113,20 @@ let pendingPersonaId //   세션 진행 중 들어온 참가자 교체 — IDLE 
 // personaId=null 이면 library-loader가 가장 최근 것을 자동 선택. 실패 시 이전 상태를 유지.
 async function loadPersona(personaId) {
   try {
+    // Firebase 정본에서 미디어를 로컬 캐시로 확보(read-through). 로컬에 이미 있으면 그대로 재사용.
+    // manifest의 profile로 문서 키(이름_생년월일)를 얻으므로 personaId 지정 시에만 수행한다.
+    if (firebaseReady && personaId) {
+      try {
+        const dir = path.join(libraryRoot, personaId)
+        const manifest = JSON.parse(await fs.readFile(path.join(dir, 'manifest.json'), 'utf8'))
+        const r = await ensurePersonaMediaFromFirebase(manifest.profile, dir)
+        if (r.images || r.reel)
+          console.log(`[server] Firebase→로컬 캐시: 이미지 ${r.images}장, reel ${r.reel ? 'O' : '-'}`)
+        if (r.missing.length) console.warn(`[server] Firebase에서 못 받은 미디어: ${r.missing.join(', ')}`)
+      } catch (e) {
+        console.warn(`[server] Firebase 미디어 확보 실패(로컬로 진행): ${e.message}`)
+      }
+    }
     const lib = await loadMontageLibrary({
       rootDir: libraryRoot,
       personaId: personaId ?? undefined
@@ -104,6 +139,13 @@ async function loadPersona(personaId) {
     regenerator?.close?.() // 이전 페르소나의 ComfyUI WS 정리
     library = lib
     regenerator = regen
+    // reel 배속 종료 타이밍용 — reel.mp4 실제 길이(초). 없으면 0(fallback 90/rate).
+    try {
+      const mf = JSON.parse(await fs.readFile(path.join(lib.dir, 'manifest.json'), 'utf8'))
+      currentReelSec = mf.reel?.durationSec || 0
+    } catch {
+      currentReelSec = 0
+    }
     sm = new ZoetropeStateMachine({
       broadcast,
       playlist: library.images,
@@ -147,10 +189,22 @@ function toggleDevPreview() {
   broadcast(Channels.VIEW_MODE, { preview: devPreview })
 }
 
-// ── reel 데모 시퀀스(테스트 경험, §1 긴장 有 — 되돌릴 수 있는 경로) ─────
-// 참가자 선택 → 실타래 회전 가속(spinup) → 사전 빌드 reel.mp4 1회 재생.
-const REEL_SPINUP_MS = 3500
-let reelTimer = null
+// ── 1차 흐름(서버 소유 국면) — 새로고침해도 이어가고, 중단은 admin에서만 ─────────────
+// 국면: idle → spinup(실타래 배속) → reel(배속 재생) → ghost(유령 뜬 idle, 1인칭 진입 대기).
+// 서버가 타이머로 진행하고 매 전이를 SSE로 방송한다. 국면·경과시간을 부트스트랩에도 실어,
+// 런타임 페이지를 새로고침하면 클라이언트가 현재 국면(진행 중인 reel 위치까지)을 이어받는다.
+// 타이머는 서버에 있으므로 클라이언트가 없거나 새로고침돼도 진행이 계속된다. 중단은 leaveSession(admin)만.
+const DEMO_SPINUP_MS = montageConfig.demo?.spinupMs ?? 10000
+const DEMO_PLAYBACK_RATE = montageConfig.demo?.reelPlaybackRate ?? 3
+
+let demo = { phase: 'idle', startedAt: Date.now() } // { phase, startedAt, spinupMs?, url? }
+let demoTimers = []
+let currentReelSec = 0 // 현재 페르소나 reel.mp4 길이(초) — manifest.reel.durationSec
+
+function clearDemoTimers() {
+  for (const t of demoTimers) clearTimeout(t)
+  demoTimers = []
+}
 
 function reelMediaUrl() {
   if (!library?.dir) return null
@@ -158,15 +212,53 @@ function reelMediaUrl() {
   return existsSync(p) ? toMediaUrl(p) : null
 }
 
-function runReelDemo(spinupMs = REEL_SPINUP_MS) {
-  clearTimeout(reelTimer)
+// 라이브 방송·부트스트랩 공용 payload. elapsedMs로 재개 위치를 계산한다.
+function demoPayload() {
+  const p = { phase: demo.phase, elapsedMs: Date.now() - demo.startedAt }
+  if (demo.phase === 'spinup') p.spinupMs = demo.spinupMs
+  if (demo.phase === 'reel') {
+    p.url = demo.url
+    p.playbackRate = DEMO_PLAYBACK_RATE
+  }
+  return p
+}
+
+function runReelDemo(spinupMs = DEMO_SPINUP_MS) {
+  clearDemoTimers()
+  demo = { phase: 'spinup', startedAt: Date.now(), spinupMs }
+  broadcast(Channels.REEL_DEMO, demoPayload())
+  console.log(`[server] 데모: spinup ${spinupMs}ms`)
+  demoTimers.push(setTimeout(startReelPhase, spinupMs))
+}
+
+function startReelPhase() {
   const url = reelMediaUrl()
-  if (!url) console.warn('[server] reel 데모: reel.mp4 없음 — spinup만 실행(관리자에서 릴 생성 필요)')
-  console.log(`[server] reel 데모 시작 (spinup ${spinupMs}ms → reel ${url ?? '(없음)'})`)
-  broadcast(Channels.REEL_DEMO, { phase: 'spinup', spinupMs })
-  reelTimer = setTimeout(() => {
-    broadcast(Channels.REEL_DEMO, { phase: 'reel', url })
-  }, spinupMs)
+  if (!url) {
+    console.warn('[server] 데모: reel.mp4 없음 — 유령 idle로 건너뜀(관리자에서 릴 생성 필요)')
+    enterGhostPhase()
+    return
+  }
+  const realSec = Math.max(1, (currentReelSec || 90) / DEMO_PLAYBACK_RATE)
+  demo = { phase: 'reel', startedAt: Date.now(), url }
+  broadcast(Channels.REEL_DEMO, demoPayload())
+  console.log(`[server] 데모: reel 재생 (~${realSec.toFixed(0)}s @${DEMO_PLAYBACK_RATE}x)`)
+  demoTimers.push(setTimeout(enterGhostPhase, realSec * 1000))
+}
+
+function enterGhostPhase() {
+  clearDemoTimers()
+  demo = { phase: 'ghost', startedAt: Date.now() }
+  broadcast(Channels.REEL_DEMO, demoPayload())
+  console.log('[server] 데모: 유령 idle (1인칭 진입 대기)')
+}
+
+// 세션 나가기(admin 전용 중단) — 데모를 idle로 리셋하고 런타임을 대기 앰비언트로 되돌린다.
+function leaveSession() {
+  clearDemoTimers()
+  pendingPersonaId = undefined // 예약돼 있던 교체도 취소.
+  demo = { phase: 'idle', startedAt: Date.now() }
+  broadcast(Channels.REEL_DEMO, demoPayload())
+  console.log('[server] 세션 나가기 — 대기(IDLE)로 복귀')
 }
 
 // ── 부트스트랩 페이로드 (Channels.BOOTSTRAP 핸들러 이관) ──────────────
@@ -178,6 +270,7 @@ function bootstrapPayload() {
     // 생성하는 씬 파노라마 비율(4096×1024=4:1). 렌더러가 4타일 가로 정렬 전체 크기를 이 비율에 맞춘다.
     panorama: comfyuiConfig.panorama ?? null,
     devPreview,
+    demo: demoPayload(), // 현재 1차 흐름 국면(새로고침 시 이어가기용) + reel 배속 파라미터
     montage: library
       ? {
           config: {
@@ -185,7 +278,8 @@ function bootstrapPayload() {
             mapping: montageConfig.mapping,
             fitMode: montageConfig.fitMode,
             edgeFeather: montageConfig.edgeFeather,
-            blur: montageConfig.blur
+            blur: montageConfig.blur,
+            calibration // 설치 정렬 오프셋(yaw/pitch) — 셰이더 초기값
           },
           playlist: library.images.map((im) => ({ id: im.id, url: toMediaUrl(im.absPath) })),
           ...sm.snapshot()
@@ -326,6 +420,13 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { preview: devPreview })
     }
 
+    // ---- 설치 캘리브레이션 저장 (런타임 페이지 실시간 조정) ----
+    if (req.method === 'POST' && url.pathname === '/api/calibration') {
+      const body = await readBody(req)
+      calibration = await writeCalibration(libraryRoot, { yaw: body?.yaw, pitch: body?.pitch })
+      return sendJson(res, 200, { ok: true, calibration })
+    }
+
     // reel 데모 수동 트리거(테스트용 — 참가자 교체 없이 현재 페르소나로 시퀀스 실행).
     if (req.method === 'POST' && url.pathname === '/api/reel-demo') {
       const body = await readBody(req)
@@ -382,9 +483,14 @@ try {
     clearTimeout(watchDebounce)
     watchDebounce = setTimeout(async () => {
       const sel = await readSession(libraryRoot)
-      const next = sel?.personaId ?? montageConfig.personaId ?? null
+      if (!sel) {
+        // 세션 나가기(_session.json 삭제) — 대기로 복귀. 설정 기본 personaId로 자동 폴백하지 않는다.
+        leaveSession()
+        return
+      }
+      const next = sel.personaId
       if (library && next === library.personaId) return // 실질적 변화 없음.
-      console.log(`[server] 세션 선택 변경 감지 → ${sel?.name || next || '(자동)'}`)
+      console.log(`[server] 세션 선택 변경 감지 → ${sel.name || next}`)
       applySessionSelection(next)
     }, 200)
   })

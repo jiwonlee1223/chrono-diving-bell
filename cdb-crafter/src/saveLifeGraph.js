@@ -1,6 +1,6 @@
 import { doc, getDoc, serverTimestamp, setDoc, updateDoc } from "firebase/firestore";
 import { getDownloadURL, ref, uploadString } from "firebase/storage";
-import { db, storage } from "./firebase";
+import { authReady, db, storage } from "./firebase";
 
 // "1965-01-01" -> "650101"
 function toShortBirthDate(birthDate) {
@@ -52,6 +52,7 @@ async function collectSessionPoints(stageList, points, personaId) {
 
 // 기존에 저장된 프로필을 불러온다. 없으면 null.
 export async function loadProfile(personaId) {
+  await authReady;
   const snap = await withTimeout(getDoc(doc(db, "profiles", personaId)), LOAD_TIMEOUT_MS);
   return snap.exists() ? snap.data() : null;
 }
@@ -63,6 +64,7 @@ export const SESSION_KEYS = ["first", "second", "third"];
 // stages: 과거~현재 단계 목록, futureStages: 미래 단계
 // points: 과거~현재 점, futurePoints: 이번에 그린 첫 미래의 점
 export async function saveInitialProfile({ profile, stages, futureStages, points, futurePoints }) {
+  await authReady;
   const { name, birthDate, age } = profile;
   const personaId = personaIdFor({ name, birthDate });
   const profileRef = doc(db, "profiles", personaId);
@@ -100,6 +102,7 @@ export async function saveFollowUpSession({
   pastPresentPoints,
   futurePoints,
 }) {
+  await authReady;
   const profileRef = doc(db, "profiles", personaId);
   const key = SESSION_KEYS[sessionIndex];
 
