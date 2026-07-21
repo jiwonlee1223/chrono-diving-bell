@@ -32,7 +32,6 @@ import {
 import {
   buildKontextWorkflow,
   buildSdxlWorkflow,
-  buildGeminiSeamFixWorkflow,
   randomSeed
 } from '../src/main/comfyui/workflows.js'
 import {
@@ -51,7 +50,9 @@ import {
 } from '../src/main/comfyui/firestore-source.js'
 import { recoverClipsFromComfy } from '../src/main/comfyui/recover-clips.js'
 import { processProfile, processLifeGraphSession } from '../src/main/comfyui/profile-worker.js'
-import { composeScenePromptFor, personaId, SEAM_BAND_PROMPT } from '../src/main/comfyui/prompt-builder.js'
+import { composeScenePromptFor, personaId } from '../src/main/comfyui/prompt-builder.js'
+import { prefixForEntry } from '../src/main/comfyui/face-anchor.js'
+import { regenerateSeamfix } from '../src/main/comfyui/seamfix-legacy.js' // LEGACY: 기존 seamfix persona 재생성 전용
 import { readSession, writeSession, clearSession } from '../src/main/session-pointer.js'
 import { VideoRegenerator } from '../src/main/comfyui/video-cache.js'
 import { ReelBuilder } from '../src/main/comfyui/reel-builder.js'
@@ -67,7 +68,10 @@ const montage = JSON.parse(
 )
 // Seedance(API 노드) 키 — seedance-flf 모드에서 클립 생성에 필요. 없으면 생성 시 에러로 안내.
 const COMFY_API_KEY = montage.regen?.seedance?.apiKeyPath
-  ? await fs.readFile(path.resolve(root, montage.regen.seedance.apiKeyPath), 'utf-8').then((s) => s.trim()).catch(() => null)
+  ? await fs
+      .readFile(path.resolve(root, montage.regen.seedance.apiKeyPath), 'utf-8')
+      .then((s) => s.trim())
+      .catch(() => null)
   : null
 
 const args = process.argv.slice(2)
@@ -154,20 +158,59 @@ async function ensurePersonaLocal(pid) {
   return localPersonaExists(pid)
 }
 
+// 이 persona(라이브러리 폴더 pid)가 지금 생성 중인가. 같은 머신이면 currentInfo로, view-only
+// 뷰어면 생성 주체가 워커라 Firestore의 generating 문서로 판단한다(occupation·lifegraph 둘 다).
+function isGeneratingPersona(pid) {
+  if (currentInfo?.personaId === pid) return true
+  return profiles.some((p) => {
+    if (p.status === 'generating' && personaId(p) === pid) return true // occupation (폴더=personaId 해시)
+    // lifegraph: 폴더명이 crafter id(p.id) 그대로 — 세션별 상태 중 하나라도 generating이면 생성 중.
+    if (p.id === pid)
+      return LIFE_GRAPH_SESSION_KEYS.some((k) => lifeGraphSessionStatus(p, k) === 'generating')
+    return false
+  })
+}
+
 // ── 재생성: 현재 prompt-builder 기준으로 프롬프트를 재조립해 다시 굴린다 ──
 // (프롬프트 풀이 개편되면 재생성부터 바로 반영된다. 장면 문구(item.scene)는
 //  플랜 시드에 고정된 재료라 그대로 쓴다. 구버전 manifest — 포트레이트 2단계 시절 —
 //  의 장도 같은 규칙으로 원본 레퍼런스 기준 뒷모습 프롬프트로 재생성된다.)
+// 생성 때 기록해둔 장면별 레퍼런스(referenceFile — 그 순간 실제 사진 또는 현재 얼굴 앵커)를 다시
+// 읽어 재생성에 실는다. 파일이 없으면(구버전 manifest·다른 머신 hydrate로 _input 없음) null → 레퍼런스
+// 없이 생성(프롬프트 접두어와 어긋나지만 안전한 폴백). face-anchor.js 규칙과 짝을 이룬다.
+async function loadEntryReference(pid, entry) {
+  if (!entry.referenceFile) return null
+  try {
+    return await fs.readFile(path.join(LIBRARY, pid, entry.referenceFile))
+  } catch {
+    return null
+  }
+}
+
 async function regenerate(pid, id) {
   const manifest = await readManifest(pid)
   const entry = (manifest.images || []).find((img) => img.id === id)
   if (!entry) throw new Error(`항목 없음: ${id}`)
 
   const wf = manifest.workflow
-  entry.prompt = composeScenePromptFor(wf, manifest.profile, entry)
+  // 재생성은 **항상 현재 prompt-builder 코드로 프롬프트를 재조립**한다(2026-07-22 변경 — 예전엔
+  // 저장된 프롬프트를 재사용했으나, 프롬프트를 수정하면 기존 persona도 "재생성" 한 번으로 반영되도록
+  // 뒤집음). 장면 컨텍스트(entry.scene/age/isPast)와 레퍼런스 이미지(entry.referenceFile·referenceKind)는
+  // entry에 그대로 남아 유지되므로, 얼굴 앵커·나이 변환 접두어(prefixForEntry)도 함께 재적용된다.
+  // (레퍼런스가 기록되지 않은 구버전 entry는 referenceFile/Kind가 없어 접두어·참조 없이 순수 장면
+  //  프롬프트로만 재조립된다 — 그 경우 얼굴 앵커를 얹으려면 전체 재생성이 필요하다.)
+  entry.prompt = prefixForEntry(entry) + composeScenePromptFor(wf, manifest.profile, entry)
 
-  if (wf === 'gemini') return regenerateGemini(pid, manifest, entry)
-  if (wf === 'seamfix') return regenerateSeamfix(pid, manifest, entry)
+  // equirect·gemini는 순수 Gemini 텍스트→이미지 — ComfyUI(kontext/sdxl)로 보내지 않는다(4:1 자동).
+  if (wf === 'gemini' || wf === 'equirect') return regenerateGemini(pid, manifest, entry)
+  // LEGACY: 기존 seamfix persona 전용 — seamfix-legacy.js가 admin 내부 상태를 deps로 받아 처리한다.
+  if (wf === 'seamfix')
+    return regenerateSeamfix(pid, manifest, entry, {
+      config,
+      LIBRARY,
+      writeManifest,
+      loadEntryReference
+    })
 
   const client = new ComfyUIClient({ host: config.host, timeoutMs: config.timeoutMs })
   try {
@@ -212,7 +255,8 @@ async function regenerate(pid, id) {
 }
 
 // Gemini 백엔드 재생성 — 시드 개념이 없어 확률만 다시 굴린다.
-// 3인칭 부감 장면은 생성 때와 동일하게 레퍼런스 없이 순수 텍스트→이미지 (prompt-builder 주석 참조).
+// 생성 때 얼굴 앵커/실제 사진을 실었으면(entry.referenceFile) 재생성에도 같은 레퍼런스를 실어
+// 프롬프트의 "첨부 사진을 써라" 지시와 어긋나지 않게 한다(없으면 텍스트→이미지).
 async function regenerateGemini(pid, manifest, entry) {
   const gclient = new GeminiClient({
     apiKey: await resolveGeminiApiKey(config.gemini),
@@ -221,10 +265,11 @@ async function regenerateGemini(pid, manifest, entry) {
     timeoutMs: config.timeoutMs
   })
 
+  const refBuf = await loadEntryReference(pid, entry)
   const t0 = Date.now()
   const data = await gclient.generateImage({
     prompt: entry.prompt,
-    references: [],
+    references: refBuf ? [refBuf] : [],
     aspectRatio: nearestGeminiAspect(manifest.image.width, manifest.image.height),
     imageSize: manifest.gemini?.imageSize || config.gemini?.imageSize || '2K',
     model: manifest.gemini?.sceneModel || config.gemini?.sceneModel || undefined
@@ -240,99 +285,8 @@ async function regenerateGemini(pid, manifest, entry) {
   return { entry }
 }
 
-// seamfix 이음매 보정 단계만 — 주어진 Gemini 원본 버퍼를 업로드해 Flux Fill 워크플로우를 돌리고
-// 보정본(-pano)을 장면 파일로 저장한다. regenerateSeamfix(재생성)와 reseam(재연결)이 공유한다.
-async function applySeamFix(pid, manifest, entry, srcBuffer, client) {
-  const uploaded = await client.uploadImage(srcBuffer, `${pid}-${entry.id}-src.png`)
-  const seed = randomSeed()
-  const graph = buildGeminiSeamFixWorkflow({
-    referenceImage: uploaded.name,
-    prompt: entry.prompt,
-    bandPrompt: SEAM_BAND_PROMPT, // 이음매 띠에 인물 안 그리게(기괴함 방지)
-    width: manifest.image.width,
-    height: manifest.image.height,
-    // 재생성은 현재 config.seamfix를 우선(운영 중 밴드폭 조정 반영), 없으면 생성 당시 manifest 값 → workflow 기본.
-    bandWidth: config.seamfix?.bandWidth ?? manifest.seamfix?.bandWidth,
-    feather: config.seamfix?.feather ?? manifest.seamfix?.feather,
-    bandModel: manifest.seamfix?.bandModel || 'flux-fill',
-    seed,
-    filenamePrefix: `chrono-zoetrope/${pid}/${path.basename(entry.file, '.png')}`
-  })
-  const { promptId, images } = await client.generate(graph)
-  const corrected = images.find((im) => /-pano_/.test(im.filename)) || images[0]
-  await fs.writeFile(path.join(LIBRARY, pid, entry.file), corrected.data)
-  return { promptId, seed }
-}
-
-// B안(seamfix) 재생성 — Gemini로 파노라마를 다시 뽑고(→ 원본 보관) Flux Fill로 이음매를 보정한다.
-// (life-library.js seamfix 경로와 동일한 2단계. 보정본을 장면 파일로 교체한다.)
-async function regenerateSeamfix(pid, manifest, entry) {
-  const gclient = new GeminiClient({
-    apiKey: await resolveGeminiApiKey(config.gemini),
-    model: manifest.gemini?.model || config.gemini?.model,
-    textModel: config.gemini?.textModel,
-    timeoutMs: config.timeoutMs
-  })
-  const client = new ComfyUIClient({ host: config.host, timeoutMs: config.timeoutMs })
-  try {
-    const t0 = Date.now()
-    const data = await gclient.generateImage({
-      prompt: entry.prompt,
-      references: [],
-      // 파노라마 폭(manifest.image)에 맞는 Gemini 비율 — 4096×1024면 '4:1'. 보정 워크플로우가 그 크기로 정규화.
-      aspectRatio: nearestGeminiAspect(manifest.image.width, manifest.image.height),
-      imageSize: manifest.gemini?.imageSize || config.gemini?.imageSize || '2K',
-      model: manifest.gemini?.sceneModel || config.gemini?.sceneModel || undefined
-    })
-    // 새 Gemini 원본 보관 → 이후 edge 재연결이 재생성 없이 이 원본으로 이음매만 다시 보정한다.
-    const srcFile = `${path.basename(entry.file, '.png')}.src.png`
-    await fs.writeFile(path.join(LIBRARY, pid, srcFile), data)
-    entry.srcFile = srcFile
-
-    const { promptId, seed } = await applySeamFix(pid, manifest, entry, data, client)
-    entry.seed = seed
-    entry.promptId = promptId
-    entry.elapsedMs = Date.now() - t0
-    entry.rev = (entry.rev || 0) + 1 // 클라이언트 캐시 버스팅용
-    delete entry.failed // 재생성 성공 → failed 해제
-    await writeManifest(pid, manifest)
-    return { entry }
-  } finally {
-    client.close()
-  }
-}
-
-// edge 재연결(seamfix 전용) — Gemini는 다시 만들지 않고, 보관된 원본으로 이음매 보정만 재실행한다.
-// "Gemini는 만족스러운데 seamless 연결만 문제"일 때 값싸게(재과금 없이) 다시 붙인다.
-async function reseam(pid, id) {
-  const manifest = await readManifest(pid)
-  const entry = (manifest.images || []).find((img) => img.id === id)
-  if (!entry) throw new Error(`항목 없음: ${id}`)
-  if (manifest.workflow !== 'seamfix')
-    throw new Error('edge 재연결은 seamfix 워크플로우에서만 가능합니다')
-  if (!entry.srcFile)
-    throw new Error('보관된 Gemini 원본이 없습니다 (이 장 이전 버전) — 전체 재생성이 필요합니다')
-  let srcBuffer
-  try {
-    srcBuffer = await fs.readFile(path.join(LIBRARY, pid, entry.srcFile))
-  } catch {
-    throw new Error('Gemini 원본 파일을 찾을 수 없습니다 — 전체 재생성이 필요합니다')
-  }
-  const client = new ComfyUIClient({ host: config.host, timeoutMs: config.timeoutMs })
-  try {
-    const t0 = Date.now()
-    const { promptId, seed } = await applySeamFix(pid, manifest, entry, srcBuffer, client)
-    entry.seed = seed
-    entry.promptId = promptId
-    entry.elapsedMs = Date.now() - t0
-    entry.rev = (entry.rev || 0) + 1 // 클라이언트 캐시 버스팅용
-    delete entry.failed
-    await writeManifest(pid, manifest)
-    return { entry }
-  } finally {
-    client.close()
-  }
-}
+// applySeamFix·regenerateSeamfix(seamfix 재생성)는 seamfix-legacy.js로 이동함(2026-07-22 격리).
+// regenerate()가 wf==="seamfix"일 때 거기서 import한 regenerateSeamfix에 deps를 주입해 호출한다.
 
 // ── HTTP 서버 ─────────────────────────────────────────────────────
 const MIME = {
@@ -358,7 +312,11 @@ async function serveFile(req, res, absPath, mime) {
     return send(res, 404, { error: 'not found' })
   }
   const range = req.headers.range
-  const base = { 'Content-Type': mime, 'Accept-Ranges': 'bytes', 'Access-Control-Allow-Origin': '*' }
+  const base = {
+    'Content-Type': mime,
+    'Accept-Ranges': 'bytes',
+    'Access-Control-Allow-Origin': '*'
+  }
   if (range) {
     const m = /bytes=(\d*)-(\d*)/.exec(range)
     const start = m && m[1] ? parseInt(m[1], 10) : 0
@@ -367,7 +325,11 @@ async function serveFile(req, res, absPath, mime) {
       res.writeHead(416, { 'Content-Range': `bytes */${stat.size}` })
       return res.end()
     }
-    res.writeHead(206, { ...base, 'Content-Range': `bytes ${start}-${end}/${stat.size}`, 'Content-Length': end - start + 1 })
+    res.writeHead(206, {
+      ...base,
+      'Content-Range': `bytes ${start}-${end}/${stat.size}`,
+      'Content-Length': end - start + 1
+    })
     return createReadStream(absPath, { start, end }).pipe(res)
   }
   res.writeHead(200, { ...base, 'Content-Length': stat.size })
@@ -399,7 +361,9 @@ let autoOn = !VIEW_ONLY // 일시정지 토글 (view-only면 영구 OFF — /api
 let current = null // 생성 중인 pid — 동시 1개 보장
 let currentInfo = null // { pid, name, done, total, startedAt }
 let lastResult = null // { pid, ok, error, at }
-let currentAbort = null // 진행 중 이미지 생성 취소용 AbortController (중지 버튼)
+let currentAbort = null // 진행 중 이미지 생성 취소용 AbortController (일시정지·중지 버튼)
+let currentCancelKind = 'pause' // 'pause'|'stop' — 진행 중 취소 요청의 종류(일시정지 vs 중지)
+const stoppedIds = new Set() // '중지'로 세워둔 항목 id(pid 또는 pid#key) — 자동생성이 건너뛴다(재개로 해제)
 
 const toMillis = (ts) => (ts && typeof ts.toMillis === 'function' ? ts.toMillis() : null)
 
@@ -438,14 +402,21 @@ async function pumpVideo() {
     const sd = mode === 'seedance'
     // recover는 ComfyUI history에서 회수만 하므로 Seedance 키가 필요 없다.
     if (sd && kind !== 'recover' && !COMFY_API_KEY)
-      throw new Error('Seedance API 키 없음 — secrets/comfy-api-key.txt 필요 (또는 regen.mode를 wan으로)')
+      throw new Error(
+        'Seedance API 키 없음 — secrets/comfy-api-key.txt 필요 (또는 regen.mode를 wan으로)'
+      )
 
     const manifest = await readManifest(pid)
     const personaDir = path.join(LIBRARY, pid)
     // scene 순서(출생→죽음). 루프 프롬프트에 age가 필요하므로 함께 싣는다.
     const scenes = (manifest.images || [])
       .filter((im) => !im.failed)
-      .map((im) => ({ id: im.id, absPath: path.join(personaDir, im.file), scene: im.scene, age: im.age }))
+      .map((im) => ({
+        id: im.id,
+        absPath: path.join(personaDir, im.file),
+        scene: im.scene,
+        age: im.age
+      }))
     regenerator = new VideoRegenerator({
       host: config.host,
       regen: montage.regen,
@@ -471,7 +442,13 @@ async function pumpVideo() {
       // Firebase 'generatedVideos' 컬렉션에 클립 업로드 (이미지와 동일 형식). 실패해도 잡은 성공 유지.
       if (firebaseReady && config.firebase?.uploadGenerated !== false) {
         try {
-          const up = await uploadPersonaVideos({ profile: manifest.profile, personaId: pid, dir: personaDir, images: manifest.images, kind: 'clips' })
+          const up = await uploadPersonaVideos({
+            profile: manifest.profile,
+            personaId: pid,
+            dir: personaDir,
+            images: manifest.images,
+            kind: 'clips'
+          })
           logAction(`  ↑ Firebase 영상 업로드: ${up.count}개 → 'generatedVideos'/${up.key}`)
         } catch (e) {
           logAction(`  ⚠ Firebase 영상 업로드 실패(로컬 보존됨): ${e.message}`)
@@ -504,7 +481,13 @@ async function pumpVideo() {
       )
       if (firebaseReady && config.firebase?.uploadGenerated !== false && recovered.length > 0) {
         try {
-          const up = await uploadPersonaVideos({ profile: manifest.profile, personaId: pid, dir: personaDir, images: manifest.images, kind: 'clips' })
+          const up = await uploadPersonaVideos({
+            profile: manifest.profile,
+            personaId: pid,
+            dir: personaDir,
+            images: manifest.images,
+            kind: 'clips'
+          })
           logAction(`  ↑ Firebase 영상 업로드: ${up.count}개 → 'generatedVideos'/${up.key}`)
         } catch (e) {
           logAction(`  ⚠ Firebase 영상 업로드 실패(로컬 보존됨): ${e.message}`)
@@ -520,19 +503,28 @@ async function pumpVideo() {
       let clipPaths = scenes.map((s) => regenerator.cachedPath(s.id))
       if (firebaseReady) {
         try {
-          const { paths, missing } = await ensureLocalClipsFromFirebase(manifest.profile, personaDir, {
-            ids: scenes.map((s) => s.id),
-            onProgress: (e) => (videoJob = { pid, kind, ...e })
-          })
-          if (missing.length) logAction(`  ⚠ Firebase 문서에 없는 클립 ${missing.length}개: ${missing.join(', ')}`)
+          const { paths, missing } = await ensureLocalClipsFromFirebase(
+            manifest.profile,
+            personaDir,
+            {
+              ids: scenes.map((s) => s.id),
+              onProgress: (e) => (videoJob = { pid, kind, ...e })
+            }
+          )
+          if (missing.length)
+            logAction(`  ⚠ Firebase 문서에 없는 클립 ${missing.length}개: ${missing.join(', ')}`)
           clipPaths = scenes.map((s) => paths.get(s.id) || regenerator.cachedPath(s.id))
         } catch (e) {
           logAction(`  ⚠ Firebase 클립 조회 실패 — 로컬 캐시로 합성: ${e.message}`)
         }
       }
       const meta = sd
-        ? await builder.concatSimple(clipPaths, outPath, { onProgress: (e) => (videoJob = { pid, kind, ...e }) })
-        : await builder.concat(clipPaths, outPath, { onProgress: (e) => (videoJob = { pid, kind, ...e }) })
+        ? await builder.concatSimple(clipPaths, outPath, {
+            onProgress: (e) => (videoJob = { pid, kind, ...e })
+          })
+        : await builder.concat(clipPaths, outPath, {
+            onProgress: (e) => (videoJob = { pid, kind, ...e })
+          })
       manifest.reel = {
         file: 'reel.mp4',
         mode,
@@ -546,7 +538,14 @@ async function pumpVideo() {
       logAction(`✓ 릴 완료: ${pid} — ${meta.durationSec.toFixed(1)}s (${meta.clipCount}개)`)
       if (firebaseReady && config.firebase?.uploadGenerated !== false) {
         try {
-          const up = await uploadPersonaVideos({ profile: manifest.profile, personaId: pid, dir: personaDir, images: manifest.images, kind: 'reel', reelMeta: meta })
+          const up = await uploadPersonaVideos({
+            profile: manifest.profile,
+            personaId: pid,
+            dir: personaDir,
+            images: manifest.images,
+            kind: 'reel',
+            reelMeta: meta
+          })
           logAction(`  ↑ Firebase 릴 업로드 → 'generatedVideos'/${up.key}`)
         } catch (e) {
           logAction(`  ⚠ Firebase 릴 업로드 실패(로컬 보존됨): ${e.message}`)
@@ -595,7 +594,7 @@ function queueView() {
     .map((p) => ({
       id: p.id,
       name: p.name || null,
-      status: p.id === current ? 'generating' : p.status,
+      status: p.id === current ? 'generating' : stoppedIds.has(p.id) ? 'stopped' : p.status,
       createdAt: toMillis(p.createdAt),
       error: p.error || null
     }))
@@ -622,8 +621,10 @@ function lifeGraphQueueRows() {
   for (const p of profiles) {
     LIFE_GRAPH_SESSION_KEYS.forEach((key, i) => {
       const rowId = `${p.id}#${key}`
-      const status = rowId === current ? 'generating' : lifeGraphSessionStatus(p, key)
-      if (!['submitted', 'generating', 'error'].includes(status)) return
+      const raw = rowId === current ? 'generating' : lifeGraphSessionStatus(p, key)
+      if (!['submitted', 'generating', 'error'].includes(raw)) return
+      // 중지로 세워둔 세션은 raw가 submitted여도 '정지됨'으로 보여 재개 버튼을 붙인다(생성 버튼 대신).
+      const status = rowId !== current && stoppedIds.has(rowId) ? 'stopped' : raw
       rows.push({
         id: rowId,
         kind: 'lifegraph', // admin/index.html이 이 값으로 "생성" 버튼을 붙일지 판단한다
@@ -644,11 +645,14 @@ const MAX_GEN_RETRIES = 2
 async function maybeStartNext() {
   if (!firebaseReady || !autoOn || current) return
   // submitted 우선, 없으면 상한 안 넘은 error를 재시도 대상으로.
-  let next = profiles.find((p) => p.status === 'submitted')
+  let next = profiles.find((p) => p.status === 'submitted' && !stoppedIds.has(p.id))
   let isRetry = false
   if (!next) {
     next = profiles.find(
-      (p) => p.status === 'error' && (genAttempts.get(p.id) || 0) < MAX_GEN_RETRIES
+      (p) =>
+        p.status === 'error' &&
+        !stoppedIds.has(p.id) &&
+        (genAttempts.get(p.id) || 0) < MAX_GEN_RETRIES
     )
     isRetry = Boolean(next)
   }
@@ -669,7 +673,9 @@ async function maybeStartNext() {
   if (isRetry) {
     const n = (genAttempts.get(current) || 0) + 1
     genAttempts.set(current, n)
-    logAction(`↻ 실패분 자동 재시도 (${n}/${MAX_GEN_RETRIES}): ${currentInfo.name || '?'} (${current})`)
+    logAction(
+      `↻ 실패분 자동 재시도 (${n}/${MAX_GEN_RETRIES}): ${currentInfo.name || '?'} (${current})`
+    )
   } else {
     logAction(`▶ 자동 생성 시작: ${currentInfo.name || '?'} (${current})`)
   }
@@ -708,9 +714,12 @@ async function maybeStartNext() {
   // 영상 생성은 자동 트리거하지 않는다 — 이미지 완료 후 연구자가 admin에서 "영상 생성" 버튼으로 시작한다.
   current = null
   currentInfo = null
-  // 중지 요청이면 자동으로 다음 걸 시작하지 않는다(사용자가 멈춘 것). autoOn도 함께 끈다.
-  if (res.cancelled) autoOn = false
-  else maybeStartNext() // 큐에 남은 게 있으면 이어서
+  // 일시정지면 여기서 멈춘다(autoOn OFF → 재개하면 같은 항목을 이어서). 중지면 이 항목을
+  // stoppedIds로 세워둔 채 자동생성을 이어가 다음 대기 항목으로 넘어간다. 완료·실패도 다음으로.
+  const wasPause = res.cancelled && currentCancelKind === 'pause'
+  currentCancelKind = 'pause' // 다음 취소 요청 대비 기본값 복원
+  if (wasPause) autoOn = false
+  else maybeStartNext() // 큐에 남은 게 있으면 이어서(중지 항목은 stoppedIds로 건너뜀)
 }
 
 // cdb-crafter(인생그래프 앱) 세션 생성 — occupation 큐와 달리 자동으로 안 돈다. 큐에 "대기"로
@@ -727,6 +736,7 @@ function startLifeGraphSession(pid, sessionKey) {
     throw new Error(`이미 처리 중이거나 완료된 세션입니다: ${pid}#${sessionKey}`)
 
   current = `${pid}#${sessionKey}` // 첫 await 전에 동기적으로 잠가 중복 클릭을 막는다
+  stoppedIds.delete(current) // 재개로 다시 시작하는 경우 '중지' 표식 해제
   currentInfo = {
     pid,
     personaId: pid, // life-graph는 personaId() 해시가 아니라 크래프터가 준 id를 그대로 라이브러리 폴더명으로 쓴다
@@ -753,7 +763,13 @@ function startLifeGraphSession(pid, sessionKey) {
       }
     })
     currentAbort = null
-    lastResult = { pid, ok: res.ok, cancelled: res.cancelled || false, error: res.error || null, at: Date.now() }
+    lastResult = {
+      pid,
+      ok: res.ok,
+      cancelled: res.cancelled || false,
+      error: res.error || null,
+      at: Date.now()
+    }
     logAction(
       res.cancelled
         ? `⏸ 인생그래프 생성 중지됨: ${pid}`
@@ -763,6 +779,7 @@ function startLifeGraphSession(pid, sessionKey) {
     )
     current = null
     currentInfo = null
+    currentCancelKind = 'pause' // 다음 취소 요청 대비 기본값 복원
   })()
 }
 
@@ -776,10 +793,14 @@ try {
     // (view-only에서는 하지 않는다 — 워커가 진행 중인 생성을 리셋해 버린다.)
     const orphans = await resetOrphanGenerating()
     if (orphans.length > 0)
-      console.log(`[admin] 중단됐던 생성 ${orphans.length}건을 큐로 복구 (이어서 생성): ${orphans.join(', ')}`)
+      console.log(
+        `[admin] 중단됐던 생성 ${orphans.length}건을 큐로 복구 (이어서 생성): ${orphans.join(', ')}`
+      )
     const lgOrphans = await resetOrphanLifeGraphGenerating()
     if (lgOrphans.length > 0)
-      console.log(`[admin] 중단됐던 인생그래프 생성 ${lgOrphans.length}건을 큐로 복구: ${lgOrphans.join(', ')}`)
+      console.log(
+        `[admin] 중단됐던 인생그래프 생성 ${lgOrphans.length}건을 큐로 복구: ${lgOrphans.join(', ')}`
+      )
   }
   listenProfiles((list) => {
     profiles = list
@@ -867,7 +888,9 @@ const server = http.createServer(async (req, res) => {
     // POST /api/autogen { on: boolean } → 자동생성 ON/OFF 토글
     if (req.method === 'POST' && url.pathname === '/api/autogen') {
       if (VIEW_ONLY)
-        return send(res, 400, { error: '뷰어 모드에서는 자동 생성을 켤 수 없다 (생성은 워커 담당)' })
+        return send(res, 400, {
+          error: '뷰어 모드에서는 자동 생성을 켤 수 없다 (생성은 워커 담당)'
+        })
       const { on } = await readBody(req)
       autoOn = Boolean(on)
       logAction(`자동 생성 ${autoOn ? 'ON' : 'OFF (일시정지)'}`)
@@ -875,28 +898,68 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { autoOn })
     }
 
-    // POST /api/stop → 진행 중인 이미지 생성 중지(일시정지). 진행분은 저장되고 status는 submitted로.
+    // POST /api/stop { kind: 'pause'|'stop' } → 진행 중인 이미지 생성 취소. 진행분은 저장되고
+    // status는 submitted로 되돌아간다(둘 다 재개 가능). 차이는 그 다음:
+    //   pause: autoOn을 끄고 여기서 멈춘다 → 재개하면 같은 항목을 이어서.
+    //   stop : 이 항목을 stoppedIds로 세워두고 자동생성을 이어가 다음 대기 항목으로 넘어간다.
     if (req.method === 'POST' && url.pathname === '/api/stop') {
-      if (!current || !currentAbort) return send(res, 200, { stopped: false, note: '진행 중인 생성 없음' })
-      logAction(`⏸ 중지 요청 → ${currentInfo?.name || current}`)
+      if (!current || !currentAbort)
+        return send(res, 200, { stopped: false, note: '진행 중인 생성 없음' })
+      const { kind = 'pause' } = await readBody(req)
+      currentCancelKind = kind === 'stop' ? 'stop' : 'pause'
+      if (currentCancelKind === 'stop') stoppedIds.add(current) // 자동 재선택에서 제외
+      logAction(
+        `${currentCancelKind === 'stop' ? '⏹ 중지' : '⏸ 일시정지'} 요청 → ${currentInfo?.name || current}`
+      )
       currentAbort.abort()
-      return send(res, 200, { stopped: true, pid: current })
+      return send(res, 200, { stopped: true, kind: currentCancelKind, pid: current })
+    }
+
+    // POST /api/resume { id } → '중지'로 세워둔 항목을 다시 활성화한다. 진행분은 이미 저장돼 있어
+    // 남은 장면부터 이어서 만든다(life-library resume). occupation이면 자동 큐가, lifegraph면
+    // 즉시 수동 시작으로 이어간다.
+    if (req.method === 'POST' && url.pathname === '/api/resume') {
+      if (VIEW_ONLY)
+        return send(res, 400, { error: '뷰어 모드에서는 재개 불가 (생성은 워커 담당)' })
+      if (!firebaseReady) return send(res, 400, { error: 'Firebase 미연결' })
+      if (current)
+        return send(res, 400, { error: '다른 생성이 진행 중입니다 — 끝난 뒤 다시 시도하세요' })
+      const { id } = await readBody(req)
+      if (!id) return send(res, 400, { error: 'id 필요' })
+      stoppedIds.delete(id)
+      logAction(`▶ 재개 요청: ${id} (중지 해제)`)
+      if (id.includes('#')) {
+        const [rpid, rkey] = id.split('#')
+        try {
+          startLifeGraphSession(rpid, rkey)
+        } catch (e) {
+          return send(res, 400, { error: e.message })
+        }
+      } else {
+        if (!autoOn) autoOn = true // 재개하려면 자동생성이 켜져 있어야 큐가 집는다
+        maybeStartNext()
+      }
+      return send(res, 200, { resumed: true, id })
     }
 
     // POST /api/video/stop { kind: 'pause'|'stop' } → 진행 중인 영상(클립) 생성 중지.
     // 만든 클립은 캐시에 남아 "이어서 생성"으로 재개 가능. pause·stop은 라벨만 다르다(둘 다 클립 보존).
     if (req.method === 'POST' && url.pathname === '/api/video/stop') {
-      if (!videoBuilding) return send(res, 200, { stopped: false, note: '진행 중인 영상 작업 없음' })
+      if (!videoBuilding)
+        return send(res, 200, { stopped: false, note: '진행 중인 영상 작업 없음' })
       const { kind = 'stop' } = await readBody(req)
       videoCancelKind = kind === 'pause' ? 'pause' : 'stop'
       videoCancel = true
-      logAction(`⏸ 영상 ${videoCancelKind === 'pause' ? '일시정지' : '중단'} 요청 → ${videoBuilding.pid}`)
+      logAction(
+        `⏸ 영상 ${videoCancelKind === 'pause' ? '일시정지' : '중단'} 요청 → ${videoBuilding.pid}`
+      )
       return send(res, 200, { stopped: true, pid: videoBuilding.pid })
     }
 
     // POST /api/retry { id } → 실패(error) 프로필을 다시 생성 대기(submitted)로. 재시도 카운트도 리셋.
     if (req.method === 'POST' && url.pathname === '/api/retry') {
-      if (VIEW_ONLY) return send(res, 400, { error: '뷰어 모드에서는 재실행 불가 (생성은 워커 담당)' })
+      if (VIEW_ONLY)
+        return send(res, 400, { error: '뷰어 모드에서는 재실행 불가 (생성은 워커 담당)' })
       if (!firebaseReady) return send(res, 400, { error: 'Firebase 미연결' })
       const { id } = await readBody(req)
       if (!id) return send(res, 400, { error: 'id 필요' })
@@ -915,7 +978,8 @@ const server = http.createServer(async (req, res) => {
       if (!firebaseReady) return send(res, 400, { error: 'Firebase 미연결' })
       const { id } = await readBody(req)
       const [pid, sessionKey] = String(id || '').split('#')
-      if (!pid || !sessionKey) return send(res, 400, { error: 'id 필요 (형식: personaId#sessionKey)' })
+      if (!pid || !sessionKey)
+        return send(res, 400, { error: 'id 필요 (형식: personaId#sessionKey)' })
       try {
         startLifeGraphSession(pid, sessionKey)
       } catch (err) {
@@ -945,7 +1009,10 @@ const server = http.createServer(async (req, res) => {
       } catch {
         return send(res, 404, { error: `persona 없음: ${pid}` })
       }
-      const sel = await writeSession(LIBRARY, { personaId: pid, name: manifest.profile?.name || null })
+      const sel = await writeSession(LIBRARY, {
+        personaId: pid,
+        name: manifest.profile?.name || null
+      })
       logAction(`◆ 세션 참가자 설정 → ${sel.name || pid}`)
       return send(res, 200, sel)
     }
@@ -1039,14 +1106,34 @@ const server = http.createServer(async (req, res) => {
         if (!entry || !entry.hasManifest)
           return send(res, 404, { error: `Firebase에 정본 manifest가 없다: ${pid}` })
         const result = await hydratePersona(entry.docKey)
-        logAction(`⬇ hydrate 완료: ${entry.name || pid} (이미지 ${result.images}, reel ${result.reel ? '○' : '×'})`)
+        logAction(
+          `⬇ hydrate 완료: ${entry.name || pid} (이미지 ${result.images}, reel ${result.reel ? '○' : '×'})`
+        )
         return send(res, 200, { ok: true, ...result })
       }
 
       if (req.method === 'GET' && parts.length === 3) {
-        // 다른 머신에서 로컬이 비어 있어도 정본에서 자동 복원해 리뷰가 되게 한다.
-        await ensurePersonaLocal(pid).catch(() => {})
-        const m = await readManifest(pid)
+        const generating = isGeneratingPersona(pid)
+        let m = null
+        if (localPersonaExists(pid)) {
+          // 로컬 캐시 — 같은 머신 생성이면 장마다 갱신되므로 이 자체가 실시간이다.
+          m = await readManifest(pid)
+        } else if (firebaseReady && generating) {
+          // 원격 뷰어가 생성 중인 persona를 볼 때: hydrate(미디어 다운로드)하면 한 번 찍고 굳어
+          // 실시간이 안 되므로, Firebase 정본 manifest를 매 폴링마다 직접 조회해 최신 장면을 준다.
+          // (이미지 바이트는 정본에 없으므로 원격에선 그림이 비어 보일 수 있다 — manifest만 실시간.)
+          const entry = (await firebasePersonaList()).find((p) => p.personaId === pid)
+          if (entry?.hasManifest) m = await fetchPersonaManifest(entry.docKey).catch(() => null)
+        } else if (firebaseReady) {
+          // 완료된 다른 머신 persona → 정본에서 로컬로 복원(manifest+미디어)해 리뷰가 되게 한다.
+          await ensurePersonaLocal(pid).catch(() => {})
+          if (localPersonaExists(pid)) m = await readManifest(pid)
+        }
+        if (!m) {
+          // 아직 첫 장면 전(생성 중)이면 부드러운 대기 응답, 아니면 없음(404).
+          if (generating) return send(res, 200, { personaId: pid, images: [], _pending: true })
+          return send(res, 404, { error: `아직 manifest가 없습니다: ${pid}` })
+        }
         m._clipStatus = clipStatus(pid, m) // 로컬 캐시 기준 진행도 (영상 패널 표시용)
         // Firebase 정본 상태(☁) — 로컬 캐시와 별개로 "Firebase에 실제로 올라간 수"를 보여준다.
         if (firebaseReady) {
@@ -1071,7 +1158,12 @@ const server = http.createServer(async (req, res) => {
         return send(
           res,
           200,
-          m.images.map((i) => ({ id: i.id, age: i.age, file: i.file, url: `/img/${pid}/${i.file}` }))
+          m.images.map((i) => ({
+            id: i.id,
+            age: i.age,
+            file: i.file,
+            url: `/img/${pid}/${i.file}`
+          }))
         )
       }
 
@@ -1086,8 +1178,11 @@ const server = http.createServer(async (req, res) => {
         const manifest = await readManifest(pid)
         manifest.profile = { ...(manifest.profile || {}), gender }
         manifest.gender = { ...(manifest.gender || {}), value: gender, source: 'manual' }
+        // 성별을 바꿔 프롬프트를 재조합하되, 생성 때 붙였던 얼굴 앵커 접두어(prefixForEntry)는 유지한다 —
+        // 안 그러면 성별 수정 한 번에 나이 변환/실물 참조 지시가 통째로 날아가 재생성이 얼굴 기반을 잃는다.
         for (const img of manifest.images || [])
-          img.prompt = composeScenePromptFor(manifest.workflow, manifest.profile, img)
+          img.prompt =
+            prefixForEntry(img) + composeScenePromptFor(manifest.workflow, manifest.profile, img)
         await writeManifest(pid, manifest)
         if (firebaseReady && manifest.profile.id) {
           await updateProfileFields(manifest.profile.id, { gender }).catch((err) =>
@@ -1110,17 +1205,6 @@ const server = http.createServer(async (req, res) => {
         const result = await regenerate(pid, id)
         logAction(
           `${pid}  ↻ 재생성 완료  장면 ${id}  (${(result.entry.elapsedMs / 1000).toFixed(1)}s${result.entry.seed != null ? `, seed ${result.entry.seed}` : ''})`
-        )
-        return send(res, 200, result)
-      }
-
-      // edge 재연결: { id } — Gemini 원본 재사용, 이음매 보정만 다시 (seamfix 전용, 재과금 없음)
-      if (req.method === 'POST' && parts[3] === 'reseam') {
-        const { id } = await readBody(req)
-        logAction(`${pid}  ⟚ edge 재연결 시작  장면 ${id}`)
-        const result = await reseam(pid, id)
-        logAction(
-          `${pid}  ⟚ edge 재연결 완료  장면 ${id}  (${(result.entry.elapsedMs / 1000).toFixed(1)}s)`
         )
         return send(res, 200, result)
       }

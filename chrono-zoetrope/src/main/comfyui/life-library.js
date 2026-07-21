@@ -20,14 +20,15 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { ComfyUIClient } from './client.js'
 import { GeminiClient, resolveGeminiApiKey, nearestGeminiAspect } from './gemini-client.js'
-import {
-  buildKontextWorkflow,
-  buildSdxlWorkflow,
-  buildGeminiSeamFixWorkflow,
-  randomSeed
-} from './workflows.js'
+import { buildKontextWorkflow, buildSdxlWorkflow, randomSeed } from './workflows.js'
+import { buildGeminiSeamFixWorkflow } from './seamfix-legacy.js' // LEGACY: seamfix 분기 전용(equirect 통일로 새 생성 미사용)
 import { detectGender, detectGenderWithGemini } from './gender-detect.js'
-import { buildScenePlan, composeScenePromptFor, personaId, SEAM_BAND_PROMPT } from './prompt-builder.js'
+import {
+  buildScenePlan,
+  composeScenePromptFor,
+  personaId,
+  SEAM_BAND_PROMPT
+} from './prompt-builder.js'
 
 /**
  * @param {object} profile  prompt-builder.js 상단의 스키마 참조
@@ -73,7 +74,14 @@ export async function generateLifeLibrary(profile, opts = {}) {
     //                       생성(gemini·seamfix)에 실어 보낸다 — 기본은 항상 빈 배열(장면 생성엔
     //                       레퍼런스를 안 씀, 레퍼런스는 성별감지·kontext 편집 입력 전용이었다).
     //                       cdb-crafter처럼 과거~현재 단계마다 그 순간의 실제 사진이 있을 때 씀.
-    onProgress = () => {}
+    referenceMetaFor, //     있으면 (item) => { file, kind } | null 로 그 장면에 실은 레퍼런스의
+    //                       상대경로·종류를 돌려준다. manifest 항목에 기록해두면 admin 재생성이
+    //                       같은 사진을 다시 실을 수 있다(referencesFor는 버퍼만 줘서 경로가 없다).
+    onProgress = () => {},
+    onManifest //            있으면 장면이 기록될 때마다 (manifest) => Promise 로 호출한다 —
+    //                       이 모듈은 Firebase를 모른 채, 호출자(profile-worker)가 여기에 정본
+    //                       업로드(upsertPersonaManifest)를 물려 "생성되는 족족" 원격 실시간 보기가
+    //                       되게 한다. best-effort — 실패해도 생성 진행은 막지 않는다.
   } = opts
 
   profile = { ...profile } // 성별 자동 감지가 gender를 채울 수 있으므로 호출자 객체를 오염시키지 않는다
@@ -89,12 +97,13 @@ export async function generateLifeLibrary(profile, opts = {}) {
   }
   const isGemini = mode === 'gemini'
   const isSeamfix = mode === 'seamfix' // B안: Gemini 파노라마 생성 + ComfyUI Flux Fill 이음매 보정
-  const useGeminiScene = isGemini || isSeamfix // 장면 픽셀을 Gemini가 만든다(seamfix는 그 뒤 보정)
-  // kontext·sdxl·seamfix가 ComfyUI를 쓴다 — 단 seamfix+skipSeamfix는 이음매 보정 자체를
-  // 안 하므로 ComfyUI가 필요 없다(연결 확인도 생략).
-  const useComfy = !isGemini && !(isSeamfix && skipSeamfix)
-  // seamfix 소스는 360° 둘레라 2:1 와이드가 필요하다 → 라이브러리 기본 16:9 대신 파노라마 크기 사용.
-  const effImage = isSeamfix ? opts.panorama || { width: 2048, height: 1024 } : image
+  const isEquirect = mode === 'equirect' // 1인칭 360° Gemini 파노라마 — 순수 텍스트→이미지(Flux 이음매 없음)
+  const useGeminiScene = isGemini || isSeamfix || isEquirect // 장면 픽셀을 Gemini가 만든다
+  // kontext·sdxl·seamfix가 ComfyUI를 쓴다 — 단 seamfix+skipSeamfix는 이음매 보정 자체를 안 하고,
+  // equirect는 아예 보정 단계가 없어 ComfyUI가 필요 없다(연결 확인도 생략).
+  const useComfy = !isGemini && !isEquirect && !(isSeamfix && skipSeamfix)
+  // seamfix·equirect 소스는 360° 둘레라 2:1 와이드가 필요하다 → 라이브러리 기본 16:9 대신 파노라마 크기 사용.
+  const effImage = isSeamfix || isEquirect ? opts.panorama || { width: 2048, height: 1024 } : image
   // Gemini는 픽셀 크기 대신 종횡비로 지정한다 — 실제 출력 크기(effImage)에 가장 가까운
   // 지원 비율을 고른다. gemini(1344×768)→'16:9', seamfix 파노라마(4096×1024)→'4:1'.
   const geminiAspect = nearestGeminiAspect(effImage.width, effImage.height)
@@ -140,13 +149,29 @@ export async function generateLifeLibrary(profile, opts = {}) {
     image: effImage,
     ...(useGeminiScene ? { gemini: { model: gclient.model, sceneModel, imageSize } } : {}),
     ...(isSeamfix
-      ? { seamfix: { bandModel: 'flux-fill', bandWidth: seamfix.bandWidth, feather: seamfix.feather } }
+      ? {
+          seamfix: {
+            bandModel: 'flux-fill',
+            bandWidth: seamfix.bandWidth,
+            feather: seamfix.feather
+          }
+        }
       : {}),
     // 사진 바이너리는 제외하고 경로만 기록
     profile: { ...profile, photos: profile.photos || [] },
     images: []
   }
-  const writeManifest = () => fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2))
+  const writeManifest = async () => {
+    await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2))
+    // 로컬 기록 후 정본(Firebase) 동기화를 호출자에 위임 — best-effort(생성 흐름을 막지 않는다).
+    if (onManifest) {
+      try {
+        await onManifest(manifest)
+      } catch {
+        /* 정본 동기화 실패는 무시 — 로컬 진행분은 이미 저장됐고 다음 장에서 다시 시도된다 */
+      }
+    }
+  }
 
   try {
     if (useComfy) await client.ping()
@@ -163,7 +188,10 @@ export async function generateLifeLibrary(profile, opts = {}) {
       // gemini·seamfix: 사진은 성별 자동 감지에만(장면 생성엔 넣지 않음). kontext: 편집 입력으로 업로드.
       if (useGeminiScene) referenceBuffer = buf
       if (mode === 'kontext') {
-        const uploaded = await client.uploadImage(buf, `${pid}-ref${path.extname(photoPath) || '.png'}`)
+        const uploaded = await client.uploadImage(
+          buf,
+          `${pid}-ref${path.extname(photoPath) || '.png'}`
+        )
         referenceImage = uploaded.name
         manifest.referenceImage.uploaded = uploaded.name
         onProgress({ type: 'upload', file: uploaded.name })
@@ -188,7 +216,12 @@ export async function generateLifeLibrary(profile, opts = {}) {
           ? await detectGenderWithGemini(gclient, referenceBuffer)
           : await detectGender(client, referenceImage)
         profile.gender = det.gender || undefined
-        manifest.gender = { value: det.gender, source: 'auto', caption: det.caption, backend: det.backend }
+        manifest.gender = {
+          value: det.gender,
+          source: 'auto',
+          caption: det.caption,
+          backend: det.backend
+        }
         onProgress({ type: 'gender-done', gender: det.gender, caption: det.caption })
       } catch (err) {
         manifest.gender = { value: null, source: 'auto', error: String(err.message || err) }
@@ -201,10 +234,13 @@ export async function generateLifeLibrary(profile, opts = {}) {
     for (let i = 0; i < plan.length; i++) {
       if (signal?.aborted) break // 중지 요청 — 진행분은 finally가 저장, 남은 장은 나중에 재개
       const item = plan[i]
-      // gemini는 시드 개념이 없다. seamfix는 보정 단계(ComfyUI)에 시드가 필요하므로 발급한다.
-      const seed = isGemini ? null : randomSeed()
-      const prompt = promptFor ? promptFor(profile, item) : composeScenePromptFor(mode, profile, item)
+      // gemini·equirect는 시드 개념이 없다. seamfix는 보정 단계(ComfyUI)에 시드가 필요하므로 발급한다.
+      const seed = isGemini || isEquirect ? null : randomSeed()
+      const prompt = promptFor
+        ? promptFor(profile, item)
+        : composeScenePromptFor(mode, profile, item)
       const references = referencesFor ? referencesFor(item) : []
+      const refMeta = referenceMetaFor ? referenceMetaFor(item) : null // { file, kind } — 재생성이 같은 레퍼런스 재사용
       const localFile = path.join(dir, `${item.id}.png`)
 
       // 재개: 이전 실행에서 성공한 장면은 건너뛴다. failed 표시된 장은 다시 시도한다.
@@ -212,7 +248,14 @@ export async function generateLifeLibrary(profile, opts = {}) {
       if (prev && !prev.failed && (await fileExists(localFile))) {
         manifest.images.push(prev)
         await writeManifest()
-        onProgress({ type: 'image-done', done: i + 1, total: plan.length, item, file: localFile, resumed: true })
+        onProgress({
+          type: 'image-done',
+          done: i + 1,
+          total: plan.length,
+          item,
+          file: localFile,
+          resumed: true
+        })
         continue
       }
 
@@ -233,10 +276,9 @@ export async function generateLifeLibrary(profile, opts = {}) {
           break
         }
         try {
-          if (isGemini) {
-            // 3인칭 부감 장면은 기본적으로 레퍼런스 없이 순수 텍스트→이미지 (prompt-builder 주석
-            // 참조) — referencesFor가 주어졌을 때만(cdb-crafter 과거~현재 단계) 그 순간의 실제
-            // 사진을 함께 보낸다.
+          if (isGemini || isEquirect) {
+            // 순수 텍스트→이미지. gemini=3인칭 부감(16:9), equirect=1인칭 360°(4:1). 둘 다 Flux 단계 없음.
+            // referencesFor가 주어졌을 때만(cdb-crafter 과거~현재 단계) 그 순간의 실제 사진을 함께 보낸다.
             const data = await gclient.generateImage({
               prompt,
               references,
@@ -247,6 +289,8 @@ export async function generateLifeLibrary(profile, opts = {}) {
             })
             await fs.writeFile(localFile, data)
           } else if (isSeamfix) {
+            // ⚠ LEGACY 분기 — mode==='seamfix'일 때만. 2026-07-22 equirect 통일로 새 생성은 여기 안 온다
+            // (config.workflow='equirect'). buildGeminiSeamFixWorkflow는 seamfix-legacy.js에서 가져온다.
             // B안: Gemini로 1인칭 360° 파노라마 생성 → ComfyUI Flux Fill로 좌우 이음매 보정.
             const data = await gclient.generateImage({
               prompt,
@@ -318,7 +362,13 @@ export async function generateLifeLibrary(profile, opts = {}) {
           }
           lastErr = err
           const more = attempt < sceneRetries
-          onProgress({ type: 'image-retry', item, attempt: attempt + 1, error: err.message, willRetry: more })
+          onProgress({
+            type: 'image-retry',
+            item,
+            attempt: attempt + 1,
+            error: err.message,
+            willRetry: more
+          })
           if (more) continue
         }
       }
@@ -335,6 +385,7 @@ export async function generateLifeLibrary(profile, opts = {}) {
           promptId,
           file: `${item.id}.png`,
           ...(srcFile ? { srcFile } : {}), // seamfix 원본 — edge 재연결이 재사용
+          ...(refMeta ? { referenceFile: refMeta.file, referenceKind: refMeta.kind } : {}), // 재생성용 레퍼런스
           elapsedMs: Date.now() - t0
         })
         await writeManifest() // 장마다 기록 — 중단돼도 진행분은 남는다
@@ -342,7 +393,15 @@ export async function generateLifeLibrary(profile, opts = {}) {
       } else {
         // 재시도까지 실패 — 그 장은 failed로 표시하고(파일 없음) 계속. admin에서 개별 재생성 가능.
         await fs.rm(localFile, { force: true }).catch(() => {}) // 반쯤 써진 파일 정리
-        manifest.images.push({ ...item, prompt, seed, promptId: null, file: `${item.id}.png`, failed: true })
+        manifest.images.push({
+          ...item,
+          prompt,
+          seed,
+          promptId: null,
+          file: `${item.id}.png`,
+          ...(refMeta ? { referenceFile: refMeta.file, referenceKind: refMeta.kind } : {}),
+          failed: true
+        })
         await writeManifest()
         onProgress({
           type: 'image-failed',

@@ -9,7 +9,8 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { generateLifeLibrary } from './life-library.js'
-import { composePanoramaScenePrompt } from './prompt-builder.js'
+import { composeScenePromptFor } from './prompt-builder.js'
+import { selectSceneReference } from './face-anchor.js'
 import {
   buildLifeGraphPlan,
   collectSessionPhotoURLs,
@@ -23,23 +24,34 @@ import {
   toGeneratorProfile,
   setProfileStatus,
   claimLifeGraphSession,
-  setLifeGraphSessionStatus
+  setLifeGraphSessionStatus,
+  upsertPersonaManifest,
+  uploadPersonaPanoramas
 } from './firestore-source.js'
 
 const noop = () => {}
 
-// composePanoramaScenePrompt는 "레퍼런스 이미지는 쓰지 않는다(순수 텍스트→이미지)"는 전제로
-// 튜닝된 프롬프트라 그 함수 자체는 건드리지 않는다(§12 — 다른 사람이 튜닝해둔 걸 임의로 바꾸지
-// 않기). 대신 실제 사진을 레퍼런스로 함께 보낼 때만, 그 사진을 실제로 써서 변형하라는 지시문을
-// 앞에 붙인 별도 래퍼를 쓴다. 이게 없으면 Gemini가 참조 이미지를 무시하고(텍스트 지시가 사진
-// 얘기를 전혀 안 하므로) 전혀 무관한 장면을 만들어버린다(실측: "자전거 타고 놀기" + protect 사진
-// → 엉뚱한 외국 아기 사진이 나옴).
-const REFERENCE_PHOTO_PREFIX =
-  'The attached photograph is a real photo of this exact moment — use it as the actual source for this scene, ' +
-  'keeping its real place, objects, colors and composition recognizable, not as loose inspiration for a different scene. '
-function composePanoramaScenePromptFromPhoto(profile, item) {
-  return REFERENCE_PHOTO_PREFIX + composePanoramaScenePrompt(profile, item)
+// 완료된 라이브러리의 파노라마 이미지를 Firebase Storage(generatedPanoramaImages)에 올린다 — 다른
+// 머신에서 admin 검토 시 hydrate(ensurePersonaMediaFromFirebase)로 이미지를 받아올 수 있게 한다.
+// manifest(프롬프트·장면)는 이미 onManifest로 정본화됐고 여기선 이미지 바이트만. best-effort —
+// 업로드가 실패해도 생성 완료 자체는 유지한다(로컬엔 이미 다 있다).
+async function uploadPanoramasBestEffort(pid, outDir, manifest, log) {
+  try {
+    const r = await uploadPersonaPanoramas({
+      profile: manifest.profile,
+      personaId: pid,
+      dir: path.join(outDir, pid),
+      images: manifest.images
+    })
+    log(`  ☁ 파노라마 ${r.count}장 Firebase 업로드`)
+  } catch (err) {
+    log(`  ⚠ 파노라마 Firebase 업로드 실패(무시): ${err.message}`)
+  }
 }
+
+// 장면별 레퍼런스·프롬프트 접두어 규칙은 face-anchor.js(selectSceneReference)에 단일 정의한다 —
+// 재생성(admin-server)이 같은 규칙을 재사용해 "프롬프트는 첨부를 쓰라는데 첨부가 없는" 불일치를
+// 막는다. 장면 프롬프트 함수(§12로 튜닝됨)는 건드리지 않고 접두어만 앞에 얹는다.
 
 /**
  * 프로필 한 건 처리.
@@ -74,6 +86,16 @@ export async function processProfile(
 
     // 2) 생애 라이브러리 생성 (10단계 × perStage)
     const genProfile = toGeneratorProfile(profile, photoPaths)
+    // 모든 장면을 실제 얼굴에 앵커링한다: 성인 나이는 현재 얼굴 사진을 레퍼런스로 실어 같은 인물로
+    // 렌더하고 그 나이로 변환(과거=젊게, 미래=늙게). 아동 나이는 성인 얼굴을 de-age하면 IMAGE_SAFETY에
+    // 걸리는데 occupation 스키마엔 그 시절 실제 사진이 없으므로 앵커 없이 텍스트로 둔다(face-anchor.js 규칙).
+    // 재생성이 같은 사진을 다시 실을 수 있게 얼굴 앵커의 상대경로(라이브러리/pid 기준)를 manifest에 기록한다.
+    const personaDir = path.join(outDir, pid)
+    const faceAnchor = photoPaths.length ? await fs.readFile(photoPaths[0]) : null
+    const faceRef = faceAnchor
+      ? { buffer: faceAnchor, path: path.relative(personaDir, photoPaths[0]) }
+      : null
+    const selectFor = (item) => selectSceneReference(item, { faceRef })
     const t0 = Date.now()
     const result = await generateLifeLibrary(genProfile, {
       host: config.host,
@@ -87,6 +109,20 @@ export async function processProfile(
       sceneRetries: config.sceneRetries, // 장면 실패 시 재시도 횟수 (undefined면 기본 1)
       signal, // 중지 버튼 신호
       gemini: config.gemini, // 호출자가 resolveGeminiConfig로 apiKeyPath를 절대경로화해서 넘긴다
+      // 얼굴 앵커: 레퍼런스 이미지·나이 변환 접두어·기록용 메타를 한 규칙(selectFor)에서 뽑는다.
+      referencesFor: (item) => {
+        const r = selectFor(item).reference
+        return r ? [r.buffer] : []
+      },
+      promptFor: (p, item) =>
+        selectFor(item).prefix + composeScenePromptFor(config.workflow, p, item),
+      referenceMetaFor: (item) => {
+        const s = selectFor(item)
+        return s.reference ? { file: s.reference.path, kind: s.kind } : null
+      },
+      // 장면이 기록될 때마다 Firebase 정본(personaManifests)에 upsert → 원격 뷰어가 생성 중인
+      // 장면 목록을 실시간으로 받아본다(이미지 바이트는 올리지 않음 — manifest만).
+      onManifest: (m) => upsertPersonaManifest(m),
       onProgress
     })
     const elapsedMs = Date.now() - t0
@@ -117,6 +153,7 @@ export async function processProfile(
     log(
       `✓ 완료: ${label} — ${imageCount}장${failedCount ? ` (실패 ${failedCount}장 건너뜀 — admin 재생성)` : ''} (${(elapsedMs / 1000).toFixed(1)}s)`
     )
+    await uploadPanoramasBestEffort(pid, outDir, result.manifest, log)
     return { claimed: true, ok: true, imageCount, failedCount, elapsedMs }
   } catch (err) {
     log(`✗ 실패: ${label} — ${err.message}`)
@@ -178,7 +215,29 @@ export async function processLifeGraphSession(
     for (let i = 0; i < stageIds.length; i++) {
       stagePhotoBuffers[stageIds[i]] = await fs.readFile(stagePhotoLocalPaths[i])
     }
-    if (stageIds.length > 0) log(`  단계별 사진 ${stageIds.length}장 다운로드 (${stageIds.join(', ')})`)
+    if (stageIds.length > 0)
+      log(`  단계별 사진 ${stageIds.length}장 다운로드 (${stageIds.join(', ')})`)
+
+    // 얼굴 앵커 = 가장 최근(현재)에 가까운 제출 사진(collectSessionPhotoURLs가 최신 과거부터 고른다).
+    // 그 순간 실제 사진이 없는 장면에서 이 얼굴로 정체성을 이어 그 나이로 변환한다(face-anchor.js 규칙).
+    // 재생성이 같은 사진을 다시 실을 수 있게 상대경로(라이브러리/pid 기준)를 함께 들고 다닌다.
+    const personaDir = path.join(outDir, pid)
+    const faceAnchor = photoPaths.length ? await fs.readFile(photoPaths[0]) : null
+    const faceRef = faceAnchor
+      ? { buffer: faceAnchor, path: path.relative(personaDir, photoPaths[0]) }
+      : null
+    const stageRelPathById = {}
+    stageIds.forEach((sid, idx) => {
+      stageRelPathById[sid] = path.relative(personaDir, stagePhotoLocalPaths[idx])
+    })
+    const selectFor = (item) =>
+      selectSceneReference(item, {
+        stageRef:
+          item.stageId && stagePhotoBuffers[item.stageId]
+            ? { buffer: stagePhotoBuffers[item.stageId], path: stageRelPathById[item.stageId] }
+            : null,
+        faceRef
+      })
 
     // 1.8) 1차 합성 — 세션의 7단계 text 전체를 한 번에 LLM에 넣어, 옛 occupation 플로우의
     // STAGES와 같은 골격(나이 3·7·14·18·25·32·45·55·68·82마다 장면 후보 3개)으로 이 사람 고유의
@@ -191,8 +250,9 @@ export async function processLifeGraphSession(
     const ageScenes = await synthesizeAgeScenes(synthClient, profile, sessionPoints)
     log(`  나이별 장면 합성 완료: ${Object.keys(ageScenes).length}개 나이 (LLM), 나머지는 폴백`)
 
-    // 2) 생애 라이브러리 생성 — occupation 템플릿(buildScenePlan) 대신 이 세션의 실제 장면
-    // plan을, composeScenePromptFor 대신 파노라마 프롬프트 함수를 그대로 넘긴다. Gemini/ComfyUI
+    // 2) 생애 라이브러리 생성 — occupation 템플릿(buildScenePlan) 대신 이 세션의 실제 장면 plan을
+    // 넘긴다. 프롬프트는 occupation과 동일하게 config.workflow(현재 equirect=김주만 gaze 구조)를
+    // 따르는 composeScenePromptFor를 쓴다 — 두 흐름을 같은 구조로 통일(2026-07-22). Gemini/ComfyUI
     // 호출부(retry·resume·manifest 기록)는 generateLifeLibrary 내부 코드 그대로 — 안 건드림.
     const t0 = Date.now()
     const result = await generateLifeLibrary(
@@ -200,7 +260,7 @@ export async function processLifeGraphSession(
       {
         host: config.host,
         outDir,
-        workflow: 'seamfix',
+        workflow: config.workflow, // occupation과 동일 — equirect(gaze)로 통일. config가 유일 소스.
         panorama: config.panorama,
         seamfix: config.seamfix,
         timeoutMs: config.timeoutMs,
@@ -209,16 +269,23 @@ export async function processLifeGraphSession(
         gemini: config.gemini,
         pid,
         plan: buildLifeGraphPlan(profile, sessionPoints, ageScenes), // 나이 10개 × 3장 = 최대 30장
-        // 그 단계에 실제 사진이 있으면(과거~현재만 해당) "이 사진을 실제로 써서 변형하라"는
-        // 지시문이 붙은 프롬프트를, 없으면(미래 등) 원래의 순수 텍스트 프롬프트를 그대로 쓴다.
-        promptFor: (profile, item) =>
-          item.stageId && stagePhotoBuffers[item.stageId]
-            ? composePanoramaScenePromptFromPhoto(profile, item)
-            : composePanoramaScenePrompt(profile, item),
-        // 과거~현재 장면(item.stageId가 있고 그 단계에 사진이 있을 때)만 그 사진을 레퍼런스로
-        // 함께 보낸다. 미래 장면은 stagePhotoBuffers에 항목이 없어 자연히 빈 배열이 된다.
-        referencesFor: (item) => (item.stageId && stagePhotoBuffers[item.stageId] ? [stagePhotoBuffers[item.stageId]] : []),
+        // 장면별 레퍼런스·프롬프트·기록 메타를 한 규칙(selectFor=face-anchor.js)에서 뽑는다:
+        //  (1) 그 순간의 실제 제출 사진이 있으면 그걸(실제 얼굴·장소 보존, 과거·아동 커버),
+        //  (2) 없고 성인 나이면 현재 얼굴 앵커로 그 나이 변환(과거=젊게, 미래=늙게),
+        //  (3) 없고 아동 나이면 앵커 없이 텍스트로(성인→아동 de-age 세이프티 회피).
+        promptFor: (p, item) =>
+          selectFor(item).prefix + composeScenePromptFor(config.workflow, p, item),
+        referencesFor: (item) => {
+          const r = selectFor(item).reference
+          return r ? [r.buffer] : []
+        },
+        referenceMetaFor: (item) => {
+          const s = selectFor(item)
+          return s.reference ? { file: s.reference.path, kind: s.kind } : null
+        },
         skipSeamfix: config.lifeGraphSkipSeamfix, // 테스트 단계: true면 ComfyUI 이음매 보정은 나중으로 미룸
+        // occupation 경로와 동일 — 장면마다 Firebase 정본 manifest upsert(실시간 원격 보기).
+        onManifest: (m) => upsertPersonaManifest(m),
         onProgress
       }
     )
@@ -248,6 +315,7 @@ export async function processLifeGraphSession(
     log(
       `✓ 완료: ${label} — ${imageCount}장${failedCount ? ` (실패 ${failedCount}장 건너뜀 — admin 재생성)` : ''} (${(elapsedMs / 1000).toFixed(1)}s)`
     )
+    await uploadPanoramasBestEffort(pid, outDir, result.manifest, log)
     return { claimed: true, ok: true, imageCount, failedCount, elapsedMs }
   } catch (err) {
     log(`✗ 실패: ${label} — ${err.message}`)

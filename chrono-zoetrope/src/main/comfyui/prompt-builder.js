@@ -335,10 +335,41 @@ export const SEAM_BAND_PROMPT =
  *   sdxl → 3인칭 부감 태그형 / gemini → 3인칭 부감 서술형 /
  *   seamfix → 1인칭 360° 파노라마(B안) / 그 외(kontext, 구 hybrid) → 편집형 부감
  */
+// equirect 360° 기하 강제 지시(장면 내 간판·현수막 텍스트까지 억제).
+const EQUIRECT_GEO =
+  ` TRUE equirectangular projection (spherical panorama unwrapped): the horizon runs straight across the vertical middle;` +
+  ` the floor/ground sweeps across the ENTIRE bottom stretching toward the nadir (straight down) and the ceiling/sky across the ENTIRE top toward the zenith;` +
+  ` straight lines (window frames, ceiling edges, desks, poles) visibly BOW and CURVE away from the center as in a real 360 camera capture;` +
+  ` the place wraps completely around the single viewpoint so the far LEFT and far RIGHT edges are the same direction behind the camera.` +
+  ` Photorealistic, natural light. Absolutely NO text anywhere — no signs, no banners, no writing on walls, boards or screens, no watermark; not an illustration.`
+
+/**
+ * 1인칭 360° equirect gaze 프롬프트 — 주인공이 화면 중앙에서 그 장면의 행동을 능동적으로 수행하고,
+ * 360°로 그 행동의 맥락(주변)을 보여준다. 주인공은 "그냥 서 있는" 역할이 아니라 그 순간의 주체다.
+ * 다른 인물은 배경 조연일 뿐 주인공의 역할을 대신하지 않으며 얼굴은 붓으로 지운다. 진짜 360 기하.
+ * 순수 Gemini 생성이라 Flux(seamfix 이음매·kontext) 단계가 없다.
+ */
+export function composeEquirectGazePrompt(profile, item) {
+  const who = `a ${item.age}-year-old ${subjectNoun(item.age, profile.gender)}`
+  const extra = (profile.descriptors || []).join(', ')
+  const future = item.isPast ? '' : ` An imagined moment further along in this life.`
+  return (
+    `A 360-degree equirectangular panoramic photograph, captured with a 360 camera from a single fixed point at the very heart of this moment: ${item.scene}.` +
+    ` At the exact CENTER of the frame is ${who} — the person whose memory this is and the one and only main subject.` +
+    ` THEY are unmistakably the one performing the action of this moment, fully and actively engaged in it (not merely standing or posing); their face is clearly visible and in sharp focus, though they need not face the camera.` +
+    ` The place wraps a full 360 degrees around them, revealing the surroundings and the context of what they are doing.` +
+    ` Anyone else present is only a secondary bystander in the background and never takes over the main action — the central person is the sole active protagonist. Every other person's face is wiped away like a soft featureless smear of paint, smooth, painterly, not distorted, not grotesque, like a face erased from memory.` +
+    EQUIRECT_GEO +
+    future +
+    (extra ? ` ${extra}.` : '')
+  )
+}
+
 export function composeScenePromptFor(mode, profile, item) {
   if (mode === 'sdxl') return composeSdxlPrompt(profile, item)
   if (mode === 'gemini') return composeGeminiScenePrompt(profile, item)
   if (mode === 'seamfix') return composePanoramaScenePrompt(profile, item)
+  if (mode === 'equirect') return composeEquirectGazePrompt(profile, item)
   return composeKontextPrompt(profile, item)
 }
 
@@ -350,8 +381,9 @@ export function composePanoramaScenePrompt(profile, item) {
   return (
     `360 degree equirectangular panorama, seamless horizontal wrap, first-person immersive view:` +
     ` standing inside the scene and surrounded by it on every side, the place of this memory wrapping all the way around the viewer.` +
-    ` The surrounding environment, seen from within: ${item.scene}.` +
-    ` ${who} is present in this moment, seen from inside the scene; every other person's face is wiped away like a smear of paint —` +
+    ` The surrounding environment of this moment, seen from within: ${item.scene}.` +
+    ` At the center of it is ${who} — the one and only main subject, actively and unmistakably performing the action of this moment (not merely standing or posing), their face clearly visible and in focus.` +
+    ` Any other people are only secondary bystanders in the background and never take over the action; every other person's face is wiped away like a smear of paint —` +
     ` smooth, soft, featureless and blurred, painterly, not distorted, not grotesque, simply an indistinct smudge where the face would be,` +
     ` like a face erased from memory.` +
     ` One continuous unbroken environment with no visible seam, edge or border; the far left and far right flow into one another.` +

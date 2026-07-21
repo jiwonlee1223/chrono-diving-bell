@@ -413,6 +413,10 @@
         background: rgba(255, 110, 110, 0.16);
         color: #ff8585;
       }
+      .badge.stopped {
+        background: rgba(185, 185, 195, 0.16);
+        color: #bcbcc8;
+      }
       .qempty {
         font-size: 12px;
         color: rgba(255, 255, 255, 0.4);
@@ -453,7 +457,8 @@
         opacity: 0.5;
         cursor: default;
       }
-      .gen-btn {
+      .gen-btn,
+      .resume-btn {
         margin-left: 2px;
         font-size: 11px;
         font-weight: 600;
@@ -464,10 +469,12 @@
         background: transparent;
         color: #8de8a8;
       }
-      .gen-btn:hover {
+      .gen-btn:hover,
+      .resume-btn:hover {
         background: rgba(120, 220, 150, 0.16);
       }
-      .gen-btn:disabled {
+      .gen-btn:disabled,
+      .resume-btn:disabled {
         opacity: 0.5;
         cursor: default;
       }
@@ -735,12 +742,21 @@
       }
 
       async function loadManifest() {
+        let m
         try {
-          manifest = await api(`/api/personas/${pid}`)
+          m = await api(`/api/personas/${pid}`)
         } catch (err) {
           // 클라우드 정본 받기(hydrate)에 실패했거나 로컬/정본 모두 없을 때.
           $('#cur-name').textContent = personas.find((x) => x.personaId === pid)?.name || pid
           $('#main').innerHTML = `<p style="color:#ff9a9a">불러오기 실패: ${err.message}</p>`
+          return
+        }
+        manifest = m
+        // 생성은 시작됐지만 첫 장면이 아직 없음(_pending) — 에러가 아니라 대기 상태.
+        // 실시간 보기 폴링(pollQueue)이 새 장면이 저장되는 대로 다시 그린다.
+        if (m._pending || !m.images?.length) {
+          $('#cur-name').textContent = m.name || personas.find((x) => x.personaId === pid)?.name || pid
+          $('#main').innerHTML = '<p style="color:#888">아직 첫 장면 생성 전입니다 — 곧 나타납니다…</p>'
           return
         }
         render()
@@ -804,14 +820,11 @@
         const media = entry.failed
           ? `<div class="card-failed" style="aspect-ratio:${ar}">생성 실패 — 재생성 필요</div>`
           : `<img src="${imgUrl(entry)}" loading="lazy" style="aspect-ratio:${ar}" title="${entry.prompt.replaceAll('"', '&quot;')}" />`
-        // edge 재연결: seamfix 워크플로우 + 보관된 Gemini 원본(srcFile)이 있을 때만.
-        const canReseam = manifest && manifest.workflow === 'seamfix' && entry.srcFile && !entry.failed
         div.innerHTML = `
         ${media}
         <div class="meta"><span class="id">${entry.id}</span><span class="sub">${sub}</span>${entry.failed ? '<span class="badge error">실패</span>' : ''}</div>
         <div class="actions">
           <button class="re" title="Gemini부터 전체 다시 생성">재생성</button>
-          ${canReseam ? '<button class="reseam" title="Gemini 원본은 두고 seamless 이음매만 다시 붙임 (재과금 없음)">edge 재연결</button>' : ''}
         </div>`
 
         const imgEl = $('img', div)
@@ -823,9 +836,7 @@
           })
         $('.re', div).addEventListener('click', async () => {
           const btn = $('.re', div)
-          const other = $('.reseam', div)
           btn.disabled = true
-          if (other) other.disabled = true
           btn.textContent = '생성 중…'
           setStatus(`${entry.id} 재생성 중 (~15초)`)
           try {
@@ -842,33 +853,8 @@
             setStatus(`재생성 실패: ${e.message}`)
             btn.disabled = false
             btn.textContent = '재생성'
-            if (other) other.disabled = false
           }
         })
-        const reseamBtn = $('.reseam', div)
-        if (reseamBtn)
-          reseamBtn.addEventListener('click', async () => {
-            const re = $('.re', div)
-            reseamBtn.disabled = true
-            if (re) re.disabled = true
-            reseamBtn.textContent = '재연결 중…'
-            setStatus(`${entry.id} edge 재연결 중 (~60초, Gemini 재생성 없음)`)
-            try {
-              const out = await api(`/api/personas/${pid}/reseam`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ id: entry.id })
-              })
-              Object.assign(entry, out.entry)
-              setStatus(`${entry.id} edge 재연결 완료`)
-              render()
-            } catch (e) {
-              setStatus(`edge 재연결 실패: ${e.message}`)
-              reseamBtn.disabled = false
-              reseamBtn.textContent = 'edge 재연결'
-              if (re) re.disabled = false
-            }
-          })
         return div
       }
 
@@ -1005,6 +991,37 @@
         postVideo('/api/video/stop', '일시정지 요청 — 현재 클립까지 마치고 멈춥니다 (이어서 생성 가능)', '일시정지 실패', { kind: 'pause' })
       const stopVideo = () =>
         postVideo('/api/video/stop', '중단 요청 — 현재 클립까지 마치고 멈춥니다 (만든 클립은 유지)', '중단 실패', { kind: 'stop' })
+      // 이미지 생성 취소 — postVideo와 달리 mountVideo 대신 큐만 갱신한다.
+      async function postGen(path, okMsg, failMsg, body = {}) {
+        try {
+          await api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+          setStatus(okMsg)
+          pollQueue()
+        } catch (e) {
+          setStatus(`${failMsg}: ${e.message}`)
+        }
+      }
+      const pauseGen = () =>
+        postGen('/api/stop', '일시정지 요청 — 현재 장면까지 마치고 멈춥니다 (재개하면 같은 항목을 이어서)', '일시정지 실패', { kind: 'pause' })
+      const stopGen = () =>
+        postGen('/api/stop', '중지 요청 — 이 항목을 세워두고 다음 대기 항목으로 넘어갑니다 (진행분은 저장·재개 가능)', '중지 실패', { kind: 'stop' })
+      // '중지'로 세워둔 항목을 다시 생성(남은 장면부터 이어서).
+      async function resumeProfile(id, btn) {
+        if (btn) {
+          btn.disabled = true
+          btn.textContent = '재개 중…'
+        }
+        try {
+          await api('/api/resume', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) })
+          setStatus(`재개 요청: ${id} — 남은 장면부터 이어서 생성`)
+        } catch (e) {
+          setStatus(`재개 실패: ${e.message}`)
+          if (btn) {
+            btn.disabled = false
+            btn.textContent = '재개'
+          }
+        }
+      }
       async function retryProfile(id, btn) {
         if (btn) {
           btn.disabled = true
@@ -1047,7 +1064,10 @@
         else if (t.id === 'video-genclips') genClips()
         else if (t.id === 'video-pause') pauseVideo()
         else if (t.id === 'video-stop') stopVideo()
+        else if (t.id === 'gen-pause') pauseGen()
+        else if (t.id === 'gen-stop') stopGen()
         else if (t.classList.contains('retry-btn')) retryProfile(t.dataset.id, t)
+        else if (t.classList.contains('resume-btn')) resumeProfile(t.dataset.id, t)
         else if (t.classList.contains('gen-btn')) startLifeGraph(t.dataset.id, t)
       })
 
@@ -1124,7 +1144,7 @@
       let autoOn = true
       let lastCompletionAt = 0
       let liveSig = '' // 실시간 보기: 마지막으로 그린 manifest의 장면 수 — 바뀔 때만 재렌더
-      const QLABEL = { submitted: '대기', generating: '생성중', error: '실패' }
+      const QLABEL = { submitted: '대기', generating: '생성중', error: '실패', stopped: '정지됨' }
 
       async function pollQueue() {
         let data
@@ -1189,7 +1209,9 @@
           now.innerHTML =
             `생성 중 <b>${ci.name || ci.pid}</b>${prog}` +
             (watching ? '' : ci.personaId ? ` <button id="follow-live">실시간 보기</button>` : '') +
-            (data.viewOnly ? '' : ` <button id="gen-stop" class="stop-btn">중지</button>`)
+            (data.viewOnly
+              ? ''
+              : ` <button id="gen-pause" class="stop-btn">일시정지</button> <button id="gen-stop" class="stop-btn">중지</button>`)
           const fl = $('#follow-live')
           if (fl)
             fl.onclick = async () => {
@@ -1198,18 +1220,7 @@
               liveSig = ''
               await loadManifest().catch(() => setStatus('아직 첫 장 생성 전입니다 — 곧 나타납니다.'))
             }
-          const gs = $('#gen-stop')
-          if (gs)
-            gs.onclick = async () => {
-              gs.disabled = true
-              gs.textContent = '중지 중…'
-              try {
-                await api('/api/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-                setStatus('생성 중지 요청 — 현재 장면까지 마치고 멈춥니다 (진행분은 저장·재개 가능)')
-              } catch (e) {
-                setStatus(`중지 실패: ${e.message}`)
-              }
-            }
+          // 일시정지·중지 버튼은 아래 이벤트 위임(document click)에서 처리한다.
         } else {
           now.textContent = data.queue.some((q) => q.status === 'submitted') ? '대기 중…' : '유휴'
         }
@@ -1220,11 +1231,14 @@
         if (ci?.personaId && pid === ci.personaId) {
           api(`/api/personas/${pid}`)
             .then((m) => {
-              const sig = `${m.images.length}`
+              const sig = `${m.images?.length || 0}`
               if (sig !== liveSig) {
                 liveSig = sig
                 manifest = m
-                render()
+                // 첫 장면 전(_pending·빈 목록)이면 대기 안내만, 장면이 생기면 그때부터 그린다.
+                if (m._pending || !m.images?.length)
+                  $('#main').innerHTML = '<p style="color:#888">아직 첫 장면 생성 전입니다 — 곧 나타납니다…</p>'
+                else render()
               }
             })
             .catch(() => {}) // 생성 극초반엔 manifest가 아직 없다 — 다음 폴링에서 재시도
@@ -1245,6 +1259,10 @@
                 `<span class="badge ${q.status}">${QLABEL[q.status] || q.status}</span>` +
                 (q.status === 'error' && !data.viewOnly
                   ? `<button class="retry-btn" data-id="${q.id}">재실행</button>`
+                  : '') +
+                // 중지로 세워둔 항목 — 남은 장면부터 이어서 생성.
+                (q.status === 'stopped' && !data.viewOnly
+                  ? `<button class="resume-btn" data-id="${q.id}">재개</button>`
                   : '') +
                 // 인생그래프 세션은 자동 생성이 없다 — "대기" 상태에 이 버튼이 유일한 시작 지점.
                 (q.kind === 'lifegraph' && q.status === 'submitted' && !data.viewOnly

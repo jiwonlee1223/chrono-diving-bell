@@ -24,11 +24,14 @@ import {
   resolveGeminiApiKey,
   resolveGeminiConfig
 } from '../src/main/comfyui/gemini-client.js'
-import { buildGeminiSeamFixWorkflow, randomSeed } from '../src/main/comfyui/workflows.js'
+import { randomSeed } from '../src/main/comfyui/workflows.js'
+import { buildGeminiSeamFixWorkflow } from '../src/main/comfyui/seamfix-legacy.js' // LEGACY: seamfix 이음매 보정 프로브
 import { buildScenePlan, composePanoramaScenePrompt } from '../src/main/comfyui/prompt-builder.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const config = JSON.parse(await fs.readFile(path.join(root, 'src/main/config/comfyui.json'), 'utf-8'))
+const config = JSON.parse(
+  await fs.readFile(path.join(root, 'src/main/config/comfyui.json'), 'utf-8')
+)
 const gemini = resolveGeminiConfig(config.gemini, root)
 
 // CLI: 정수는 나이, --band/--denoise/--width/--height 는 보정 파라미터.
@@ -68,7 +71,9 @@ await gclient.ping()
 await client.ping()
 const sceneModel = gemini.sceneModel || gemini.model
 const dnLabel = denoise ?? (bandModel === 'flux-fill' ? 1.0 : 0.7)
-console.log(`Gemini scene: ${sceneModel} · 보정 ${bandModel} band ${bandWidth}px denoise ${dnLabel} · ${width}×${height}\n`)
+console.log(
+  `Gemini scene: ${sceneModel} · 보정 ${bandModel} band ${bandWidth}px denoise ${dnLabel} · ${width}×${height}\n`
+)
 
 const plan = buildScenePlan(profile, { perStage: 3 })
 
