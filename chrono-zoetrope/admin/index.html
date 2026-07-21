@@ -177,6 +177,29 @@
         color: #7de08c;
         font-weight: 600;
       }
+      /* 리스트 항목 뱃지 — 로컬/클라우드 위치와 생성 상태를 한눈에. */
+      .pitem .pbadge {
+        font-size: 10px;
+        margin-left: 6px;
+        padding: 0 5px;
+        border-radius: 4px;
+        vertical-align: middle;
+      }
+      .pitem .pb-cloud {
+        color: #8fc7ff;
+        border: 1px solid rgba(143, 199, 255, 0.4);
+      }
+      .pitem .pb-pending {
+        color: #ffd27d;
+        border: 1px solid rgba(255, 210, 125, 0.4);
+      }
+      .pitem .pb-error {
+        color: #ff9a9a;
+        border: 1px solid rgba(255, 154, 154, 0.4);
+      }
+      .pitem.notready .pname {
+        opacity: 0.65;
+      }
 
       main {
         padding: 20px 22px 60px;
@@ -632,20 +655,48 @@
           : personas
         if (shown.length === 0) {
           el.innerHTML = `<div class="side-empty">${
-            personas.length === 0 ? '아직 생성된 persona가 없습니다.' : '검색 결과 없음'
+            personas.length === 0 ? '아직 제출/생성된 사용자가 없습니다.' : '검색 결과 없음'
           }</div>`
           return
         }
         el.innerHTML = shown
-          .map(
-            (p) =>
-              `<button class="pitem${p.personaId === pid ? ' active' : ''}" data-pid="${p.personaId}">` +
-              `<span class="pname">${p.name || p.personaId}</span>` +
-              `<span class="pmeta">${p.total}장 · ${timeAgo(p.createdAt)}` +
+          .map((p) => {
+            const ready = isReviewable(p)
+            // 뱃지: 로컬에 없고 클라우드 정본만 있으면 ☁(선택 시 자동으로 받아옴),
+            //       아직 생성 전이면 대기/생성중, 실패면 오류.
+            let badge = ''
+            if (ready && !p.local && p.cloud) badge = `<span class="pbadge pb-cloud" title="클라우드 정본 — 선택하면 받아옵니다">☁</span>`
+            else if (!ready) {
+              const st = pendingLabel(p)
+              const cls = st.kind === 'error' ? 'pb-error' : 'pb-pending'
+              badge = `<span class="pbadge ${cls}">${st.text}</span>`
+            }
+            const meta = ready
+              ? `${p.total || p.imageCount || 0}장${p.videoCount ? ` · 🎬${p.videoCount}` : ''}${p.reel ? ' · 릴' : ''} · ${timeAgo(p.createdAt)}`
+              : timeAgo(p.createdAt)
+            return (
+              `<button class="pitem${p.personaId === pid ? ' active' : ''}${ready ? '' : ' notready'}" data-pid="${p.personaId}" data-ready="${ready ? 1 : 0}">` +
+              `<span class="pname">${p.name || p.personaId}${badge}</span>` +
+              `<span class="pmeta">${meta}` +
               `${p.personaId === sessionPid ? ' · <span class="psession">● 세션</span>' : ''}</span>` +
               `</button>`
-          )
+            )
+          })
           .join('')
+      }
+
+      // 리뷰 가능 = manifest 정본이 로컬에 있거나(local) Firebase에 있어(hasManifest) 받아올 수 있는 경우.
+      // (generatedPanoramaImages만 있고 manifest가 없으면 재구성이 안 되므로 '대기'로 둔다 — sync:manifests 필요.)
+      function isReviewable(p) {
+        return Boolean(p.local || p.hasManifest)
+      }
+
+      // 아직 생성 전인 제출의 상태 라벨(직업 flow status 또는 인생그래프 세션 상태 요약).
+      function pendingLabel(p) {
+        const vals = [p.status, ...(p.sessions ? Object.values(p.sessions) : [])].filter(Boolean)
+        if (vals.includes('error')) return { kind: 'error', text: '오류' }
+        if (vals.includes('generating')) return { kind: 'pending', text: '생성중' }
+        return { kind: 'pending', text: '대기' }
       }
 
       // keep=true면 현재 보고 있던 persona 선택을 유지한 채 목록만 갱신한다
@@ -669,13 +720,29 @@
           renderPersonaList()
           return // 선택 유지, manifest 재로딩 생략
         }
-        pid = list[0].personaId
+        // 기본 선택은 '리뷰 가능한' 첫 항목(생성 전 제출은 건너뜀). 없으면 안내만.
+        const firstReady = list.find((p) => isReviewable(p))
+        if (!firstReady) {
+          pid = null
+          renderPersonaList()
+          $('#main').innerHTML =
+            '<p style="color:#888">제출은 있으나 아직 생성된 사용자가 없습니다. 생성이 끝나면 여기서 리뷰할 수 있습니다.</p>'
+          return
+        }
+        pid = firstReady.personaId
         renderPersonaList()
         await loadManifest()
       }
 
       async function loadManifest() {
-        manifest = await api(`/api/personas/${pid}`)
+        try {
+          manifest = await api(`/api/personas/${pid}`)
+        } catch (err) {
+          // 클라우드 정본 받기(hydrate)에 실패했거나 로컬/정본 모두 없을 때.
+          $('#cur-name').textContent = personas.find((x) => x.personaId === pid)?.name || pid
+          $('#main').innerHTML = `<p style="color:#ff9a9a">불러오기 실패: ${err.message}</p>`
+          return
+        }
         render()
       }
 
@@ -990,7 +1057,15 @@
         if (!item || item.dataset.pid === pid) return
         pid = item.dataset.pid
         renderPersonaList() // 강조 즉시 이동
-        loadManifest()
+        if (item.dataset.ready === '0') {
+          // 아직 생성 전 — 리뷰할 게 없다. 상태만 안내하고 manifest는 로딩하지 않는다.
+          const p = personas.find((x) => x.personaId === pid)
+          $('#cur-name').textContent = p?.name || pid
+          $('#main').innerHTML =
+            `<p style="color:#c9a86a">아직 생성 전인 제출입니다 (${pendingLabel(p).text}). 생성이 끝나면 여기서 리뷰할 수 있습니다.</p>`
+          return
+        }
+        loadManifest() // 클라우드 정본만 있으면 서버가 자동으로 받아온다(hydrate)
       })
       $('#persona-search').addEventListener('input', (e) => {
         personaFilter = e.target.value

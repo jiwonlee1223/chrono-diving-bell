@@ -1,0 +1,94 @@
+주마등 인생그래프 앱(cdb-crafter) — Firebase 보안 규칙
+=======================================================
+
+cdb-crafter는 profile-collector와 같은 chrono-diving-bell 프로젝트·같은 `profiles`
+컬렉션을 공유한다. 따라서 아래 규칙은 profile-collector의 규칙을 확장한 "통합본"이며,
+콘솔에 이 통합본을 붙여넣으면 두 수집 앱(직업 수집 + 인생그래프)이 모두 동작한다.
+
+두 수집 앱의 문서 shape가 다르다:
+  - profile-collector(직업): { name, birthDate, occupation, photoURLs, status, ... }
+  - cdb-crafter(인생그래프):  { name, birthDate, age, first|second|third, ...Status, ...SubmittedAt }
+그래서 create/update 규칙이 두 shape를 모두 받아들이도록 OR로 넓혔다.
+
+또 하나 결정적 차이: cdb-crafter는 세션 2·3을 이어서 그리려고 자기 프로필을 다시
+'읽는다'(loadProfile). profile-collector는 쓰기 전용이라 read를 완전히 닫아뒀지만
+(allow read: if false), 인생그래프 앱은 read가 필요하다. 아래 [읽기 결정] 참조.
+
+
+── Firestore 규칙 (콘솔 → Firestore Database → 규칙) ──────────────────
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /profiles/{personaId} {
+      // [읽기 결정 — 확정] 운용: 관람객은 '자기 폰'에서 집→현장(며칠 뒤) 재로그인해 이어 그린다.
+      // 이 흐름에선 익명 uid가 방문마다(iOS는 7일 미사용 시 저장소 삭제) 달라져 소유자 모델이
+      // '이어 그리기'를 깨뜨린다. 그래서 read를 열되, get(단건 조회)만 허용하고 list(컬렉션 훑기)는
+      // 막아 대량 수집을 원천 차단한다. crafter는 getDoc(단건)만 하므로 완전 호환.
+      //   - get:  정확한 personaId(이름_생년월일6자)를 아는 경우 그 문서 1개만 조회 가능
+      //   - list: 아무도 불가 → 명단 통째로 긁기 차단
+      // 참여 종료 후 앱 링크(도메인) 차단이 targeted 조회 통로도 닫는 보조 통제.
+      allow get: if request.auth != null;
+      allow list: if false;
+
+      allow create, update: if request.auth != null
+        && request.resource.data.name is string
+        && request.resource.data.birthDate is string
+        && (
+          // 직업 수집(profile-collector) shape
+          (request.resource.data.occupation is string
+            && request.resource.data.photoURLs is list)
+          // 인생그래프(cdb-crafter) shape — first/second/third 중 하나 이상 포함
+          || request.resource.data.keys().hasAny(['first', 'second', 'third'])
+        );
+
+      allow delete: if false;
+    }
+
+    // 생성/어드민 측이 쓰는 컬렉션은 클라이언트 접근을 완전히 닫는다(Admin SDK만 접근).
+    match /generatedPanoramaImages/{docId} { allow read, write: if false; }
+    match /generatedVideos/{docId}        { allow read, write: if false; }
+    match /personaManifests/{docId}       { allow read, write: if false; }
+  }
+}
+
+
+── Storage 규칙 (콘솔 → Storage → 규칙) ─────────────────────────────
+   profile-collector와 동일 — cdb-crafter도 profile-photos/{personaId}/ 아래에 업로드하므로
+   현행 규칙 그대로 호환된다(수정 불필요). 참고용으로 함께 둔다.
+
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /profile-photos/{personaId}/{fileName} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null
+        && request.resource.size < 15 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+    }
+  }
+}
+
+
+── [읽기 결정] 배경과, 안 고른 대안 ──────────────────────────────────
+
+확정된 규칙은 위의 get-open / list-closed 다. 남는 리스크는 이렇다:
+  - '이름+생일을 정확히 아는' 특정 한 사람을 콕 집어 조회하는 건 여전히 가능하다.
+    그 문서엔 그래프 점과, 과거~현재 사진의 다운로드 URL이 들어 있어 그 사람 사진까지 닿을 수 있다.
+  - 단, list를 막았으므로 명단을 통째로 긁는 대량 수집은 불가. 앱 UI도 남의 것을 보여주지 않는다
+    (자기 것만 로드). 참여 종료 후 링크 차단이 보조 통제.
+  - 예술 설치 규모에서 감수 가능한 수준으로 판단해 이 안을 채택했다.
+
+안 고른 대안 — '소유자' 모델(더 강한 프라이버시):
+    allow get: if request.auth != null && resource.data.ownerUid == request.auth.uid;
+    // + create 시 ownerUid == request.auth.uid 검증, saveLifeGraph.js가 ownerUid 기록.
+  이건 관람객이 '같은 기기+같은 브라우저에서 짧은 간격'으로만 이어 그릴 때 안전하게 동작한다.
+  현재 운용(자기 폰, 집→현장 며칠 간격, 이름+생일 재로그인)에선 익명 uid가 리셋돼 이어 그리기가
+  깨지므로 채택하지 않았다. 운용 방식이 '전시장 키오스크 단일 기기'로 바뀌면 이 안으로 교체.
+
+
+── 콘솔에서 켜야 할 것 ──────────────────────────────────────────────
+
+1. Authentication → 로그인 방법 → '익명' 사용 설정 (이미 profile-collector용으로 켜져 있음).
+2. Firestore Database → 규칙 → 위 Firestore 규칙 붙여넣기 → 게시.
+3. Storage → 규칙 → 위 Storage 규칙 확인(변경 없으면 그대로).

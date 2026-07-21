@@ -43,7 +43,11 @@ import {
   updateProfileFields,
   uploadPersonaVideos,
   ensureLocalClipsFromFirebase,
-  fetchPersonaVideos
+  ensurePersonaMediaFromFirebase,
+  fetchPersonaVideos,
+  upsertPersonaManifest,
+  fetchPersonaManifest,
+  listAllPersonasFromFirebase
 } from '../src/main/comfyui/firestore-source.js'
 import { recoverClipsFromComfy } from '../src/main/comfyui/recover-clips.js'
 import { processProfile, processLifeGraphSession } from '../src/main/comfyui/profile-worker.js'
@@ -82,6 +86,72 @@ async function readManifest(pid) {
 }
 async function writeManifest(pid, manifest) {
   await fs.writeFile(path.join(LIBRARY, pid, 'manifest.json'), JSON.stringify(manifest, null, 2))
+  // Firebase 정본 동기화 — 생성/재생성/성별수정이 전부 이 함수를 지나므로 여기 한 곳이면 커버된다.
+  // 실패해도 로컬 저장은 유지(정본 동기화는 best-effort). 다른 머신에서 hydrate로 복원된다.
+  if (firebaseReady) {
+    try {
+      await upsertPersonaManifest(manifest)
+    } catch (err) {
+      logAction(`manifest 정본 동기화 실패 (${pid}): ${err.message}`)
+    }
+  }
+}
+
+// ── Firebase 정본 ↔ 로컬 캐시: 사용자 리스트 합집합 + 하이드레이션 ──────────
+// 어드민을 이식 가능하게 만드는 핵심. 로컬 library 는 캐시일 뿐이고, 정본은 Firebase에 있다.
+// 다른 머신에서 처음 열면 로컬이 비어 있어도 Firebase 명단이 뜨고, 필요 시 hydrate 로 복원한다.
+
+const localPersonaExists = (pid) => existsSync(path.join(LIBRARY, pid, 'manifest.json'))
+
+/** Firebase 전체 명단 + 내부 personaId 보강(정본 문서에 없던 profiles-only 항목은 이름/생년월일로 계산). */
+async function firebasePersonaList() {
+  const list = await listAllPersonasFromFirebase()
+  for (const p of list) {
+    if (!p.personaId && p.name && p.birthDate) {
+      p.personaId = personaId({ name: p.name, birthDate: p.birthDate })
+    }
+  }
+  return list
+}
+
+/**
+ * Firebase 정본에서 로컬 library/{pid} 를 복원한다(manifest + 미디어).
+ * @param {string} docKey  '이름_생년월일6자'
+ * @returns {Promise<{ pid:string, images:number, reel:boolean, missing:string[] }>}
+ */
+async function hydratePersona(docKey) {
+  if (!firebaseReady) throw new Error('Firebase 미연결')
+  const manifest = await fetchPersonaManifest(docKey)
+  if (!manifest) throw new Error(`Firebase에 manifest 정본이 없다: ${docKey}`)
+  const pid = manifest.personaId
+  if (!pid) throw new Error(`manifest에 personaId가 없다: ${docKey}`)
+  const dir = path.join(LIBRARY, pid)
+  await fs.mkdir(dir, { recursive: true })
+  await writeManifestLocalOnly(pid, manifest) // 정본에서 받은 걸 다시 정본에 쓰지 않게 로컬만 저장
+  const media = await ensurePersonaMediaFromFirebase(manifest.profile, dir).catch((e) => {
+    logAction(`hydrate 미디어 일부 실패 (${pid}): ${e.message}`)
+    return { images: 0, reel: false, missing: [] }
+  })
+  return { pid, ...media }
+}
+
+/** writeManifest 의 로컬 전용판 — hydrate 는 이미 정본에서 받은 것이라 정본에 되쓰지 않는다. */
+async function writeManifestLocalOnly(pid, manifest) {
+  await fs.mkdir(path.join(LIBRARY, pid), { recursive: true })
+  await fs.writeFile(path.join(LIBRARY, pid, 'manifest.json'), JSON.stringify(manifest, null, 2))
+}
+
+/**
+ * pid 로 로컬 manifest 를 보장한다. 로컬에 있으면 그대로, 없으면 Firebase 명단에서 docKey 를 찾아 hydrate.
+ * @returns {Promise<boolean>} true=로컬에 준비됨, false=Firebase에도 없음
+ */
+async function ensurePersonaLocal(pid) {
+  if (localPersonaExists(pid)) return true
+  if (!firebaseReady) return false
+  const entry = (await firebasePersonaList()).find((p) => p.personaId === pid)
+  if (!entry || !entry.hasManifest) return false
+  await hydratePersona(entry.docKey)
+  return localPersonaExists(pid)
 }
 
 // ── 재생성: 현재 prompt-builder 기준으로 프롬프트를 재조립해 다시 굴린다 ──
@@ -867,6 +937,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/session') {
       const { personaId: pid } = await readBody(req)
       if (!pid) return send(res, 400, { error: 'personaId 필요' })
+      // 다른 머신에서 로컬이 비어 있으면 정본에서 자동 복원 — 4창 런타임이 재생할 미디어까지 채운다.
+      await ensurePersonaLocal(pid).catch(() => {})
       let manifest
       try {
         manifest = await readManifest(pid)
@@ -887,30 +959,93 @@ const server = http.createServer(async (req, res) => {
 
     // GET /api/personas → persona 목록
     if (req.method === 'GET' && url.pathname === '/api/personas') {
-      const out = []
+      // 합집합: 로컬 library(캐시) ∪ Firebase 정본(제출 전부 포함). personaId 로 병합.
+      const byPid = new Map()
+
+      // 1) 로컬 — 디스크에 있는 것(리뷰/재생성 즉시 가능)
       for (const dirent of await fs.readdir(LIBRARY, { withFileTypes: true }).catch(() => [])) {
         if (!dirent.isDirectory()) continue
         try {
           const m = await readManifest(dirent.name)
-          out.push({
+          byPid.set(m.personaId, {
             personaId: m.personaId,
-            name: m.profile?.name,
-            createdAt: m.createdAt,
-            workflow: m.workflow,
-            total: m.images.length
+            name: m.profile?.name || null,
+            createdAt: m.createdAt || null,
+            workflow: m.workflow || null,
+            total: (m.images || []).length,
+            local: true,
+            cloud: false,
+            imageCount: (m.images || []).length,
+            videoCount: 0,
+            reel: false,
+            status: null,
+            sessions: null,
+            docKey: null
           })
         } catch {
           /* manifest 없는 디렉토리는 건너뜀 */
         }
       }
-      return send(res, 200, out)
+
+      // 2) Firebase 정본 — 병합/추가(다른 머신에서도 전체 명단이 뜨게)
+      if (firebaseReady) {
+        try {
+          for (const fp of await firebasePersonaList()) {
+            if (!fp.personaId) continue
+            const cur = byPid.get(fp.personaId)
+            if (cur) {
+              cur.cloud = true
+              cur.docKey = fp.docKey
+              cur.videoCount = fp.videoCount
+              cur.reel = fp.reel
+              cur.status = fp.status
+              cur.sessions = fp.sessions
+              if (fp.imageCount > cur.imageCount) cur.imageCount = fp.imageCount
+            } else {
+              byPid.set(fp.personaId, {
+                personaId: fp.personaId,
+                name: fp.name,
+                createdAt: fp.createdAt,
+                workflow: null,
+                total: fp.imageCount,
+                local: false,
+                cloud: true,
+                imageCount: fp.imageCount,
+                videoCount: fp.videoCount,
+                reel: fp.reel,
+                status: fp.status,
+                sessions: fp.sessions,
+                hasManifest: fp.hasManifest,
+                docKey: fp.docKey
+              })
+            }
+          }
+        } catch (err) {
+          logAction(`Firebase 명단 조회 실패: ${err.message}`)
+        }
+      }
+
+      return send(res, 200, [...byPid.values()])
     }
 
     // /api/personas/{pid}...
     if (parts[0] === 'api' && parts[1] === 'personas' && parts[2]) {
       const pid = parts[2]
 
+      // POST /api/personas/{pid}/hydrate → Firebase 정본에서 로컬 library/{pid} 복원(수동 "받기").
+      if (req.method === 'POST' && parts[3] === 'hydrate') {
+        if (!firebaseReady) return send(res, 400, { error: 'Firebase 미연결' })
+        const entry = (await firebasePersonaList()).find((p) => p.personaId === pid)
+        if (!entry || !entry.hasManifest)
+          return send(res, 404, { error: `Firebase에 정본 manifest가 없다: ${pid}` })
+        const result = await hydratePersona(entry.docKey)
+        logAction(`⬇ hydrate 완료: ${entry.name || pid} (이미지 ${result.images}, reel ${result.reel ? '○' : '×'})`)
+        return send(res, 200, { ok: true, ...result })
+      }
+
       if (req.method === 'GET' && parts.length === 3) {
+        // 다른 머신에서 로컬이 비어 있어도 정본에서 자동 복원해 리뷰가 되게 한다.
+        await ensurePersonaLocal(pid).catch(() => {})
         const m = await readManifest(pid)
         m._clipStatus = clipStatus(pid, m) // 로컬 캐시 기준 진행도 (영상 패널 표시용)
         // Firebase 정본 상태(☁) — 로컬 캐시와 별개로 "Firebase에 실제로 올라간 수"를 보여준다.

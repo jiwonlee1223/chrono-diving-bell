@@ -27,6 +27,9 @@ let defaultBucket = null //   업로드용 기본 Storage 버킷 이름 (config.
 // 생성물 링크를 기록하는 Firestore 컬렉션 이름(프로필별 문서 = 이름_생년월일6자). 여기서만 바꾸면 된다.
 export const COLLECTION_IMAGES = 'generatedPanoramaImages'
 export const COLLECTION_VIDEOS = 'generatedVideos'
+// persona manifest 정본. 로컬 library/{pid}/manifest.json 을 Firebase에 올려 어느 머신에서든
+// 리뷰·재생성·세션재생이 되게 한다(로컬은 read-through 캐시). 키는 파노라마와 같은 '이름_생년월일6자'.
+export const COLLECTION_MANIFESTS = 'personaManifests'
 
 /** Admin SDK 초기화. serviceAccountPath 또는 GOOGLE_APPLICATION_CREDENTIALS 필요. storageBucket은 생성물 업로드용. */
 export async function initFirebase({ serviceAccountPath, projectId, storageBucket } = {}) {
@@ -239,6 +242,149 @@ export async function fetchPersonaImages(profile) {
   if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
   const snap = await db.collection(COLLECTION_IMAGES).doc(panoramaDocKey(profile)).get()
   return snap.exists ? snap.data() : null
+}
+
+// ── persona manifest 정본(Firebase) ───────────────────────────────────────────
+// 로컬 manifest.json 을 그대로 'personaManifests/{docKey}' 에 올려 정본으로 둔다.
+// 어느 머신에서든 fetchPersonaManifest → 로컬 복원(hydrate)하면 리뷰·재생성이 동등하게 된다.
+
+/** 로컬 manifest 를 Firebase 정본으로 upsert. docKey 는 manifest.profile 로부터 계산('이름_생년월일6자'). */
+export async function upsertPersonaManifest(manifest) {
+  if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  const profile = manifest?.profile || {}
+  const key = panoramaDocKey(profile)
+  await db
+    .collection(COLLECTION_MANIFESTS)
+    .doc(key)
+    .set(
+      {
+        // 조회·조인용 상단 필드(리스트에서 매핑에 쓴다). manifest 전문은 data 에 통째로.
+        personaId: manifest.personaId || null,
+        name: profile.name || null,
+        birthDate: profile.birthDate || null,
+        profileDocId: profile.id || null, // Firestore profiles 문서 id(있으면)
+        workflow: manifest.workflow || null,
+        imageCount: (manifest.images || []).length,
+        manifest,
+        updatedAt: FieldValue.serverTimestamp()
+      },
+      { merge: true }
+    )
+  return key
+}
+
+/** Firebase 정본 manifest 조회. profile({name,birthDate,id?}) 또는 docKey 문자열을 받는다. 없으면 null. */
+export async function fetchPersonaManifest(profileOrKey) {
+  if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  const key = typeof profileOrKey === 'string' ? profileOrKey : panoramaDocKey(profileOrKey)
+  const snap = await db.collection(COLLECTION_MANIFESTS).doc(key).get()
+  return snap.exists ? snap.data().manifest || null : null
+}
+
+/**
+ * 어드민 사용자 리스트용 — Firebase 전체 명단을 한 번에 모은다.
+ * profiles(제출 전부) 를 기준으로, personaManifests / generatedPanoramaImages / generatedVideos 를
+ * docKey 로 조인해 각 사람의 { docKey, name, birthDate, personaId, 상태, 생성물 카운트 } 를 만든다.
+ * 내부 personaId(p-해시)는 manifest·생성물 문서에 있으면 그대로 쓰고, 없으면 null(호출측이 계산).
+ * @returns {Promise<Array>} docKey 기준 사람 목록
+ */
+export async function listAllPersonasFromFirebase({ limit = 500 } = {}) {
+  if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  const [profSnap, manSnap, imgSnap, vidSnap] = await Promise.all([
+    db.collection('profiles').limit(limit).get(),
+    db.collection(COLLECTION_MANIFESTS).limit(limit).get(),
+    db.collection(COLLECTION_IMAGES).limit(limit).get(),
+    db.collection(COLLECTION_VIDEOS).limit(limit).get()
+  ])
+
+  const byKey = new Map()
+  const ensure = (key) => {
+    if (!byKey.has(key)) {
+      byKey.set(key, {
+        docKey: key,
+        name: null,
+        birthDate: null,
+        personaId: null,
+        profileDocId: null,
+        // profiles 상태
+        status: null, // 직업 수집 flow status
+        sessions: null, // 인생그래프 flow { first, second, third } 상태 요약
+        submittedAt: null,
+        // 생성물
+        hasManifest: false,
+        imageCount: 0,
+        videoCount: 0,
+        reel: false,
+        createdAt: null,
+        updatedAt: null
+      })
+    }
+    return byKey.get(key)
+  }
+
+  // profiles — 제출 전부(생성 전 submitted 포함)
+  for (const d of profSnap.docs) {
+    const data = d.data()
+    const key = d.id // profiles 문서 id = '이름_생년월일6자'
+    const p = ensure(key)
+    p.name = data.name ?? p.name
+    p.birthDate = data.birthDate ?? p.birthDate
+    p.profileDocId = d.id
+    p.status = data.status ?? p.status
+    // 인생그래프 세션 상태 요약(존재하는 세션만)
+    const sessions = {}
+    for (const s of ['first', 'second', 'third']) {
+      if (data[s] || data[`${s}SubmittedAt`] || data[`${s}Status`]) {
+        sessions[s] = data[`${s}Status`] || (data[`${s}SubmittedAt`] ? 'submitted' : null)
+      }
+    }
+    if (Object.keys(sessions).length) p.sessions = sessions
+    p.submittedAt = toMillisSafe(data.createdAt) ?? p.submittedAt
+    p.createdAt = toMillisSafe(data.createdAt) ?? p.createdAt
+    p.updatedAt = toMillisSafe(data.updatedAt) ?? p.updatedAt
+  }
+
+  // personaManifests — 정본 manifest 존재 + 내부 personaId
+  for (const d of manSnap.docs) {
+    const data = d.data()
+    const p = ensure(d.id)
+    p.hasManifest = true
+    p.personaId = data.personaId ?? p.personaId
+    p.name = p.name ?? data.name ?? null
+    p.birthDate = p.birthDate ?? data.birthDate ?? null
+    p.imageCount = data.imageCount ?? p.imageCount
+    p.updatedAt = toMillisSafe(data.updatedAt) ?? p.updatedAt
+  }
+
+  // generatedPanoramaImages — 이미지 카운트 + 내부 personaId 보강
+  for (const d of imgSnap.docs) {
+    const data = d.data()
+    const p = ensure(d.id)
+    p.personaId = p.personaId ?? data.personaId ?? null
+    p.name = p.name ?? data.name ?? null
+    p.birthDate = p.birthDate ?? data.birthDate ?? null
+    p.imageCount = Math.max(p.imageCount, data.count ?? (data.images || []).length)
+  }
+
+  // generatedVideos — 클립 수 + reel 여부
+  for (const d of vidSnap.docs) {
+    const data = d.data()
+    const p = ensure(d.id)
+    p.personaId = p.personaId ?? data.personaId ?? null
+    p.videoCount = (data.videos || []).length
+    p.reel = Boolean(data.reel)
+  }
+
+  return [...byKey.values()]
+}
+
+/** Firestore Timestamp | number | null → ms 또는 null (여러 컬렉션의 서로 다른 시간 필드 정규화). */
+function toMillisSafe(v) {
+  if (!v) return null
+  if (typeof v === 'number') return v
+  if (typeof v.toMillis === 'function') return v.toMillis()
+  if (typeof v._seconds === 'number') return v._seconds * 1000
+  return null
 }
 
 const fileExists = (p) => fs.access(p).then(() => true, () => false)
