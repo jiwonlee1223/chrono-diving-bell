@@ -170,7 +170,7 @@ export function createGhost({ getStrip, zIndex = 31 } = {}) {
     // 가시성 램프(smoothstep) — show/hide 시 부드럽게 나타나고/사라진다.
     const vp = Math.min(1, (now - visStart) / (VIS_RAMP_SEC * 1000))
     vis = visFrom + (visTarget - visFrom) * (vp * vp * (3 - 2 * vp))
-    const alpha = vis * (0.42 + 0.12 * Math.sin(t * 0.45)) // 은은한 밝기 호흡
+    const alpha = vis * (0.66 + 0.14 * Math.sin(t * 0.45)) // 밝기 호흡(더 진하게: 0.52~0.80)
 
     const x = cx - GW / 2
     const y = cy - GH / 2

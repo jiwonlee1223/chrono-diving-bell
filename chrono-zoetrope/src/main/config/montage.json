@@ -21,6 +21,11 @@
     "maxStretch": 1.25,
     "transition": "fade"
   },
+  "demo": {
+    "$comment": "1차 흐름(서버 소유 국면): 세션 지정 → spinup(실타래 배속) → reel(배속 재생) → ghost(유령 뜬 idle, 1인칭 진입 대기). 서버가 타이머로 진행하고 국면을 방송·부트스트랩에 실어, 런타임 페이지를 새로고침해도 직전 국면을 이어간다. 중단은 admin '세션 나가기'로만.",
+    "spinupMs": 10000,
+    "reelPlaybackRate": 3
+  },
   "regen": {
     "$comment": "영상 생성 백엔드. mode: wan = 로컬 Wan2.2 I2V(현재 기본 — 종횡비 제한 없어 4:1 seamless 파노라마 그대로 애니메이션) | seedance = ByteDance Seedance FLF 루프(API 노드·과금, 단 지원 종횡비 16:9~21:9뿐이라 4:1 파노라마 입력 거부됨) | mock = 개발용(서버 없이 폴백). minWaitMs = 캐시 적중 시에도 유지하는 최소 대기(의례). timeoutMs = 클립당 상한.",
     "mode": "wan",

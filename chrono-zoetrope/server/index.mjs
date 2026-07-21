@@ -136,6 +136,13 @@ async function loadPersona(personaId) {
     regenerator?.close?.() // 이전 페르소나의 ComfyUI WS 정리
     library = lib
     regenerator = regen
+    // reel 배속 종료 타이밍용 — reel.mp4 실제 길이(초). 없으면 0(fallback 90/rate).
+    try {
+      const mf = JSON.parse(await fs.readFile(path.join(lib.dir, 'manifest.json'), 'utf8'))
+      currentReelSec = mf.reel?.durationSec || 0
+    } catch {
+      currentReelSec = 0
+    }
     sm = new ZoetropeStateMachine({
       broadcast,
       playlist: library.images,
@@ -179,10 +186,22 @@ function toggleDevPreview() {
   broadcast(Channels.VIEW_MODE, { preview: devPreview })
 }
 
-// ── reel 데모 시퀀스(테스트 경험, §1 긴장 有 — 되돌릴 수 있는 경로) ─────
-// 참가자 선택 → 실타래 회전 가속(spinup) → 사전 빌드 reel.mp4 1회 재생.
-const REEL_SPINUP_MS = 10000 // 세션 지정 → idle(실타래) 배속 가속 구간 10초 → reel 컷.
-let reelTimer = null
+// ── 1차 흐름(서버 소유 국면) — 새로고침해도 이어가고, 중단은 admin에서만 ─────────────
+// 국면: idle → spinup(실타래 배속) → reel(배속 재생) → ghost(유령 뜬 idle, 1인칭 진입 대기).
+// 서버가 타이머로 진행하고 매 전이를 SSE로 방송한다. 국면·경과시간을 부트스트랩에도 실어,
+// 런타임 페이지를 새로고침하면 클라이언트가 현재 국면(진행 중인 reel 위치까지)을 이어받는다.
+// 타이머는 서버에 있으므로 클라이언트가 없거나 새로고침돼도 진행이 계속된다. 중단은 leaveSession(admin)만.
+const DEMO_SPINUP_MS = montageConfig.demo?.spinupMs ?? 10000
+const DEMO_PLAYBACK_RATE = montageConfig.demo?.reelPlaybackRate ?? 3
+
+let demo = { phase: 'idle', startedAt: Date.now() } // { phase, startedAt, spinupMs?, url? }
+let demoTimers = []
+let currentReelSec = 0 // 현재 페르소나 reel.mp4 길이(초) — manifest.reel.durationSec
+
+function clearDemoTimers() {
+  for (const t of demoTimers) clearTimeout(t)
+  demoTimers = []
+}
 
 function reelMediaUrl() {
   if (!library?.dir) return null
@@ -190,22 +209,52 @@ function reelMediaUrl() {
   return existsSync(p) ? toMediaUrl(p) : null
 }
 
-function runReelDemo(spinupMs = REEL_SPINUP_MS) {
-  clearTimeout(reelTimer)
-  const url = reelMediaUrl()
-  if (!url) console.warn('[server] reel 데모: reel.mp4 없음 — spinup만 실행(관리자에서 릴 생성 필요)')
-  console.log(`[server] reel 데모 시작 (spinup ${spinupMs}ms → reel ${url ?? '(없음)'})`)
-  broadcast(Channels.REEL_DEMO, { phase: 'spinup', spinupMs })
-  reelTimer = setTimeout(() => {
-    broadcast(Channels.REEL_DEMO, { phase: 'reel', url })
-  }, spinupMs)
+// 라이브 방송·부트스트랩 공용 payload. elapsedMs로 재개 위치를 계산한다.
+function demoPayload() {
+  const p = { phase: demo.phase, elapsedMs: Date.now() - demo.startedAt }
+  if (demo.phase === 'spinup') p.spinupMs = demo.spinupMs
+  if (demo.phase === 'reel') {
+    p.url = demo.url
+    p.playbackRate = DEMO_PLAYBACK_RATE
+  }
+  return p
 }
 
-// 세션 나가기 — 재생을 중단하고 런타임을 대기(IDLE 앰비언트)로 되돌린다.
+function runReelDemo(spinupMs = DEMO_SPINUP_MS) {
+  clearDemoTimers()
+  demo = { phase: 'spinup', startedAt: Date.now(), spinupMs }
+  broadcast(Channels.REEL_DEMO, demoPayload())
+  console.log(`[server] 데모: spinup ${spinupMs}ms`)
+  demoTimers.push(setTimeout(startReelPhase, spinupMs))
+}
+
+function startReelPhase() {
+  const url = reelMediaUrl()
+  if (!url) {
+    console.warn('[server] 데모: reel.mp4 없음 — 유령 idle로 건너뜀(관리자에서 릴 생성 필요)')
+    enterGhostPhase()
+    return
+  }
+  const realSec = Math.max(1, (currentReelSec || 90) / DEMO_PLAYBACK_RATE)
+  demo = { phase: 'reel', startedAt: Date.now(), url }
+  broadcast(Channels.REEL_DEMO, demoPayload())
+  console.log(`[server] 데모: reel 재생 (~${realSec.toFixed(0)}s @${DEMO_PLAYBACK_RATE}x)`)
+  demoTimers.push(setTimeout(enterGhostPhase, realSec * 1000))
+}
+
+function enterGhostPhase() {
+  clearDemoTimers()
+  demo = { phase: 'ghost', startedAt: Date.now() }
+  broadcast(Channels.REEL_DEMO, demoPayload())
+  console.log('[server] 데모: 유령 idle (1인칭 진입 대기)')
+}
+
+// 세션 나가기(admin 전용 중단) — 데모를 idle로 리셋하고 런타임을 대기 앰비언트로 되돌린다.
 function leaveSession() {
-  clearTimeout(reelTimer)
+  clearDemoTimers()
   pendingPersonaId = undefined // 예약돼 있던 교체도 취소.
-  broadcast(Channels.REEL_DEMO, { phase: 'stop' })
+  demo = { phase: 'idle', startedAt: Date.now() }
+  broadcast(Channels.REEL_DEMO, demoPayload())
   console.log('[server] 세션 나가기 — 대기(IDLE)로 복귀')
 }
 
@@ -218,6 +267,7 @@ function bootstrapPayload() {
     // 생성하는 씬 파노라마 비율(4096×1024=4:1). 렌더러가 4타일 가로 정렬 전체 크기를 이 비율에 맞춘다.
     panorama: comfyuiConfig.panorama ?? null,
     devPreview,
+    demo: demoPayload(), // 현재 1차 흐름 국면(새로고침 시 이어가기용) + reel 배속 파라미터
     montage: library
       ? {
           config: {

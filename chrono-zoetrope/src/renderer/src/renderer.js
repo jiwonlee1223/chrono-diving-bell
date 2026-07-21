@@ -228,74 +228,78 @@ async function main() {
     })
   }
 
-  // ---- reel 데모: reel.mp4 1회 재생(loop 없음) → 끝나면 IDLE 실타래(구름)로 복귀 ----
-  function playReelOnce(url) {
+  // ---- reel 배속 재생. 종료(→유령 idle)는 서버가 국면으로 방송하므로 여기선 재생만 한다. ----
+  //  seekSec: 새로고침 재개 시 영상 위치(실경과 × 배속). flash: 시작 섬광(재개 땐 생략).
+  function playReelOnce(url, { seekSec = 0, playbackRate = REEL_PLAYBACK_RATE, flash = true } = {}) {
     teardownVideo()
     if (!url || !montageMaterial) return // reel 없거나 몽타주 재료 없으면 스킵.
     videoEl = document.createElement('video')
     videoEl.muted = true
-    videoEl.loop = false // 1회 재생.
+    videoEl.loop = false
     videoEl.playsInline = true
     videoEl.preload = 'auto'
     videoEl.crossOrigin = 'anonymous' // /media ACAO — WebGL 텍스처 오염 방지.
     videoEl.src = url
-    videoEl.playbackRate = REEL_PLAYBACK_RATE // 90초 릴을 배속 재생(3배 → ~30초).
+    videoEl.playbackRate = playbackRate
     videoEl.addEventListener(
       'canplaythrough',
       () => {
         videoTexture = new THREE.VideoTexture(videoEl)
         videoTexture.colorSpace = THREE.NoColorSpace
         setMontageVideo(montageMaterial, videoTexture)
-        // reel 표시로 즉시 스냅. rAF 누적 트윈에 의존하지 않아 견고하다.
-        videoMix.v = videoMix.from = videoMix.to = 1
-        triggerFlash() // reel이 드러나는 순간 섬광 — 섬광이 컷을 덮는다.
-        videoEl.playbackRate = REEL_PLAYBACK_RATE
+        videoMix.v = videoMix.from = videoMix.to = 1 // reel 표시로 즉시 스냅
+        if (seekSec > 0 && isFinite(videoEl.duration)) {
+          videoEl.currentTime = Math.min(seekSec, Math.max(0, videoEl.duration - 0.05))
+        }
+        if (flash) triggerFlash() // reel이 드러나는 순간 섬광
+        videoEl.playbackRate = playbackRate
         videoEl.play().catch(() => {})
       },
       { once: true }
     )
-    // 끝나면 검정으로 페이드 후 IDLE 실타래(구름)로 복귀. 다음 참가자 대기 상태.
-    videoEl.addEventListener(
-      'ended',
-      () => {
-        videoEl?.pause()
-        tweenTo(videoMix, 0, 1.2) // reel → 검정 페이드
-        tweenTo(threadSpeedMul, 1, 3.0) // 구름 회전 정상 속도로 감속
-        setTimeout(() => {
-          demoPhase = null // 검정에서 실타래(구름) 앰비언트로 (appState=IDLE 따라감)
-          teardownVideo()
-          ghost.show() // 주마등 종료 → idle 진입: 유령 등장(1인칭 진입 가능 신호).
-        }, 1200)
-      },
-      { once: true }
-    )
+    // 끝나면 마지막 프레임에서 멈춰 유지 — 서버의 'ghost' 국면 방송이 앰비언트+유령으로 전환한다.
+    videoEl.addEventListener('ended', () => videoEl?.pause(), { once: true })
     videoEl.load()
   }
 
-  window.zoetrope.onReelDemo?.(({ phase, url, spinupMs } = {}) => {
+  // 서버 소유 1차 흐름 국면 적용. immediate=true는 부트스트랩 재개(트윈 없이 그 국면으로 점프).
+  //  idle: 앰비언트(유령 숨김, admin 세션 나가기) · spinup: 실타래 배속 · reel: 배속 재생 · ghost: 유령 뜬 idle
+  function applyDemo(payload, immediate = false) {
+    const phase = payload?.phase ?? 'idle'
+    const elapsedSec = Math.max(0, (payload?.elapsedMs ?? 0) / 1000)
+    const dur = (s) => (immediate ? 0.001 : s)
     if (phase === 'spinup') {
-      // 실타래 앰비언트로 되돌려 회전을 가속시킨다(주황 구름이 빨라짐).
       demoPhase = 'spinup'
-      ghost.hide() // 주마등 시작 — 유령 숨김.
+      ghost.hide()
       teardownVideo()
-      tweenTo(videoMix, 0, 0.2)
-      tweenTo(blur, 0, 0.2)
-      tweenTo(threadSpeedMul, SPINUP_MAX, Math.max(0.5, (spinupMs ?? 3500) / 1000))
+      tweenTo(videoMix, 0, dur(0.2))
+      tweenTo(blur, 0, dur(0.2))
+      const total = (payload?.spinupMs ?? 10000) / 1000
+      threadSpeedMul.v = 1 + (SPINUP_MAX - 1) * Math.min(1, elapsedSec / total) // 재개 시 진행률 반영
+      tweenTo(threadSpeedMul, SPINUP_MAX, Math.max(0.3, total - elapsedSec))
     } else if (phase === 'reel') {
-      // 가속된 상태에서 reel로 컷 → 1회 재생.
       demoPhase = 'reel'
-      ghost.hide() // reel 재생 중엔 유령 숨김.
-      playReelOnce(url)
-    } else if (phase === 'stop') {
-      // 세션 나가기 — 재생 중단하고 IDLE 실타래(구름) 앰비언트로 복귀. 유령도 숨김.
+      ghost.hide()
+      const rate = payload?.playbackRate ?? REEL_PLAYBACK_RATE
+      playReelOnce(payload?.url, { seekSec: elapsedSec * rate, playbackRate: rate, flash: !immediate })
+    } else if (phase === 'ghost') {
+      demoPhase = null
+      teardownVideo()
+      tweenTo(videoMix, 0, dur(0.6))
+      tweenTo(blur, 0, dur(0.4))
+      tweenTo(threadSpeedMul, 1, dur(1.5))
+      ghost.show() // 유령 등장 = 1인칭 진입 가능 신호.
+    } else {
+      // idle (admin 세션 나가기) — 앰비언트, 유령 숨김.
       demoPhase = null
       ghost.hide()
       teardownVideo()
-      tweenTo(videoMix, 0, 0.6)
-      tweenTo(blur, 0, 0.4)
-      tweenTo(threadSpeedMul, 1, 1.5)
+      tweenTo(videoMix, 0, dur(0.6))
+      tweenTo(blur, 0, dur(0.4))
+      tweenTo(threadSpeedMul, 1, dur(1.5))
     }
-  })
+  }
+  window.zoetrope.onReelDemo?.((payload) => applyDemo(payload, false))
 
   // 테스트용 수동 트리거 버튼(좌하단) — 참가자 교체 없이 현재 페르소나로 데모 시퀀스 실행.
   document.getElementById('demoBtn')?.addEventListener('click', () => {
@@ -360,6 +364,9 @@ async function main() {
       h: layout.tileH
     })
   })
+
+  // 새로고침 재개: 서버가 준 현재 1차 흐름 국면으로 즉시 점프(진행 중인 reel은 위치까지 이어감).
+  if (boot.demo && boot.demo.phase && boot.demo.phase !== 'idle') applyDemo(boot.demo, true)
 
   let currentFrame = -1
   let surfaceMaterial = threadMaterial
