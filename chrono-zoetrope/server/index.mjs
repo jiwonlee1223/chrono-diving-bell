@@ -51,6 +51,9 @@ const argOf = (name, fallback) => {
 const PORT = parseInt(argOf('--port', '8788'), 10)
 const DIST = path.resolve(root, argOf('--dist', 'dist'))
 const libraryRoot = path.resolve(root, argOf('--library', montageConfig.libraryDir ?? 'library'))
+// 파일 없는 배포(Railway 등)엔 library/ 가 없다 — scandir/watch가 넘어지지 않도록 미리 만든다.
+// 페르소나 미디어는 Firebase 정본에서 read-through 로 받는다.
+await fs.mkdir(libraryRoot, { recursive: true })
 
 // 설치 캘리브레이션(실린더 정렬용 전역 yaw/pitch) — 런타임 페이지가 실시간 조정·저장한다.
 let calibration = await readCalibration(libraryRoot)

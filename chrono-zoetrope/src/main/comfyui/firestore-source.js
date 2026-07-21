@@ -31,24 +31,39 @@ export const COLLECTION_VIDEOS = 'generatedVideos'
 // 리뷰·재생성·세션재생이 되게 한다(로컬은 read-through 캐시). 키는 파노라마와 같은 '이름_생년월일6자'.
 export const COLLECTION_MANIFESTS = 'personaManifests'
 
-/** Admin SDK 초기화. serviceAccountPath 또는 GOOGLE_APPLICATION_CREDENTIALS 필요. storageBucket은 생성물 업로드용. */
+/**
+ * Admin SDK 초기화. 서비스 계정 키 출처는 세 가지(우선순위 순):
+ *   1) 환경변수 FIREBASE_SERVICE_ACCOUNT — JSON 문자열 통째 (Railway 등 파일 없는 배포용)
+ *   2) 인자 serviceAccountPath / GOOGLE_APPLICATION_CREDENTIALS — 로컬 파일 경로
+ * storageBucket은 생성물 업로드용.
+ */
 export async function initFirebase({ serviceAccountPath, projectId, storageBucket } = {}) {
   if (db) {
     if (storageBucket) defaultBucket = storageBucket
     return db
   }
-  const saPath = serviceAccountPath || process.env.GOOGLE_APPLICATION_CREDENTIALS
-  if (!saPath) {
-    throw new Error(
-      '서비스 계정 키 경로가 없다. config/comfyui.json의 firebase.serviceAccountPath 를 채우거나 ' +
-        '환경변수 GOOGLE_APPLICATION_CREDENTIALS 를 설정하라.'
-    )
-  }
   let sa
-  try {
-    sa = JSON.parse(await fs.readFile(saPath, 'utf-8'))
-  } catch (err) {
-    throw new Error(`서비스 계정 키를 읽을 수 없다 (${saPath}): ${err.message}`)
+  const inlineJson = process.env.FIREBASE_SERVICE_ACCOUNT
+  if (inlineJson && inlineJson.trim().startsWith('{')) {
+    // 파일 없는 배포(Railway 등): 변수에 담긴 JSON을 직접 파싱
+    try {
+      sa = JSON.parse(inlineJson)
+    } catch (err) {
+      throw new Error(`FIREBASE_SERVICE_ACCOUNT JSON 파싱 실패: ${err.message}`)
+    }
+  } else {
+    const saPath = serviceAccountPath || process.env.GOOGLE_APPLICATION_CREDENTIALS
+    if (!saPath) {
+      throw new Error(
+        '서비스 계정 키가 없다. 파일 없는 배포면 환경변수 FIREBASE_SERVICE_ACCOUNT(JSON 문자열)를, ' +
+          '로컬이면 config/comfyui.json의 firebase.serviceAccountPath 또는 GOOGLE_APPLICATION_CREDENTIALS 를 설정하라.'
+      )
+    }
+    try {
+      sa = JSON.parse(await fs.readFile(saPath, 'utf-8'))
+    } catch (err) {
+      throw new Error(`서비스 계정 키를 읽을 수 없다 (${saPath}): ${err.message}`)
+    }
   }
   // 기본 버킷: config → '{projectId}.firebasestorage.app'. Admin SDK 업로드는 storage.googleapis.com 경유라
   // 캠퍼스망 firebasestorage SNI 차단과 무관하게 동작한다(실측 확인).
