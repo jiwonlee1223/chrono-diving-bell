@@ -31,7 +31,10 @@ import { ZoetropeStateMachine } from '../src/main/state-machine.js'
 import { VideoRegenerator } from '../src/main/comfyui/video-cache.js'
 import { readSession, SESSION_FILE } from '../src/main/session-pointer.js'
 import { readCalibration, writeCalibration } from '../src/main/calibration.js'
-import { initFirebase, ensurePersonaMediaFromFirebase } from '../src/main/comfyui/firestore-source.js'
+import {
+  initFirebase,
+  ensurePersonaMediaFromFirebase
+} from '../src/main/comfyui/firestore-source.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -64,7 +67,11 @@ let firebaseReady = false
 try {
   const fb = comfyuiConfig.firebase
   const saPath = fb?.serviceAccountPath ? path.resolve(root, fb.serviceAccountPath) : undefined
-  await initFirebase({ serviceAccountPath: saPath, projectId: fb?.projectId, storageBucket: fb?.storageBucket })
+  await initFirebase({
+    serviceAccountPath: saPath,
+    projectId: fb?.projectId,
+    storageBucket: fb?.storageBucket
+  })
   firebaseReady = true
   console.log('[server] Firebase 연결 — 미디어를 Firebase 정본에서 확보한다')
 } catch (err) {
@@ -121,8 +128,11 @@ async function loadPersona(personaId) {
         const manifest = JSON.parse(await fs.readFile(path.join(dir, 'manifest.json'), 'utf8'))
         const r = await ensurePersonaMediaFromFirebase(manifest.profile, dir)
         if (r.images || r.reel)
-          console.log(`[server] Firebase→로컬 캐시: 이미지 ${r.images}장, reel ${r.reel ? 'O' : '-'}`)
-        if (r.missing.length) console.warn(`[server] Firebase에서 못 받은 미디어: ${r.missing.join(', ')}`)
+          console.log(
+            `[server] Firebase→로컬 캐시: 이미지 ${r.images}장, reel ${r.reel ? 'O' : '-'}`
+          )
+        if (r.missing.length)
+          console.warn(`[server] Firebase에서 못 받은 미디어: ${r.missing.join(', ')}`)
       } catch (e) {
         console.warn(`[server] Firebase 미디어 확보 실패(로컬로 진행): ${e.message}`)
       }
@@ -476,22 +486,35 @@ if (session) console.log(`[server] 세션 참가자: ${session.name || session.p
 await loadPersona(initialPersonaId)
 
 // 세션 포인터 감시 — 연구자가 admin에서 참가자를 바꾸면(_session.json 갱신) 런타임이 따라간다.
+// 중복 판정은 selectedAt로 한다(admin이 '세션으로'를 누를 때마다 새로 찍힘). 부팅 시 이미 있던
+// 선택의 selectedAt를 기억해, 그 참가자가 부팅 자동로드와 같더라도 admin에서 다시 누르면 재생된다.
+let lastHandledSelectedAt = session?.selectedAt ?? null
+let sessionActive = Boolean(session) // 현재 세션이 걸려 있는가 — 삭제(세션 나가기) 감지·중복방지용
 let watchDebounce = null
 try {
   watch(libraryRoot, (_evt, filename) => {
-    if (filename !== SESSION_FILE) return
+    // filename이 다른 파일이면 스킵. 단 **null이면 통과**시킨다 — macOS fs.watch는 파일 삭제 시
+    // filename을 null로 주는 경우가 있어, null을 거르면 '세션 나가기'(_session.json 삭제)를 놓친다.
+    if (filename && filename !== SESSION_FILE) return
     clearTimeout(watchDebounce)
     watchDebounce = setTimeout(async () => {
       const sel = await readSession(libraryRoot)
       if (!sel) {
-        // 세션 나가기(_session.json 삭제) — 대기로 복귀. 설정 기본 personaId로 자동 폴백하지 않는다.
+        // 세션 나가기(_session.json 삭제) — 대기(IDLE)로 복귀. 설정 기본 personaId로 폴백하지 않는다.
+        if (!sessionActive) return // 이미 세션 없음 — 중복 idle 방송 방지(null 이벤트가 잦아서)
+        sessionActive = false
+        lastHandledSelectedAt = null
         leaveSession()
         return
       }
-      const next = sel.personaId
-      if (library && next === library.personaId) return // 실질적 변화 없음.
-      console.log(`[server] 세션 선택 변경 감지 → ${sel.name || next}`)
-      applySessionSelection(next)
+      sessionActive = true
+      // 같은 선택의 중복 watch 이벤트만 무시한다(하나의 쓰기가 여러 이벤트를 낼 수 있어서). 참가자가
+      // 이미 로드돼 있어도(부팅 자동선택=최근) admin에서 다시 '세션으로'를 누르면 selectedAt가 갱신되어
+      // 재생이 다시 트리거된다 — 예전 personaId 동일 가드가 이 재생을 막던 버그를 대체.
+      if (sel.selectedAt && sel.selectedAt === lastHandledSelectedAt) return
+      lastHandledSelectedAt = sel.selectedAt
+      console.log(`[server] 세션 선택 반영 → ${sel.name || sel.personaId}`)
+      applySessionSelection(sel.personaId)
     }, 200)
   })
 } catch (err) {
