@@ -27,11 +27,14 @@
     "reelPlaybackRate": 3
   },
   "regen": {
-    "$comment": "영상 생성 백엔드. mode: wan = 로컬 Wan2.2 I2V(현재 기본 — 종횡비 제한 없어 4:1 seamless 파노라마 그대로 애니메이션) | seedance = ByteDance Seedance FLF 루프(API 노드·과금, 단 지원 종횡비 16:9~21:9뿐이라 4:1 파노라마 입력 거부됨) | mock = 개발용(서버 없이 폴백). minWaitMs = 캐시 적중 시에도 유지하는 최소 대기(의례). timeoutMs = 클립당 상한.",
+    "$comment": "영상 생성 백엔드. mode: wan = 로컬 Wan2.2 I2V(현재 기본 — 종횡비 제한 없어 4:1 seamless 파노라마 그대로 애니메이션) | seedance = ByteDance Seedance FLF 루프(API 노드·과금, 단 지원 종횡비 16:9~21:9뿐이라 4:1 파노라마 입력 거부됨) | mock = 개발용(서버 없이 폴백). minWaitMs = 캐시 적중 시에도 유지하는 최소 대기(의례).",
+    "$timeoutMs": "유휴(무진행) 타임아웃 — WS 진행 이벤트도 없고 /queue에도 내 prompt가 없는 상태가 이만큼 지속되면 실패. 공용 ComfyUI 큐에서 대기하는 시간은 '진행 중'으로 쳐서 실패로 세지 않는다(큐 대기 ≠ timeout). 클립 실행 자체는 프레임마다 progress가 와서 리셋된다.",
+    "$maxWaitMs": "절대 대기 상한(안전판) — 큐가 얼어붙어 영원히 pending인 병목을 막는다. 공용 큐가 길 수 있어 넉넉히 60분. 미지정 시 video-cache 기본 3600000.",
     "mode": "wan",
     "mockDelayMs": 12000,
     "minWaitMs": 8000,
     "timeoutMs": 240000,
+    "maxWaitMs": 3600000,
     "readyTimeoutMs": 15000,
     "seedance": {
       "$comment": "Seedance 장면별 10초 seamless 루프(FLF 동일프레임). durationSec=Seedance 4~12s. apiKeyPath=comfy.org 키(secrets, gitignore).",

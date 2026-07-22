@@ -14,12 +14,16 @@ const POLL_INTERVAL_MS = 2500
 
 export class ComfyUIClient {
   /** apiKey: comfy.org API 키 — Seedance 등 API 노드(외부 클라우드 브로커링·과금) 실행에 필요. 로컬 노드만 쓰면 불필요. */
-  constructor({ host, timeoutMs = 300000, apiKey = null } = {}) {
+  constructor({ host, timeoutMs = 300000, maxWaitMs = 1800000, apiKey = null } = {}) {
     if (!host) throw new Error('ComfyUIClient: host가 필요하다 (예: http://143.248.107.38:8188)')
     this.host = host.replace(/\/+$/, '')
     this.clientId = randomUUID()
     this.apiKey = apiKey
+    // timeoutMs: 진행 신호(WS progress / 큐 잔존)가 이만큼 없으면 실패 = "무진행(idle) 타임아웃".
+    //   제출~완료 총시간이 아니라 '멈춤'을 재는 값이라, 공용 ComfyUI 큐에서 오래 대기해도 실패하지 않는다.
+    // maxWaitMs: 큐가 얼어붙어 영원히 pending인 경우를 막는 절대 상한(안전판). idle보다 작을 순 없다.
     this.timeoutMs = timeoutMs
+    this.maxWaitMs = Math.max(maxWaitMs, timeoutMs)
     this.ws = null
     this.wsListeners = new Set() // (msg) => void — 파싱된 JSON 메시지 구독자
   }
@@ -77,6 +81,18 @@ export class ComfyUIClient {
     return out[promptId] || null
   }
 
+  /**
+   * 현재 큐 상태 → { running: [promptId…], pending: [promptId…] }.
+   * ComfyUI /queue 응답의 각 항목은 [번호, prompt_id, prompt, extra, outputs] 배열이라 index 1이 prompt_id.
+   * waitForPrompt가 "내 prompt가 아직 큐에 살아있는가"로 유휴 타임아웃을 리셋하는 데 쓴다(큐 대기≠실패).
+   */
+  async getQueue() {
+    const res = await fetch(`${this.host}/queue`)
+    const out = await this.#json(res, 'queue')
+    const ids = (arr) => (Array.isArray(arr) ? arr.map((e) => e?.[1]).filter(Boolean) : [])
+    return { running: ids(out.queue_running), pending: ids(out.queue_pending) }
+  }
+
   /** /view에서 출력 이미지 바이너리 로드. */
   async fetchImage({ filename, subfolder = '', type = 'output' }) {
     const q = new URLSearchParams({ filename, subfolder, type })
@@ -116,7 +132,16 @@ export class ComfyUIClient {
    */
   async waitForPrompt(promptId, { onProgress } = {}) {
     this.#ensureWS()
-    const deadline = Date.now() + this.timeoutMs
+    // 유휴(idle) 타임아웃 모델: "제출 후 총시간"이 아니라 "진행 신호가 없는 시간"을 잰다.
+    //  - WS progress/executing 이벤트(실행 중) 또는 /queue에 내 prompt가 살아있으면(대기/실행) → 활동으로 보고 리셋.
+    //  - 따라서 공용 ComfyUI 큐에서 다른 작업 뒤에 오래 줄 서 있어도 실패하지 않는다(큐 대기 ≠ 실패).
+    //  - hardDeadline: 큐가 얼어붙어 영원히 pending인 경우를 막는 절대 상한(안전판).
+    const idleMs = this.timeoutMs
+    const hardDeadline = Date.now() + this.maxWaitMs
+    let lastActivity = Date.now()
+    const bump = () => {
+      lastActivity = Date.now()
+    }
 
     return new Promise((resolve, reject) => {
       let settled = false
@@ -152,18 +177,33 @@ export class ComfyUIClient {
         } catch {
           // 일시적 네트워크 오류는 다음 폴링에서 재시도
         }
-        if (Date.now() > deadline)
-          return fail(new Error(`ComfyUI 대기 시간 초과 (${this.timeoutMs}ms): ${promptId}`))
+        // 아직 완료 전 — 내 prompt가 큐에 살아있으면(대기/실행) 진행 중으로 보고 유휴 타이머를 리셋한다.
+        try {
+          const q = await this.getQueue()
+          if (q.running.includes(promptId) || q.pending.includes(promptId)) bump()
+        } catch {
+          // /queue 조회 실패 → 이번 리셋은 생략(WS 이벤트·다음 폴링이 커버)
+        }
+        const now = Date.now()
+        if (now > hardDeadline)
+          return fail(new Error(`ComfyUI 절대 대기 상한 초과 (${this.maxWaitMs}ms): ${promptId}`))
+        if (now - lastActivity > idleMs)
+          return fail(
+            new Error(`ComfyUI 무진행 시간 초과 (${idleMs}ms — 큐·실행 신호 없음): ${promptId}`)
+          )
         if (!settled) pollTimer = setTimeout(checkHistory, POLL_INTERVAL_MS)
       }
 
       const onWsMessage = (msg) => {
         const pid = msg.prompt_id || msg.data?.prompt_id
         if (pid && pid !== promptId) return
-        if (msg.type === 'progress' && onProgress) {
-          onProgress({ phase: 'sampling', value: msg.data?.value, max: msg.data?.max })
-        } else if (msg.type === 'executing' && onProgress && msg.data?.node) {
-          onProgress({ phase: 'node', node: msg.data.node })
+        if (msg.type === 'progress') {
+          bump() // 실행 진행 중 — 유휴 타이머 리셋
+          if (onProgress)
+            onProgress({ phase: 'sampling', value: msg.data?.value, max: msg.data?.max })
+        } else if (msg.type === 'executing' && msg.data?.node) {
+          bump()
+          if (onProgress) onProgress({ phase: 'node', node: msg.data.node })
         } else if (msg.type === 'execution_error') {
           fail(new Error(`ComfyUI 실행 에러: ${JSON.stringify(msg.data).slice(0, 800)}`))
         } else if (

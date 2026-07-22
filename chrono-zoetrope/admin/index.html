@@ -173,6 +173,36 @@
         opacity: 0.45;
         cursor: default;
       }
+      .regenall-ctl {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin-left: 10px;
+      }
+      #regen-all {
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        padding: 6px 13px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 190, 80, 0.5);
+        background: transparent;
+        color: #ffc466;
+      }
+      #regen-all:hover {
+        background: rgba(255, 190, 80, 0.14);
+      }
+      #regen-all:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      .regenall-status {
+        font-size: 12px;
+        color: #ffc466;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
       .pitem .psession {
         color: #7de08c;
         font-weight: 600;
@@ -596,19 +626,32 @@
             <button id="session-set" title="이 참가자의 생애를 4창 런타임에서 재생합니다">
               이 참가자를 세션으로
             </button>
-            <button id="session-clear" class="hidden" title="현재 세션을 해제하고 런타임을 대기(IDLE)로 되돌립니다">
+            <button
+              id="session-clear"
+              class="hidden"
+              title="현재 세션을 해제하고 런타임을 대기(IDLE)로 되돌립니다"
+            >
               세션 나가기
             </button>
           </span>
+          <span class="regenall-ctl" id="regenall-ctl">
+            <button
+              id="regen-all"
+              title="이 참가자의 모든 장면을 현재 프롬프트로 다시 생성합니다 (장당 ~15초)"
+            >
+              전체 재생성
+            </button>
+            <span class="regenall-status" id="regenall-status"></span>
+          </span>
         </header>
         <section id="queue-panel" class="hidden">
-      <div class="qhead">
-        <h2>생성 큐</h2>
-        <span class="now" id="queue-now"></span>
-        <button id="auto-toggle"></button>
-      </div>
-      <div class="qlist" id="queue-list"></div>
-    </section>
+          <div class="qhead">
+            <h2>생성 큐</h2>
+            <span class="now" id="queue-now"></span>
+            <button id="auto-toggle"></button>
+          </div>
+          <div class="qlist" id="queue-list"></div>
+        </section>
         <main id="main"></main>
       </div>
     </div>
@@ -627,6 +670,8 @@
       let sessionPid = null // 현재 세션 참가자 (4창 런타임이 재생 중인 대상)
       let videoState = null // /api/queue의 video: { building:{pid,kind}, queue, job, last }
       let lastVideoAt = 0 // 마지막으로 반영한 영상 작업 완료 시각 (완료 감지→manifest 재로딩)
+      let lastRegenAt = 0 // 마지막으로 반영한 전체 재생성 완료 시각
+      let lastRegenDone = -1 // 전체 재생성 진행 중 마지막으로 그린 done 수 (바뀔 때만 그리드 재로딩)
 
       // 생성 시각 → 상대 표기 (사이드바 큐 정렬 근거를 사람이 읽게)
       function timeAgo(iso) {
@@ -672,7 +717,8 @@
             // 뱃지: 로컬에 없고 클라우드 정본만 있으면 ☁(선택 시 자동으로 받아옴),
             //       아직 생성 전이면 대기/생성중, 실패면 오류.
             let badge = ''
-            if (ready && !p.local && p.cloud) badge = `<span class="pbadge pb-cloud" title="클라우드 정본 — 선택하면 받아옵니다">☁</span>`
+            if (ready && !p.local && p.cloud)
+              badge = `<span class="pbadge pb-cloud" title="클라우드 정본 — 선택하면 받아옵니다">☁</span>`
             else if (!ready) {
               const st = pendingLabel(p)
               const cls = st.kind === 'error' ? 'pb-error' : 'pb-pending'
@@ -711,7 +757,9 @@
       async function loadPersonas({ keep = false } = {}) {
         const list = await api('/api/personas')
         // 최신 생성순(내림차순). createdAt 없는 옛 persona는 뒤로 민다.
-        list.sort((a, b) => (new Date(b.createdAt).getTime() || 0) - (new Date(a.createdAt).getTime() || 0))
+        list.sort(
+          (a, b) => (new Date(b.createdAt).getTime() || 0) - (new Date(a.createdAt).getTime() || 0)
+        )
         personas = list
         const prev = pid
         if (list.length === 0) {
@@ -755,8 +803,10 @@
         // 생성은 시작됐지만 첫 장면이 아직 없음(_pending) — 에러가 아니라 대기 상태.
         // 실시간 보기 폴링(pollQueue)이 새 장면이 저장되는 대로 다시 그린다.
         if (m._pending || !m.images?.length) {
-          $('#cur-name').textContent = m.name || personas.find((x) => x.personaId === pid)?.name || pid
-          $('#main').innerHTML = '<p style="color:#888">아직 첫 장면 생성 전입니다 — 곧 나타납니다…</p>'
+          $('#cur-name').textContent =
+            m.name || personas.find((x) => x.personaId === pid)?.name || pid
+          $('#main').innerHTML =
+            '<p style="color:#888">아직 첫 장면 생성 전입니다 — 곧 나타납니다…</p>'
           return
         }
         render()
@@ -769,7 +819,13 @@
         $('#gender').value = g
         const src = manifest?.gender?.source
         $('#gender-src').textContent =
-          src === 'auto' ? '자동감지' : src === 'manual' ? '수동' : src === 'profile' ? '제출값' : ''
+          src === 'auto'
+            ? '자동감지'
+            : src === 'manual'
+              ? '수동'
+              : src === 'profile'
+                ? '제출값'
+                : ''
         $('#gender-ctl').title = manifest?.gender?.caption || ''
       }
 
@@ -777,7 +833,8 @@
         const total = manifest.images.length
         const failed = manifest.images.filter((im) => im.failed).length
         $('#counts').innerHTML =
-          `총 <b>${total - failed}</b>장` + (failed ? ` · <b style="color:#ff8585">실패 ${failed}</b>` : '')
+          `총 <b>${total - failed}</b>장` +
+          (failed ? ` · <b style="color:#ff8585">실패 ${failed}</b>` : '')
       }
 
       // 세션 참가자 컨트롤 — 현재 세션 대상과, 보고 있는 참가자를 세션으로 지정하는 버튼.
@@ -897,7 +954,8 @@
         const buildingClips = b && b.pid === pid && b.kind === 'clips'
         const buildingReel = b && b.pid === pid && b.kind === 'reel'
         const buildingRecover = b && b.pid === pid && b.kind === 'recover'
-        const qHas = (kind) => videoState && (videoState.queue || []).some((v) => v.pid === pid && v.kind === kind)
+        const qHas = (kind) =>
+          videoState && (videoState.queue || []).some((v) => v.pid === pid && v.kind === kind)
 
         // ── ① 영상 생성 행 (seedance-flf=전이 | wan=클립) ──
         const unit = cs.mode === 'seedance' ? '루프' : '클립'
@@ -933,7 +991,10 @@
 
         // ── ② 릴 합성 행 ──
         let reelRow
-        const reelMeta = reel && reel.durationSec ? `${reel.durationSec.toFixed(1)}초 · ${timeAgo(reel.builtAt)}` : '없음'
+        const reelMeta =
+          reel && reel.durationSec
+            ? `${reel.durationSec.toFixed(1)}초 · ${timeAgo(reel.builtAt)}`
+            : '없음'
         if (buildingReel) {
           reelRow = `<span class="video-label">릴 합성 중…</span>`
         } else {
@@ -957,7 +1018,9 @@
           fbRow =
             `<div class="video-row"><span class="video-label" style="opacity:.85">` +
             `☁ Firebase <b>${fb.clips}/${fb.total}</b> 클립 · reel ${fb.reel ? '✓' : '✗'}` +
-            (behind ? ` <span style="color:#e0a030">— 로컬보다 부족(복구/재업로드 필요)</span>` : '') +
+            (behind
+              ? ` <span style="color:#e0a030">— 로컬보다 부족(복구/재업로드 필요)</span>`
+              : '') +
             `</span></div>`
         }
 
@@ -974,7 +1037,11 @@
       }
       async function postVideo(path, okMsg, failMsg, body = {}) {
         try {
-          await api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+          await api(path, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+          })
           setStatus(okMsg)
           mountVideo()
         } catch (e) {
@@ -982,19 +1049,45 @@
         }
       }
       const genClips = () =>
-        postVideo(`/api/personas/${pid}/clips`, '영상 클립 생성 시작 — 진행은 영상 패널에 표시 (장당 ~1분, 30장이면 수십 분)', '영상 생성 실패')
+        postVideo(
+          `/api/personas/${pid}/clips`,
+          '영상 클립 생성 시작 — 진행은 영상 패널에 표시 (장당 ~1분, 30장이면 수십 분)',
+          '영상 생성 실패'
+        )
       const buildReel = () =>
-        postVideo(`/api/personas/${pid}/reel`, '릴 합성 시작 — Firebase 클립(없으면 로컬)으로 90초 합성', '릴 합성 실패')
+        postVideo(
+          `/api/personas/${pid}/reel`,
+          '릴 합성 시작 — Firebase 클립(없으면 로컬)으로 90초 합성',
+          '릴 합성 실패'
+        )
       const recoverClips = () =>
-        postVideo(`/api/personas/${pid}/recover-clips`, 'ComfyUI 복구 시작 — 서버 output에서 회수해 로컬+Firebase로 복구', '복구 실패')
+        postVideo(
+          `/api/personas/${pid}/recover-clips`,
+          'ComfyUI 복구 시작 — 서버 output에서 회수해 로컬+Firebase로 복구',
+          '복구 실패'
+        )
       const pauseVideo = () =>
-        postVideo('/api/video/stop', '일시정지 요청 — 현재 클립까지 마치고 멈춥니다 (이어서 생성 가능)', '일시정지 실패', { kind: 'pause' })
+        postVideo(
+          '/api/video/stop',
+          '일시정지 요청 — 현재 클립까지 마치고 멈춥니다 (이어서 생성 가능)',
+          '일시정지 실패',
+          { kind: 'pause' }
+        )
       const stopVideo = () =>
-        postVideo('/api/video/stop', '중단 요청 — 현재 클립까지 마치고 멈춥니다 (만든 클립은 유지)', '중단 실패', { kind: 'stop' })
+        postVideo(
+          '/api/video/stop',
+          '중단 요청 — 현재 클립까지 마치고 멈춥니다 (만든 클립은 유지)',
+          '중단 실패',
+          { kind: 'stop' }
+        )
       // 이미지 생성 취소 — postVideo와 달리 mountVideo 대신 큐만 갱신한다.
       async function postGen(path, okMsg, failMsg, body = {}) {
         try {
-          await api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+          await api(path, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+          })
           setStatus(okMsg)
           pollQueue()
         } catch (e) {
@@ -1002,9 +1095,52 @@
         }
       }
       const pauseGen = () =>
-        postGen('/api/stop', '일시정지 요청 — 현재 장면까지 마치고 멈춥니다 (재개하면 같은 항목을 이어서)', '일시정지 실패', { kind: 'pause' })
+        postGen(
+          '/api/stop',
+          '일시정지 요청 — 현재 장면까지 마치고 멈춥니다 (재개하면 같은 항목을 이어서)',
+          '일시정지 실패',
+          { kind: 'pause' }
+        )
       const stopGen = () =>
-        postGen('/api/stop', '중지 요청 — 이 항목을 세워두고 다음 대기 항목으로 넘어갑니다 (진행분은 저장·재개 가능)', '중지 실패', { kind: 'stop' })
+        postGen(
+          '/api/stop',
+          '중지 요청 — 이 항목을 세워두고 다음 대기 항목으로 넘어갑니다 (진행분은 저장·재개 가능)',
+          '중지 실패',
+          { kind: 'stop' }
+        )
+      // 전체 재생성 — 선택 persona의 전 장면을 현재 프롬프트로 다시 생성(백그라운드). 진행률은 헤더에.
+      async function regenAll() {
+        if (!pid) return
+        const n = manifest?.images?.length || 0
+        if (!n) {
+          setStatus('재생성할 장면이 없습니다')
+          return
+        }
+        if (
+          !confirm(
+            `${manifest?.name || pid}의 전 장면(${n}장)을 현재 프롬프트로 다시 생성합니다.\n장당 ~15초 (총 수 분 소요). 진행할까요?`
+          )
+        )
+          return
+        try {
+          await api(`/api/personas/${pid}/regen-all`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: '{}'
+          })
+          setStatus('전체 재생성 시작 — 진행률은 상단에 표시됩니다')
+          lastRegenDone = -1
+          pollQueue()
+        } catch (e) {
+          setStatus(`전체 재생성 실패: ${e.message}`)
+        }
+      }
+      const stopRegenAll = () =>
+        postGen(
+          '/api/regen-all/stop',
+          '전체 재생성 중지 요청 — 현재 장면까지 마치고 멈춥니다',
+          '중지 실패'
+        )
       // '중지'로 세워둔 항목을 다시 생성(남은 장면부터 이어서).
       async function resumeProfile(id, btn) {
         if (btn) {
@@ -1012,7 +1148,11 @@
           btn.textContent = '재개 중…'
         }
         try {
-          await api('/api/resume', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) })
+          await api('/api/resume', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id })
+          })
           setStatus(`재개 요청: ${id} — 남은 장면부터 이어서 생성`)
         } catch (e) {
           setStatus(`재개 실패: ${e.message}`)
@@ -1028,7 +1168,11 @@
           btn.textContent = '재실행 중…'
         }
         try {
-          await api('/api/retry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) })
+          await api('/api/retry', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id })
+          })
           setStatus(`재실행 요청: ${id} — 다시 생성 대기열로`)
         } catch (e) {
           setStatus(`재실행 실패: ${e.message}`)
@@ -1066,6 +1210,8 @@
         else if (t.id === 'video-stop') stopVideo()
         else if (t.id === 'gen-pause') pauseGen()
         else if (t.id === 'gen-stop') stopGen()
+        else if (t.id === 'regen-all') regenAll()
+        else if (t.id === 'regenall-stop') stopRegenAll()
         else if (t.classList.contains('retry-btn')) retryProfile(t.dataset.id, t)
         else if (t.classList.contains('resume-btn')) resumeProfile(t.dataset.id, t)
         else if (t.classList.contains('gen-btn')) startLifeGraph(t.dataset.id, t)
@@ -1179,6 +1325,39 @@
           }
         }
 
+        // 전체 재생성 진행/완료 반영
+        const rj = data.regenAll?.job || null
+        const rbtn = $('#regen-all')
+        const rstat = $('#regenall-status')
+        if (rbtn && rstat) {
+          if (rj) {
+            const mine = rj.pid === pid
+            rbtn.disabled = true
+            rstat.innerHTML =
+              `전체 재생성 ${rj.done}/${rj.total}${mine ? '' : ` · ${rj.name}`} ` +
+              `<button id="regenall-stop" class="stop-btn">중지</button>`
+            // 내가 보고 있는 persona면 새로 나온 장면이 반영되게 done이 바뀔 때마다 그리드 재로딩.
+            if (mine && rj.done !== lastRegenDone) {
+              lastRegenDone = rj.done
+              loadManifest().catch(() => {})
+            }
+          } else {
+            rbtn.disabled = data.viewOnly || !pid
+            rstat.textContent = ''
+            lastRegenDone = -1
+          }
+        }
+        const rl = data.regenAll?.last
+        if (rl && rl.at > lastRegenAt) {
+          lastRegenAt = rl.at
+          if (rl.pid === pid) loadManifest().catch(() => {})
+          setStatus(
+            rl.cancelled
+              ? `전체 재생성 중지: ${rl.done}/${rl.total} (${rl.name || rl.pid})`
+              : `전체 재생성 완료: 성공 ${rl.ok}, 실패 ${rl.err} (${rl.name || rl.pid})`
+          )
+        }
+
         const panel = $('#queue-panel')
         // Firebase 미연결이면 큐 패널 숨김 (검토 기능만 사용)
         if (!data.firebaseReady) {
@@ -1218,7 +1397,9 @@
               pid = ci.personaId
               renderPersonaList()
               liveSig = ''
-              await loadManifest().catch(() => setStatus('아직 첫 장 생성 전입니다 — 곧 나타납니다.'))
+              await loadManifest().catch(() =>
+                setStatus('아직 첫 장 생성 전입니다 — 곧 나타납니다.')
+              )
             }
           // 일시정지·중지 버튼은 아래 이벤트 위임(document click)에서 처리한다.
         } else {
@@ -1237,7 +1418,8 @@
                 manifest = m
                 // 첫 장면 전(_pending·빈 목록)이면 대기 안내만, 장면이 생기면 그때부터 그린다.
                 if (m._pending || !m.images?.length)
-                  $('#main').innerHTML = '<p style="color:#888">아직 첫 장면 생성 전입니다 — 곧 나타납니다…</p>'
+                  $('#main').innerHTML =
+                    '<p style="color:#888">아직 첫 장면 생성 전입니다 — 곧 나타납니다…</p>'
                 else render()
               }
             })

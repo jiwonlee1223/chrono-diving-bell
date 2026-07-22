@@ -108,7 +108,9 @@ export async function generateLifeLibrary(profile, opts = {}) {
   // 지원 비율을 고른다. gemini(1344×768)→'16:9', seamfix 파노라마(4096×1024)→'4:1'.
   const geminiAspect = nearestGeminiAspect(effImage.width, effImage.height)
   const imageSize = gemini.imageSize || '2K'
-  // 장면 모델: gemini.sceneModel(기본 flash — 장당 비용 절감), 없으면 gemini.model.
+  // 장면 모델: gemini.sceneModel(기본 flash). 참고로 pro(gemini.model)는 4:1 종횡비를 지원하지 않아
+  // (HTTP 400 "Aspect ratio 4:1 is not supported") 파노라마 장면엔 못 쓴다 — 4:1을 받는 건 flash뿐이다.
+  // (레퍼런스 장면 얼굴·손 잔상 문제는 모델 교체로는 못 풀고 별도 접근이 필요하다 — 아래 별건.)
   const sceneModel = gemini.sceneModel || gemini.model
 
   // 재개(resume): 같은 프로필을 다시 돌리면 기존 manifest를 읽어 이미 생성된 장을 건너뛴다 —

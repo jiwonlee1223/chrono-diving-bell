@@ -41,6 +41,7 @@ import {
   resetOrphanLifeGraphGenerating,
   updateProfileFields,
   uploadPersonaVideos,
+  uploadPersonaPanoramaImage,
   ensureLocalClipsFromFirebase,
   ensurePersonaMediaFromFirebase,
   fetchPersonaVideos,
@@ -192,15 +193,39 @@ async function regenerate(pid, id) {
   const entry = (manifest.images || []).find((img) => img.id === id)
   if (!entry) throw new Error(`항목 없음: ${id}`)
 
-  const wf = manifest.workflow
-  // 재생성은 **항상 현재 prompt-builder 코드로 프롬프트를 재조립**한다(2026-07-22 변경 — 예전엔
-  // 저장된 프롬프트를 재사용했으나, 프롬프트를 수정하면 기존 persona도 "재생성" 한 번으로 반영되도록
-  // 뒤집음). 장면 컨텍스트(entry.scene/age/isPast)와 레퍼런스 이미지(entry.referenceFile·referenceKind)는
-  // entry에 그대로 남아 유지되므로, 얼굴 앵커·나이 변환 접두어(prefixForEntry)도 함께 재적용된다.
-  // (레퍼런스가 기록되지 않은 구버전 entry는 referenceFile/Kind가 없어 접두어·참조 없이 순수 장면
-  //  프롬프트로만 재조립된다 — 그 경우 얼굴 앵커를 얹으려면 전체 재생성이 필요하다.)
+  // 재생성은 **생성과 동일하게 현재 config.workflow**를 쓴다(2026-07-22 — 예전엔 manifest.workflow를
+  // 따라 구 persona가 seamfix 경로로 새서 생성/재생성 워크플로우·모델이 어긋났다). 이제 어느 persona든
+  // 현행 워크플로우(equirect)·모델(flash)로 재생성돼 생성과 완전히 같다. manifest.workflow도 갱신해 정합.
+  const wf = config.workflow
+  manifest.workflow = wf
+  // 프롬프트도 항상 현재 prompt-builder 코드로 재조립한다(프롬프트 수정 시 기존 persona도 "재생성"
+  // 한 번으로 반영). 장면 컨텍스트(entry.scene/age/isPast)와 레퍼런스(entry.referenceFile·referenceKind)는
+  // entry에 남아 유지되므로 얼굴 앵커·나이 변환 접두어(prefixForEntry)도 함께 재적용된다.
+  // (레퍼런스가 기록되지 않은 구버전 entry는 접두어·참조 없이 순수 장면 프롬프트로만 재조립된다.)
   entry.prompt = prefixForEntry(entry) + composeScenePromptFor(wf, manifest.profile, entry)
 
+  const result = await runRegen(pid, manifest, entry, wf)
+
+  // 재생성된 이미지를 Firebase Storage 정본(generatedPanoramaImages)에 최신본으로 반영한다(best-effort,
+  // 순차 await로 doc 경합 없음). manifest는 위 각 경로의 writeManifest가 이미 정본화했다. 이게 없으면
+  // 다른 머신 hydrate가 옛 이미지를 받는다(로컬만 최신).
+  if (firebaseReady && !entry.failed) {
+    try {
+      await uploadPersonaPanoramaImage({
+        profile: manifest.profile,
+        personaId: manifest.personaId,
+        dir: path.join(LIBRARY, pid),
+        image: entry
+      })
+    } catch (e) {
+      logAction(`재생성 이미지 Firebase 반영 실패 (${entry.id}): ${e.message}`)
+    }
+  }
+  return result
+}
+
+// 워크플로우별 재생성 디스패치 — regenerate()가 프롬프트 재조립 후 부르고, 반환 뒤 Firebase 반영을 얹는다.
+async function runRegen(pid, manifest, entry, wf) {
   // equirect·gemini는 순수 Gemini 텍스트→이미지 — ComfyUI(kontext/sdxl)로 보내지 않는다(4:1 자동).
   if (wf === 'gemini' || wf === 'equirect') return regenerateGemini(pid, manifest, entry)
   // LEGACY: 기존 seamfix persona 전용 — seamfix-legacy.js가 admin 내부 상태를 deps로 받아 처리한다.
@@ -272,6 +297,7 @@ async function regenerateGemini(pid, manifest, entry) {
     references: refBuf ? [refBuf] : [],
     aspectRatio: nearestGeminiAspect(manifest.image.width, manifest.image.height),
     imageSize: manifest.gemini?.imageSize || config.gemini?.imageSize || '2K',
+    // flash(sceneModel) 고정 — pro는 4:1 파노라마를 거부한다. 생성(life-library)과 동일 모델.
     model: manifest.gemini?.sceneModel || config.gemini?.sceneModel || undefined
   })
   await fs.writeFile(path.join(LIBRARY, pid, entry.file), data)
@@ -283,6 +309,56 @@ async function regenerateGemini(pid, manifest, entry) {
   delete entry.failed // 재생성 성공 → failed 해제
   await writeManifest(pid, manifest)
   return { entry }
+}
+
+// 전체 재생성 — 선택 persona의 전 장면을 순차로 regenerate(현재 프롬프트로 재조립)한다. HTTP 요청에
+// 매달리지 않게 백그라운드로 돌리고, 진행은 /api/queue의 regenAll로 폴링한다. 중지는 regenAbort 플래그.
+async function startRegenAll(pid) {
+  if (regenJob) throw new Error('이미 전체 재생성이 진행 중입니다 — 끝난 뒤 다시 시도하세요')
+  const manifest = await readManifest(pid)
+  const ids = (manifest.images || []).map((im) => im.id)
+  if (ids.length === 0) throw new Error('재생성할 장면이 없습니다')
+  regenAbort = false
+  regenJob = {
+    pid,
+    name: manifest.profile?.name || pid,
+    done: 0,
+    total: ids.length,
+    startedAt: Date.now()
+  }
+  logAction(`▶ 전체 재생성 시작: ${regenJob.name} (${ids.length}장)`)
+  ;(async () => {
+    let ok = 0
+    let err = 0
+    for (const id of ids) {
+      if (regenAbort) break
+      try {
+        await regenerate(pid, id) // 프롬프트 재조립 + 참조 유지 + 이미지 재생성 + manifest 저장
+        ok++
+      } catch (e) {
+        err++
+        logAction(`  ✗ 전체 재생성 장면 실패 ${id}: ${e.message}`)
+      }
+      regenJob.done = ok + err
+    }
+    regenLast = {
+      pid,
+      name: regenJob.name,
+      done: ok + err,
+      total: ids.length,
+      ok,
+      err,
+      cancelled: regenAbort,
+      at: Date.now()
+    }
+    logAction(
+      regenAbort
+        ? `⏹ 전체 재생성 중지: ${regenJob.name} (${ok + err}/${ids.length})`
+        : `✓ 전체 재생성 완료: ${regenJob.name} (성공 ${ok}, 실패 ${err})`
+    )
+    regenJob = null
+    regenAbort = false
+  })()
 }
 
 // applySeamFix·regenerateSeamfix(seamfix 재생성)는 seamfix-legacy.js로 이동함(2026-07-22 격리).
@@ -376,6 +452,11 @@ let videoQueue = [] //      [{ pid, kind }]
 let videoBuilding = null // 현재 빌드 중 { pid, kind } | null
 let videoJob = null //      { pid, kind, phase, done, total, durationSec } 진행 상태
 let videoLast = null //     { pid, kind, ok, cancelled, pauseKind, error, at }
+
+// 전체 재생성 — 선택 persona의 전 장면을 순차로 재생성(현재 프롬프트로 재조립)하는 백그라운드 잡.
+let regenJob = null //   { pid, name, done, total, startedAt } | null
+let regenAbort = false // 진행 중 전체 재생성 중지 요청
+let regenLast = null //  { pid, done, total, ok, err, cancelled, at }
 let videoCancel = false //  현재 작업 중단 요청 (클립 사이에서 확인)
 let videoCancelKind = 'stop' // 'pause' | 'stop' — 사용자에게 보여줄 라벨용
 
@@ -881,7 +962,8 @@ const server = http.createServer(async (req, res) => {
         currentInfo: info,
         lastResult: last,
         queue: queueView(),
-        video: { building: videoBuilding, queue: videoQueue, job: videoJob, last: videoLast }
+        video: { building: videoBuilding, queue: videoQueue, job: videoJob, last: videoLast },
+        regenAll: { job: regenJob, last: regenLast }
       })
     }
 
@@ -954,6 +1036,14 @@ const server = http.createServer(async (req, res) => {
         `⏸ 영상 ${videoCancelKind === 'pause' ? '일시정지' : '중단'} 요청 → ${videoBuilding.pid}`
       )
       return send(res, 200, { stopped: true, pid: videoBuilding.pid })
+    }
+
+    // POST /api/regen-all/stop → 진행 중인 전체 재생성 중지(현재 장면까지 마치고 멈춤).
+    if (req.method === 'POST' && url.pathname === '/api/regen-all/stop') {
+      if (!regenJob) return send(res, 200, { stopped: false, note: '진행 중인 전체 재생성 없음' })
+      regenAbort = true
+      logAction(`⏹ 전체 재생성 중지 요청 → ${regenJob.name}`)
+      return send(res, 200, { stopped: true, pid: regenJob.pid })
     }
 
     // POST /api/retry { id } → 실패(error) 프로필을 다시 생성 대기(submitted)로. 재시도 카운트도 리셋.
@@ -1207,6 +1297,17 @@ const server = http.createServer(async (req, res) => {
           `${pid}  ↻ 재생성 완료  장면 ${id}  (${(result.entry.elapsedMs / 1000).toFixed(1)}s${result.entry.seed != null ? `, seed ${result.entry.seed}` : ''})`
         )
         return send(res, 200, result)
+      }
+
+      // 전체 재생성: persona의 전 장면을 순차 재생성(백그라운드). 진행은 /api/queue의 regenAll로 폴링.
+      if (req.method === 'POST' && parts[3] === 'regen-all') {
+        if (VIEW_ONLY) return send(res, 400, { error: '뷰어 모드에서는 재생성 불가' })
+        try {
+          await startRegenAll(pid)
+        } catch (e) {
+          return send(res, 400, { error: e.message })
+        }
+        return send(res, 200, { started: true, pid })
       }
 
       // 영상(클립) 생성 — 전 장면을 Wan 클립으로. 비동기 큐 등록(오래 걸림). 진행은 /api/queue의 video로 폴링.

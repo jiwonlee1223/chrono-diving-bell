@@ -363,6 +363,7 @@ export async function regenerateSeamfix(
       // 파노라마 폭(manifest.image)에 맞는 Gemini 비율 — 4096×1024면 '4:1'. 보정 워크플로우가 그 크기로 정규화.
       aspectRatio: nearestGeminiAspect(manifest.image.width, manifest.image.height),
       imageSize: manifest.gemini?.imageSize || config.gemini?.imageSize || '2K',
+      // flash(sceneModel) 고정 — pro는 4:1 파노라마를 거부한다.
       model: manifest.gemini?.sceneModel || config.gemini?.sceneModel || undefined
     })
     const srcFile = `${path.basename(entry.file, '.png')}.src.png`

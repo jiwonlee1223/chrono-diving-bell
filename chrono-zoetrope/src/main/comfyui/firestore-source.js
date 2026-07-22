@@ -68,7 +68,11 @@ export async function initFirebase({ serviceAccountPath, projectId, storageBucke
   // 기본 버킷: config → '{projectId}.firebasestorage.app'. Admin SDK 업로드는 storage.googleapis.com 경유라
   // 캠퍼스망 firebasestorage SNI 차단과 무관하게 동작한다(실측 확인).
   defaultBucket = storageBucket || `${projectId || sa.project_id}.firebasestorage.app`
-  app = initializeApp({ credential: cert(sa), projectId: projectId || sa.project_id, storageBucket: defaultBucket })
+  app = initializeApp({
+    credential: cert(sa),
+    projectId: projectId || sa.project_id,
+    storageBucket: defaultBucket
+  })
   db = getFirestore(app)
   return db
 }
@@ -83,7 +87,11 @@ export function panoramaDocKey(profile) {
 /** 로컬 파일 1개를 Storage에 올리고 공개 URL(+gs 경로)을 반환. makePublic 실패(균일 접근)면 7일 서명 URL. */
 async function uploadFileToStorage(bkt, localPath, objectPath, contentType) {
   const file = bkt.file(objectPath)
-  await file.save(await fs.readFile(localPath), { contentType, resumable: false, metadata: { cacheControl: 'public,max-age=31536000' } })
+  await file.save(await fs.readFile(localPath), {
+    contentType,
+    resumable: false,
+    metadata: { cacheControl: 'public,max-age=31536000' }
+  })
   let url
   try {
     await file.makePublic()
@@ -107,7 +115,14 @@ async function uploadFileToStorage(bkt, localPath, objectPath, contentType) {
  * @param {(e:object)=>void} [p.onProgress]
  * @returns {Promise<{ key:string, count:number, images:Array }>}
  */
-export async function uploadPersonaPanoramas({ profile, personaId, dir, images, bucket, onProgress = () => {} }) {
+export async function uploadPersonaPanoramas({
+  profile,
+  personaId,
+  dir,
+  images,
+  bucket,
+  onProgress = () => {}
+}) {
   if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
   const bkt = getStorage(app).bucket(bucket || defaultBucket)
   const key = panoramaDocKey(profile)
@@ -118,7 +133,15 @@ export async function uploadPersonaPanoramas({ profile, personaId, dir, images, 
     const local = path.join(dir, im.file)
     const objectPath = `generated-panoramas/${key}/${im.file}`
     const { url, storagePath } = await uploadFileToStorage(bkt, local, objectPath, 'image/png')
-    uploaded.push({ id: im.id, age: im.age, year: im.year, scene: im.scene, isPast: im.isPast ?? null, url, storagePath })
+    uploaded.push({
+      id: im.id,
+      age: im.age,
+      year: im.year,
+      scene: im.scene,
+      isPast: im.isPast ?? null,
+      url,
+      storagePath
+    })
     onProgress({ type: 'upload', done: i + 1, total: ok.length, id: im.id })
   }
   await db
@@ -140,6 +163,51 @@ export async function uploadPersonaPanoramas({ profile, personaId, dir, images, 
 }
 
 /**
+ * 파노라마 이미지 한 장만 Storage에 올리고 generatedPanoramaImages 문서의 images 배열에서 그 id를
+ * 교체(없으면 추가)한다 — admin 재생성이 그 장면만 정본에 최신본으로 반영할 때 쓴다(전체 재업로드 회피).
+ * Storage objectPath가 결정론적(파일명 동일)이라 덮어쓰기로 최신 바이트가 반영된다.
+ * @param {object} p { profile:{name,birthDate,id?}, personaId, dir, image:{id,age,year,scene,isPast,file,failed?}, bucket? }
+ * @returns {Promise<{key,id,url,storagePath}|null>} 실패 장면(failed)·파일 없음이면 null
+ */
+export async function uploadPersonaPanoramaImage({ profile, personaId, dir, image, bucket }) {
+  if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  if (!image?.file || image.failed) return null
+  const bkt = getStorage(app).bucket(bucket || defaultBucket)
+  const key = panoramaDocKey(profile)
+  const local = path.join(dir, image.file)
+  const objectPath = `generated-panoramas/${key}/${image.file}`
+  const { url, storagePath } = await uploadFileToStorage(bkt, local, objectPath, 'image/png')
+  const entry = {
+    id: image.id,
+    age: image.age,
+    year: image.year,
+    scene: image.scene,
+    isPast: image.isPast ?? null,
+    url,
+    storagePath
+  }
+  // 기존 doc의 images 배열에서 같은 id를 교체(없으면 추가) — read-modify-write. 재생성은 순차라 경합 없음.
+  const ref = db.collection(COLLECTION_IMAGES).doc(key)
+  const snap = await ref.get()
+  const prev = snap.exists ? snap.data().images || [] : []
+  const images = prev.filter((im) => im.id !== image.id)
+  images.push(entry)
+  await ref.set(
+    {
+      name: profile.name || null,
+      birthDate: profile.birthDate || null,
+      personaId,
+      bucket: bkt.name,
+      count: images.length,
+      images,
+      updatedAt: FieldValue.serverTimestamp()
+    },
+    { merge: true }
+  )
+  return { key, id: image.id, url, storagePath }
+}
+
+/**
  * 생성된 영상을 Storage에 업로드하고 'generatedVideos' 컬렉션에 프로필별로 기록한다(이미지와 동일 형식).
  * kind='clips': videos/<id>.mp4 전부 업로드 → videos 배열. kind='reel': reel.mp4 업로드 → reel 필드. 둘 다 merge.
  *
@@ -153,17 +221,47 @@ export async function uploadPersonaPanoramas({ profile, personaId, dir, images, 
  * @param {string} [p.bucket] @param {(e:object)=>void} [p.onProgress]
  * @returns {Promise<object>}
  */
-export async function uploadPersonaVideos({ profile, personaId, dir, images, kind = 'clips', reelMeta = null, bucket, onProgress = () => {} }) {
+export async function uploadPersonaVideos({
+  profile,
+  personaId,
+  dir,
+  images,
+  kind = 'clips',
+  reelMeta = null,
+  bucket,
+  onProgress = () => {}
+}) {
   if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
   const bkt = getStorage(app).bucket(bucket || defaultBucket)
   const key = panoramaDocKey(profile)
   const doc = db.collection(COLLECTION_VIDEOS).doc(key)
-  const base = { name: profile.name || null, birthDate: profile.birthDate || null, personaId, bucket: bkt.name, updatedAt: FieldValue.serverTimestamp() }
+  const base = {
+    name: profile.name || null,
+    birthDate: profile.birthDate || null,
+    personaId,
+    bucket: bkt.name,
+    updatedAt: FieldValue.serverTimestamp()
+  }
 
   if (kind === 'reel') {
     const objectPath = `generated-videos/${key}/reel.mp4`
-    const { url, storagePath } = await uploadFileToStorage(bkt, path.join(dir, 'reel.mp4'), objectPath, 'video/mp4')
-    await doc.set({ ...base, reel: { url, storagePath, ...(reelMeta ? { durationSec: reelMeta.durationSec, clipCount: reelMeta.clipCount } : {}) } }, { merge: true })
+    const { url, storagePath } = await uploadFileToStorage(
+      bkt,
+      path.join(dir, 'reel.mp4'),
+      objectPath,
+      'video/mp4'
+    )
+    await doc.set(
+      {
+        ...base,
+        reel: {
+          url,
+          storagePath,
+          ...(reelMeta ? { durationSec: reelMeta.durationSec, clipCount: reelMeta.clipCount } : {})
+        }
+      },
+      { merge: true }
+    )
     onProgress({ type: 'upload-reel', url })
     return { key, reel: url }
   }
@@ -182,8 +280,21 @@ export async function uploadPersonaVideos({ profile, personaId, dir, images, kin
     const id = f.replace(/\.mp4$/, '')
     const im = metaById.get(id) || {}
     const objectPath = `generated-videos/${key}/${f}`
-    const { url, storagePath } = await uploadFileToStorage(bkt, path.join(dir, 'videos', f), objectPath, 'video/mp4')
-    uploaded.push({ id, age: im.age ?? null, year: im.year ?? null, scene: im.scene ?? null, isPast: im.isPast ?? null, url, storagePath })
+    const { url, storagePath } = await uploadFileToStorage(
+      bkt,
+      path.join(dir, 'videos', f),
+      objectPath,
+      'video/mp4'
+    )
+    uploaded.push({
+      id,
+      age: im.age ?? null,
+      year: im.year ?? null,
+      scene: im.scene ?? null,
+      isPast: im.isPast ?? null,
+      url,
+      storagePath
+    })
     onProgress({ type: 'upload', done: i + 1, total: files.length, id })
   }
   await doc.set({ ...base, count: uploaded.length, videos: uploaded }, { merge: true })
@@ -223,7 +334,11 @@ export async function downloadStorageObject({ storagePath, url }, destPath) {
  * @param {object} p  { profile, dir, ids?, onProgress? }  ids 미지정 시 문서의 전 클립.
  * @returns {Promise<{ paths: Map<string,string>, missing: string[] }>}  id→localPath, 문서에 없던 id
  */
-export async function ensureLocalClipsFromFirebase(profile, dir, { ids, onProgress = () => {} } = {}) {
+export async function ensureLocalClipsFromFirebase(
+  profile,
+  dir,
+  { ids, onProgress = () => {} } = {}
+) {
   const data = await fetchPersonaVideos(profile)
   if (!data) throw new Error(`Firebase에 영상 문서가 없다: ${panoramaDocKey(profile)}`)
   const byId = new Map((data.videos || []).map((v) => [v.id, v]))
@@ -236,7 +351,12 @@ export async function ensureLocalClipsFromFirebase(profile, dir, { ids, onProgre
     const id = wanted[i]
     onProgress({ phase: 'fetch', done: i, total: wanted.length, id })
     const local = path.join(videosDir, `${id}.mp4`)
-    if (await fs.access(local).then(() => true, () => false)) {
+    if (
+      await fs.access(local).then(
+        () => true,
+        () => false
+      )
+    ) {
       paths.set(id, local)
       continue
     }
@@ -402,7 +522,11 @@ function toMillisSafe(v) {
   return null
 }
 
-const fileExists = (p) => fs.access(p).then(() => true, () => false)
+const fileExists = (p) =>
+  fs.access(p).then(
+    () => true,
+    () => false
+  )
 
 /**
  * 런타임 재생용 미디어를 Firebase 정본에서 로컬 캐시로 확보한다(read-through).
@@ -622,7 +746,10 @@ export async function downloadPhotos(profile, destDir) {
     const ref = parseStorageURL(urls[i])
     try {
       if (ref) {
-        await getStorage(app).bucket(ref.bucket).file(ref.objectPath).download({ destination: file })
+        await getStorage(app)
+          .bucket(ref.bucket)
+          .file(ref.objectPath)
+          .download({ destination: file })
       } else {
         // firebasestorage 형식이 아닌 URL(테스트 데이터 등)만 일반 HTTP로
         const res = await fetch(urls[i])

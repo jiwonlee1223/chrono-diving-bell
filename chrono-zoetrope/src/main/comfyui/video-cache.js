@@ -36,10 +36,17 @@ export class VideoRegenerator {
     this.personaDir = personaDir
     this.videosDir = join(personaDir, 'videos')
     // wan·seedance-flf 둘 다 ComfyUI 클라이언트를 쓴다(seedance는 API 노드라 apiKey 필요). mock은 없음.
+    // timeoutMs=유휴(무진행) 타임아웃, maxWaitMs=절대 상한(큐가 길어도 대기하되 무한 방지). 공용 큐가
+    // 길 수 있어 영상은 절대 상한을 넉넉히(기본 60분) 준다 — regen.maxWaitMs로 override.
     this.client =
       this.mode === 'mock'
         ? null
-        : new ComfyUIClient({ host, timeoutMs: regen.timeoutMs, apiKey })
+        : new ComfyUIClient({
+            host,
+            timeoutMs: regen.timeoutMs,
+            maxWaitMs: regen.maxWaitMs ?? 3600000,
+            apiKey
+          })
   }
 
   /** 캐시 조회만 (생성 없이). 있으면 절대 경로. */
@@ -75,7 +82,10 @@ export class VideoRegenerator {
     const v = this.regen.wan.video
     const t0 = Date.now()
     console.log(`[regen] Wan2.2 I2V: ${image.id} (${v.width}x${v.height}, ${v.length}f)`)
-    const uploaded = await this.client.uploadImage(await readFile(image.absPath), `freeze-${basename(image.absPath)}`)
+    const uploaded = await this.client.uploadImage(
+      await readFile(image.absPath),
+      `freeze-${basename(image.absPath)}`
+    )
     const prompt = image.scene
       ? `${this.regen.wan.promptPrefix} Scene: ${image.scene}.`
       : this.regen.wan.promptPrefix
