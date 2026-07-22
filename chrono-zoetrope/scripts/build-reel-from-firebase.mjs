@@ -40,9 +40,19 @@ await initFirebase({
 
 const dir = path.join(LIBRARY, pid)
 const manifest = JSON.parse(await fs.readFile(path.join(dir, 'manifest.json'), 'utf-8'))
-const images = (manifest.images || []).filter((im) => !im.failed)
-const ids = images.map((im) => im.id) // 출생→죽음 순서 유지
 const profile = manifest.profile
+let images = (manifest.images || []).filter((im) => !im.failed)
+// 릴 범위 = 탄생~현재 나이만(montage.reel.birthToCurrentOnly, 기본 true). 미래 장면은 인터랙션용으로 제외.
+if (montage.reel?.birthToCurrentOnly !== false) {
+  const birthYear = parseInt(String(profile?.birthDate || '').slice(0, 4), 10)
+  const currentYear = new Date().getFullYear()
+  if (Number.isFinite(birthYear)) {
+    const before = images.length
+    images = images.filter((im) => birthYear + (im.age ?? 0) <= currentYear)
+    console.log(`[${pid}] 릴 범위: 탄생~현재(${currentYear - birthYear}세) → ${images.length}/${before}장 (미래 제외)`)
+  }
+}
+const ids = images.map((im) => im.id) // 출생→죽음 순서 유지
 
 console.log(`[${pid}] ${profile?.name || '?'} · Firebase 클립 ${ids.length}장 확보 중…`)
 const { paths, missing } = await ensureLocalClipsFromFirebase(profile, dir, {

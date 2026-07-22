@@ -577,24 +577,39 @@ async function pumpVideo() {
       }
     } else {
       // 릴 합성: seedance → 루프 이어붙여 fast-forward | wan → 크로스페이드
-      videoJob = { pid, kind, phase: 'concat', done: 0, total: scenes.length }
+      // 릴 범위 = 탄생~현재 나이 장면만(montage.reel.birthToCurrentOnly, 기본 true). 미래(현재 나이 이후)
+      // 장면 영상은 릴에서 빼고, 부끄부끄(유령) 인터랙션에서 찾아보게 남긴다. 클립 자체는 전부 생성돼 있다.
+      let reelScenes = scenes
+      if (montage.reel?.birthToCurrentOnly !== false) {
+        const birthYear = parseInt(String(manifest.profile?.birthDate || '').slice(0, 4), 10)
+        const currentYear = new Date().getFullYear()
+        if (Number.isFinite(birthYear)) {
+          reelScenes = scenes.filter((s) => birthYear + (s.age ?? 0) <= currentYear)
+          logAction(
+            `  릴 범위: 탄생~현재(${currentYear - birthYear}세) → ${reelScenes.length}/${scenes.length}장` +
+              ` (미래 ${scenes.length - reelScenes.length}장은 인터랙션용으로 제외)`
+          )
+        }
+      }
+      if (reelScenes.length === 0) throw new Error('릴에 넣을 탄생~현재 장면이 없습니다')
+      videoJob = { pid, kind, phase: 'concat', done: 0, total: reelScenes.length }
       logAction(`▶ 릴 합성 시작 [${mode}]: ${manifest.profile?.name || pid}`)
       const outPath = path.join(personaDir, 'reel.mp4')
       // 클립 소스 = Firebase 정본(로컬 캐시 우선, 없으면 Storage에서 받아 채움). Firebase 미연결·문서없음이면 로컬 폴백.
-      let clipPaths = scenes.map((s) => regenerator.cachedPath(s.id))
+      let clipPaths = reelScenes.map((s) => regenerator.cachedPath(s.id))
       if (firebaseReady) {
         try {
           const { paths, missing } = await ensureLocalClipsFromFirebase(
             manifest.profile,
             personaDir,
             {
-              ids: scenes.map((s) => s.id),
+              ids: reelScenes.map((s) => s.id),
               onProgress: (e) => (videoJob = { pid, kind, ...e })
             }
           )
           if (missing.length)
             logAction(`  ⚠ Firebase 문서에 없는 클립 ${missing.length}개: ${missing.join(', ')}`)
-          clipPaths = scenes.map((s) => paths.get(s.id) || regenerator.cachedPath(s.id))
+          clipPaths = reelScenes.map((s) => paths.get(s.id) || regenerator.cachedPath(s.id))
         } catch (e) {
           logAction(`  ⚠ Firebase 클립 조회 실패 — 로컬 캐시로 합성: ${e.message}`)
         }
@@ -610,7 +625,8 @@ async function pumpVideo() {
         file: 'reel.mp4',
         mode,
         durationSec: meta.durationSec,
-        clipCount: meta.clipCount,
+        clipCount: meta.clipCount, // 릴에 실제로 들어간 장면 수(탄생~현재만이면 30보다 적다)
+        birthToCurrentOnly: montage.reel?.birthToCurrentOnly !== false,
         builtAt: new Date().toISOString(),
         rev: (manifest.reel?.rev || 0) + 1 // 캐시 버스팅
       }

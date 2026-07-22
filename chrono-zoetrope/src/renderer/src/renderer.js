@@ -262,14 +262,45 @@ async function main() {
     videoEl.load()
   }
 
+  // reel 회전 모드 — Gemini 파노라마 이미지들을 천천히 회전시키며 순회(한 바퀴=secPerTurn초, 바퀴마다
+  // 다음 이미지로 크로스페이드). uYaw 합성(설치 캘리브레이션 + 회전)은 frame()이 한다(cal이 그때
+  // 정의돼 있어 TDZ 회피). 크로스페이드는 uTexVideo 슬롯을 다음 이미지로 재사용해 uVideoMix로 섞는다.
+  let rotate = null // { indices, secPerTurn, crossSec, startMs, idx, shownIdx, xfadeStartMs } | null
+  function startRotate(payload) {
+    const indices = payload?.indices || []
+    if (!indices.length) {
+      rotate = null
+      return
+    }
+    const secPerTurn = payload?.secPerTurn || 24
+    const elapsedSec = Math.max(0, (payload?.elapsedMs ?? 0) / 1000)
+    // 벽시계 기준 — fps와 무관하게 회전 속도가 일정하고, 새로고침 재개도 startMs로 자연히 반영된다.
+    rotate = {
+      indices,
+      secPerTurn,
+      crossSec: payload?.crossfadeSec ?? 1.5,
+      startMs: performance.now() - elapsedSec * 1000,
+      idx: Math.floor(elapsedSec / secPerTurn) % indices.length,
+      shownIdx: -1,
+      xfadeStartMs: 0
+    }
+    teardownVideo()
+    if (montageMaterial) {
+      montageMaterial.uniforms.uBlur.value = 0
+      montageMaterial.uniforms.uVideoMix.value = 0
+      montageMaterial.uniforms.uHasVideo.value = 0
+    }
+  }
+
   // 서버 소유 1차 흐름 국면 적용. immediate=true는 부트스트랩 재개(트윈 없이 그 국면으로 점프).
-  //  idle: 앰비언트(유령 숨김, admin 세션 나가기) · spinup: 실타래 배속 · reel: 배속 재생 · ghost: 유령 뜬 idle
+  //  idle: 앰비언트(유령 숨김, admin 세션 나가기) · spinup: 실타래 배속 · reel: 회전/배속 재생 · ghost: 유령 뜬 idle
   function applyDemo(payload, immediate = false) {
     const phase = payload?.phase ?? 'idle'
     const elapsedSec = Math.max(0, (payload?.elapsedMs ?? 0) / 1000)
     const dur = (s) => (immediate ? 0.001 : s)
     if (phase === 'spinup') {
       demoPhase = 'spinup'
+      rotate = null
       ghost.hide()
       teardownVideo()
       tweenTo(videoMix, 0, dur(0.2))
@@ -280,10 +311,16 @@ async function main() {
     } else if (phase === 'reel') {
       demoPhase = 'reel'
       ghost.hide()
-      const rate = payload?.playbackRate ?? REEL_PLAYBACK_RATE
-      playReelOnce(payload?.url, { seekSec: elapsedSec * rate, playbackRate: rate, flash: !immediate })
+      if (payload?.mode === 'rotate') {
+        startRotate(payload) // Gemini 파노라마 이미지를 천천히 회전시키며 순회
+      } else {
+        rotate = null
+        const rate = payload?.playbackRate ?? REEL_PLAYBACK_RATE
+        playReelOnce(payload?.url, { seekSec: elapsedSec * rate, playbackRate: rate, flash: !immediate })
+      }
     } else if (phase === 'ghost') {
       demoPhase = null
+      rotate = null
       teardownVideo()
       tweenTo(videoMix, 0, dur(0.6))
       tweenTo(blur, 0, dur(0.4))
@@ -292,6 +329,7 @@ async function main() {
     } else {
       // idle (admin 세션 나가기) — 앰비언트, 유령 숨김.
       demoPhase = null
+      rotate = null
       ghost.hide()
       teardownVideo()
       tweenTo(videoMix, 0, dur(0.6))
@@ -405,6 +443,7 @@ async function main() {
     setSurfaceMaterial(montageActive ? montageMaterial : threadMaterial)
 
     if (montageActive) {
+      const u = montageMaterial.uniforms
       if (calibrationMode) {
         // 정적 기준 프레임(첫 로드된 파노라마)로 고정 — 정렬 중 콘텐츠가 움직이지 않게.
         const tex = textures.find(Boolean)
@@ -412,12 +451,54 @@ async function main() {
           currentFrame = -2
           setMontageImage(montageMaterial, tex)
         }
-        montageMaterial.uniforms.uBlur.value = 0
-        montageMaterial.uniforms.uVideoMix.value = 0
+        u.uBlur.value = 0
+        u.uVideoMix.value = 0
+        // uYaw/uPitch는 방향키(setMontageCalibration)가 관리한다.
+      } else if (rotate) {
+        // 회전 모드: 파노라마 이미지를 천천히 회전(uYaw 자동 증가) + 한 바퀴마다 다음 이미지로 크로스페이드.
+        // 벽시계 기준(startMs): 지난 바퀴 수 = 현재 이미지, 나머지 = 회전 위상.
+        u.uBlur.value = 0
+        const turns = (nowMs - rotate.startMs) / 1000 / rotate.secPerTurn
+        const targetIdx = Math.floor(turns) % rotate.indices.length
+        const yaw = turns - Math.floor(turns)
+        if (targetIdx !== rotate.idx) {
+          // 바퀴 넘어감 → 이전 이미지를 uTexVideo 슬롯에 두고 crossSec 동안 새 이미지(uTexImage)로 페이드.
+          const fromTex = textures[rotate.indices[rotate.idx]]
+          if (fromTex) {
+            u.uTexVideo.value = fromTex
+            u.uHasVideo.value = 1
+            rotate.xfadeStartMs = nowMs
+          }
+          rotate.idx = targetIdx
+          rotate.shownIdx = -1 // 아래 보장 블록이 새 이미지를 uTexImage로 세팅
+        }
+        if (rotate.shownIdx !== rotate.idx) {
+          // 새/지연 로드 이미지를 본 이미지 슬롯에 세팅(늦게 로드되는 텍스처 대응).
+          const tex = textures[rotate.indices[rotate.idx]]
+          if (tex) {
+            setMontageImage(montageMaterial, tex)
+            rotate.shownIdx = rotate.idx
+          }
+        }
+        if (rotate.xfadeStartMs) {
+          const xf = (nowMs - rotate.xfadeStartMs) / 1000
+          if (xf < rotate.crossSec) {
+            u.uVideoMix.value = 1 - xf / rotate.crossSec // 이전(video) → 새(image) 크로스페이드
+          } else {
+            u.uVideoMix.value = 0
+            u.uHasVideo.value = 0
+            rotate.xfadeStartMs = 0
+          }
+        } else {
+          u.uVideoMix.value = 0
+        }
+        // 설치 캘리브레이션 오프셋 + 회전 위상 합성
+        u.uYaw.value = (((cal.yaw + yaw) % 1) + 1) % 1
       } else if (demoPhase === 'reel') {
-        // reel 데모: 영상만(정지 이미지 프레임 갱신 안 함). videoMix가 실타래→reel 크로스페이드.
-        montageMaterial.uniforms.uBlur.value = 0
-        montageMaterial.uniforms.uVideoMix.value = tweenUpdate(videoMix)
+        // reel 데모(영상 모드): videoMix가 실타래→reel 크로스페이드.
+        u.uBlur.value = 0
+        u.uVideoMix.value = tweenUpdate(videoMix)
+        u.uYaw.value = cal.yaw // 회전 override 복원
       } else {
         // 몽타주 프레임 선택. FREEZE 후에는 eff가 얼어 있어 같은 식이 멈춘 프레임을 유지한다.
         const n = montage.playlist.length
@@ -427,8 +508,9 @@ async function main() {
           currentFrame = frame
           setMontageImage(montageMaterial, textures[frame])
         }
-        montageMaterial.uniforms.uBlur.value = tweenUpdate(blur)
-        montageMaterial.uniforms.uVideoMix.value = tweenUpdate(videoMix)
+        u.uBlur.value = tweenUpdate(blur)
+        u.uVideoMix.value = tweenUpdate(videoMix)
+        u.uYaw.value = cal.yaw // 회전 override 복원
       }
     } else {
       // 실타래 앰비언트. 데모 spinup이면 threadClock이 가속돼 회전이 빨라진다.

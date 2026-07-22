@@ -15,15 +15,21 @@
     "revealSec": 5.0
   },
   "reel": {
-    "$comment": "주마등 릴 — 죽기 직전 스쳐 가는 기억들. 장면당 1개 영상 → 30개 전부 이어붙여 릴. 두 모드(regen.mode): seedance = 장면별 10초 루프를 순서대로 잇고 targetSec으로 균일 fast-forward | wan = 개별 클립을 크로스페이드로 잇되, 클립이 길면 통째로 배속(fast-forward)해 targetSec에 맞춤(트림으로 뒷부분 버리지 않음). admin에서 '영상 생성'→'릴 생성' 버튼. targetSec=릴 총길이. crossfadeSec/maxStretch/transition은 wan 전용.",
+    "$comment": "주마등 릴 — 죽기 직전 스쳐 가는 기억들. 장면당 1개 영상 → 이어붙여 릴. 두 모드(regen.mode): seedance = 장면별 10초 루프를 순서대로 잇고 targetSec으로 균일 fast-forward | wan = 개별 클립을 크로스페이드로 잇되, 클립이 길면 통째로 배속(fast-forward)해 targetSec에 맞춤(트림으로 뒷부분 버리지 않음). admin에서 '영상 생성'→'릴 생성' 버튼. targetSec=릴 총길이. crossfadeSec/maxStretch/transition은 wan 전용.",
     "targetSec": 90,
     "crossfadeSec": 1.2,
     "maxStretch": 1.25,
-    "transition": "fade"
+    "transition": "fade",
+    "$birthToCurrentOnly": "true(기본)면 릴은 탄생~현재 나이 장면만으로 합성한다(장면 age가 현재 나이 이하). 현재 나이 이후(미래) 장면 영상은 릴에서 빼고 부끄부끄(유령) 인터랙션에서 찾아보게 남긴다. 클립 자체는 30장 전부 생성된다. false면 30장 전부로 합성(옛 동작).",
+    "birthToCurrentOnly": true
   },
   "demo": {
     "$comment": "1차 흐름(서버 소유 국면): 세션 지정 → spinup(실타래 배속) → reel(배속 재생) → ghost(유령 뜬 idle, 1인칭 진입 대기). 서버가 타이머로 진행하고 국면을 방송·부트스트랩에 실어, 런타임 페이지를 새로고침해도 직전 국면을 이어간다. 중단은 admin '세션 나가기'로만.",
     "spinupMs": 10000,
+    "$reelMode": "reel 국면 형태. 'rotate'(기본)=Gemini 파노라마 이미지(탄생~현재)를 실린더에 감아 천천히 회전, 한 바퀴(rotateSecPerTurn초)마다 다음 이미지로 크로스페이드 → reel.mp4·영상생성 불필요. 'video'=사전 합성 reel.mp4를 reelPlaybackRate 배속 재생.",
+    "reelMode": "rotate",
+    "rotateSecPerTurn": 24,
+    "rotateCrossfadeSec": 1.5,
     "reelPlaybackRate": 3
   },
   "regen": {
@@ -46,7 +52,7 @@
     "wan": {
       "$video": "4:1 = seamless 360° 파노라마(4096×1024) 비율 유지. 1920×480은 16의 배수·720p와 동일 latent 비용. 비파노라마(1.79) 페르소나엔 좌우 늘어남 — 파노라마 구도 기준값. width/height는 16의 배수.",
       "$length": "영상 길이(초) = length/fps. length는 반드시 4k+1(4의 배수+1). 목표초 → round((초×fps-1)/4)×4+1. 예: 5s=81, 10s=161. 주의: 프레임 2배면 생성시간·VRAM 대략 2배(1920×480×161 ≈ 290s/클립), Wan2.2는 ~5s(81f) 학습이라 그 이상은 모션이 늘어지거나 반복될 수 있음. IMMERSION은 어차피 loop 재생이라 length는 '반복 주기'.",
-      "video": { "width": 1920, "height": 480, "length": 161, "fps": 16, "steps": 4, "shift": 5.0 },
+      "video": { "width": 1920, "height": 480, "length": 81, "fps": 16, "steps": 4, "shift": 5.0 },
       "promptPrefix": "The scene gently comes alive with subtle natural motion, kept in its elevated high-angle view looking down on the moment from above, as if watching a memory of one's own life pass by below. The central person breathes and moves softly, hair and clothing stir in a faint breeze, ambient life continues around them. Every other person's face stays wiped away and featureless, a soft painterly smudge, and never sharpens into a recognizable face. The camera holds its high vantage nearly still with a very slow drift. Cinematic, realistic, understated motion."
     }
   }

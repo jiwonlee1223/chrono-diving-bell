@@ -206,6 +206,24 @@ function toggleDevPreview() {
 // 타이머는 서버에 있으므로 클라이언트가 없거나 새로고침돼도 진행이 계속된다. 중단은 leaveSession(admin)만.
 const DEMO_SPINUP_MS = montageConfig.demo?.spinupMs ?? 10000
 const DEMO_PLAYBACK_RATE = montageConfig.demo?.reelPlaybackRate ?? 3
+// reel 국면 형태: 'rotate'=Gemini 파노라마 이미지를 천천히 회전(바퀴당 secPerTurn, 한 바퀴마다 다음 이미지 크로스페이드)
+//                'video'=사전 합성 reel.mp4를 배속 재생. 기본 rotate.
+const DEMO_REEL_MODE = montageConfig.demo?.reelMode ?? 'rotate'
+const DEMO_ROTATE_SEC = montageConfig.demo?.rotateSecPerTurn ?? 24
+const DEMO_ROTATE_XFADE = montageConfig.demo?.rotateCrossfadeSec ?? 1.5
+
+// 회전 모드가 순회할 이미지 = 재생목록 인덱스(탄생~현재 나이만, reel.birthToCurrentOnly 존중).
+function reelImageIndices() {
+  const all = library?.images || []
+  if (!all.length) return []
+  const currentYear = new Date().getFullYear()
+  const birthToCurrent = montageConfig.reel?.birthToCurrentOnly !== false
+  const idxs = []
+  all.forEach((im, i) => {
+    if (!birthToCurrent || (im.year ?? 9999) <= currentYear) idxs.push(i)
+  })
+  return idxs
+}
 
 let demo = { phase: 'idle', startedAt: Date.now() } // { phase, startedAt, spinupMs?, url? }
 let demoTimers = []
@@ -227,8 +245,15 @@ function demoPayload() {
   const p = { phase: demo.phase, elapsedMs: Date.now() - demo.startedAt }
   if (demo.phase === 'spinup') p.spinupMs = demo.spinupMs
   if (demo.phase === 'reel') {
-    p.url = demo.url
-    p.playbackRate = DEMO_PLAYBACK_RATE
+    if (demo.mode === 'rotate') {
+      p.mode = 'rotate'
+      p.indices = demo.indices
+      p.secPerTurn = DEMO_ROTATE_SEC
+      p.crossfadeSec = DEMO_ROTATE_XFADE
+    } else {
+      p.url = demo.url
+      p.playbackRate = DEMO_PLAYBACK_RATE
+    }
   }
   return p
 }
@@ -242,6 +267,22 @@ function runReelDemo(spinupMs = DEMO_SPINUP_MS) {
 }
 
 function startReelPhase() {
+  // 회전 모드: Gemini 파노라마 이미지들을 천천히 회전시키며 순회. reel.mp4 불필요.
+  if (DEMO_REEL_MODE === 'rotate') {
+    const indices = reelImageIndices()
+    if (indices.length === 0) {
+      console.warn('[server] 데모: 회전할 이미지 없음 — 유령 idle로 건너뜀')
+      enterGhostPhase()
+      return
+    }
+    demo = { phase: 'reel', mode: 'rotate', startedAt: Date.now(), indices }
+    broadcast(Channels.REEL_DEMO, demoPayload())
+    const totalSec = indices.length * DEMO_ROTATE_SEC
+    console.log(`[server] 데모: reel 회전 (${indices.length}장 × ${DEMO_ROTATE_SEC}s/바퀴 = ${totalSec}s)`)
+    demoTimers.push(setTimeout(enterGhostPhase, totalSec * 1000))
+    return
+  }
+  // 영상 모드: 사전 합성 reel.mp4 배속 재생.
   const url = reelMediaUrl()
   if (!url) {
     console.warn('[server] 데모: reel.mp4 없음 — 유령 idle로 건너뜀(관리자에서 릴 생성 필요)')
