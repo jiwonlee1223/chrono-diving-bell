@@ -116,6 +116,9 @@ export function createGhost({ getStrip, zIndex = 31 } = {}) {
   let visTarget = 0
   let visFrom = 0
   let visStart = performance.now()
+  // 발광 부스트 — 유령이 '말할 때' 살짝 밝아진다(음성 speaking 상태를 시각으로). 0..1, 매 프레임 부드럽게 수렴.
+  let glow = 0
+  let glowTarget = 0
   function setVis(on) {
     const target = on ? 1 : 0
     if (target === visTarget) return
@@ -170,7 +173,8 @@ export function createGhost({ getStrip, zIndex = 31 } = {}) {
     // 가시성 램프(smoothstep) — show/hide 시 부드럽게 나타나고/사라진다.
     const vp = Math.min(1, (now - visStart) / (VIS_RAMP_SEC * 1000))
     vis = visFrom + (visTarget - visFrom) * (vp * vp * (3 - 2 * vp))
-    const alpha = vis * (0.66 + 0.14 * Math.sin(t * 0.45)) // 밝기 호흡(더 진하게: 0.52~0.80)
+    glow += (glowTarget - glow) * 0.08 // 말하기 상태로 부드럽게 수렴
+    const alpha = vis * (0.66 + 0.14 * Math.sin(t * 0.45)) * (1 + 0.4 * glow) // 밝기 호흡 + 말할 때 부스트
 
     const x = cx - GW / 2
     const y = cy - GH / 2
@@ -188,6 +192,9 @@ export function createGhost({ getStrip, zIndex = 31 } = {}) {
     el: layer,
     show: () => setVis(true), //  주마등 종료 후 idle 진입 시 호출.
     hide: () => setVis(false), // spinup·reel·세션 나가기 시 호출.
+    setGlow: (level) => {
+      glowTarget = Math.max(0, Math.min(1, level || 0))
+    }, // 음성 speaking 상태 → 발광 부스트(유령이 말하는 걸 시각으로).
     dispose() {
       cancelAnimationFrame(raf)
       layer.remove()

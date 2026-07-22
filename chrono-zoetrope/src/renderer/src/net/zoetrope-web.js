@@ -75,6 +75,17 @@ export function installZoetropeWeb() {
       return r.json()
     },
 
+    // 유령 음성 대화 세션(서명 URL + §1 경계 오버라이드). 'ghost' 국면 진입 시에만 호출.
+    // 서버가 API 키로 ElevenLabs 서명 URL을 발급한다(키는 서버에만). 미설정/실패면 { enabled:false }.
+    getGhostSession: async () => {
+      try {
+        const r = await fetch('/api/ghost/session', { cache: 'no-store' })
+        return r.ok ? r.json() : { enabled: false }
+      } catch {
+        return { enabled: false }
+      }
+    },
+
     // server → page 구독 (preload와 동일 시그니처).
     onState: (cb) => on(Channels.STATE, cb),
     onContent: (cb) => on(Channels.CONTENT, cb),
@@ -93,6 +104,10 @@ export function installZoetropeWeb() {
     sendFreezeReady: () => postJson('/api/freeze-ready', { projectorIndex: 0 }),
     toggleView: () => postJson('/api/view-toggle', {}),
     togglePlay: () => postJson('/api/toggle-play', {}),
+    // reel(회전) 한 바퀴 완료 → 서버가 대화(유령)로 전환. Q/W로 빨라지면 조기 도착해 전환이 앞당겨진다.
+    sendReelDone: () => postJson('/api/reel-done', {}),
+    // reel(회전) 진행 heartbeat — 도는 동안 주기적으로 보내 서버 안전 폴백을 리셋(Q로 느려도 안 끊기게).
+    sendReelProgress: () => postJson('/api/reel-progress', {}),
     // 설치 캘리브레이션(yaw/pitch) 저장 — 실시간 조정 후 재시작에도 유지되도록.
     setCalibration: (cal) => postJson('/api/calibration', cal)
   }

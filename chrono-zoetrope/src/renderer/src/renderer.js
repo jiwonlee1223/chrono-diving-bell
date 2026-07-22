@@ -26,6 +26,7 @@ import {
 import { createPanoramaPreview } from './scene/panorama-preview.js'
 import { PostPass } from './scene/post-pass.js'
 import { createGhost } from './scene/ghost.js'
+import { createGhostVoice } from './scene/ghost-voice.js'
 
 // 테스트 패턴·사진 색을 그린 그대로 통과시킨다(색 관리 이중변환 회피).
 THREE.ColorManagement.enabled = false
@@ -155,9 +156,14 @@ async function main() {
     videoTexture = null
   }
 
+  // 유령 음성 대화 컨트롤러(아래 ghost 생성 후 주입). 'ghost' 국면에서만 말한다 — §1: 다른 국면·상태에선 stop.
+  let ghostVoice = null
+
   // 상태 진입 연출. immediate = 부트스트랩 시 트윈 없이 그 국면으로 점프.
   function applyState(state, meta = {}, immediate = false) {
     appState = state
+    // §1: 1인칭 진입·몽타주 재생(ZOETROPE/FREEZE/REGEN_WAIT/IMMERSION)에 들어가면 유령 목소리를 끈다.
+    if (MONTAGE_STATES.has(state)) ghostVoice?.stop()
     const dur = (sec) => (immediate ? 0.001 : sec)
     if (state === 'REGEN_WAIT') {
       tweenTo(blur, blurCfg.max, dur(blurCfg.inSec)) // 멈춘 순간이 흐려진다 — 기다림의 의례(§5.2)
@@ -266,6 +272,24 @@ async function main() {
   // 다음 이미지로 크로스페이드). uYaw 합성(설치 캘리브레이션 + 회전)은 frame()이 한다(cal이 그때
   // 정의돼 있어 TDZ 회피). 크로스페이드는 uTexVideo 슬롯을 다음 이미지로 재사용해 uVideoMix로 섞는다.
   let rotate = null // { indices, secPerTurn, crossSec, startMs, idx, shownIdx, xfadeStartMs } | null
+  let rotateSpeedMul = 1 // [debug] reel 회전(surround) 속도 배수. q/w로 실시간 조절. 1 = montage.json rotateSecPerTurn 기준.
+  // [debug] 회전 속도를 factor배 하되 startMs를 재기준해 위상 점프 없이 바꾼다.
+  //  현재 실효 secPerTurn(= rotateSecPerTurn / 배수)을 콘솔에 찍어 montage.json에 옮겨 적을 수 있게 한다.
+  function nudgeRotateSpeed(factor) {
+    if (!rotate) {
+      console.log('[debug] q/w: reel 회전(rotate) 중에만 동작합니다')
+      return
+    }
+    const now = performance.now()
+    const oldMul = rotateSpeedMul
+    const newMul = Math.max(0.05, Math.min(40, oldMul * factor))
+    rotate.startMs = now - (now - rotate.startMs) * (oldMul / newMul) // 위상 연속 유지(점프 방지)
+    rotateSpeedMul = newMul
+    const effSec = rotate.secPerTurn / newMul
+    console.log(
+      `[debug] reel 회전 속도 ×${newMul.toFixed(2)} → 1바퀴 ${effSec.toFixed(1)}s (montage.json demo.rotateSecPerTurn)`
+    )
+  }
   function startRotate(payload) {
     const indices = payload?.indices || []
     if (!indices.length) {
@@ -282,7 +306,8 @@ async function main() {
       startMs: performance.now() - elapsedSec * 1000,
       idx: Math.floor(elapsedSec / secPerTurn) % indices.length,
       shownIdx: -1,
-      xfadeStartMs: 0
+      xfadeStartMs: 0,
+      doneSent: false // reel 한 바퀴 완료 신호를 서버에 1회만 보내기 위한 플래그
     }
     teardownVideo()
     if (montageMaterial) {
@@ -302,6 +327,7 @@ async function main() {
       demoPhase = 'spinup'
       rotate = null
       ghost.hide()
+      ghostVoice?.stop()
       teardownVideo()
       tweenTo(videoMix, 0, dur(0.2))
       tweenTo(blur, 0, dur(0.2))
@@ -311,6 +337,7 @@ async function main() {
     } else if (phase === 'reel') {
       demoPhase = 'reel'
       ghost.hide()
+      ghostVoice?.stop()
       if (payload?.mode === 'rotate') {
         startRotate(payload) // Gemini 파노라마 이미지를 천천히 회전시키며 순회
       } else {
@@ -326,11 +353,13 @@ async function main() {
       tweenTo(blur, 0, dur(0.4))
       tweenTo(threadSpeedMul, 1, dur(1.5))
       ghost.show() // 유령 등장 = 1인칭 진입 가능 신호.
+      ghostVoice?.start() // 유령이 나타나면 말을 건다(show 램프 뒤 startDelayMs). §1 경계는 페르소나가 소유.
     } else {
       // idle (admin 세션 나가기) — 앰비언트, 유령 숨김.
       demoPhase = null
       rotate = null
       ghost.hide()
+      ghostVoice?.stop()
       teardownVideo()
       tweenTo(videoMix, 0, dur(0.6))
       tweenTo(blur, 0, dur(0.4))
@@ -403,6 +432,13 @@ async function main() {
     })
   })
 
+  // 유령 음성 대화: 'ghost' 국면에서만 유령이 말을 건다. 말할 때 유령 발광을 살짝 키운다.
+  // 목소리 엔진·페르소나·§1 경계는 서버(/api/ghost/session)와 ghost-persona.md가 소유한다.
+  ghostVoice = createGhostVoice({
+    getSession: () => window.zoetrope.getGhostSession?.(),
+    onSpeaking: (on) => ghost.setGlow?.(on ? 1 : 0)
+  })
+
   // 새로고침 재개: 서버가 준 현재 1차 흐름 국면으로 즉시 점프(진행 중인 reel은 위치까지 이어감).
   if (boot.demo && boot.demo.phase && boot.demo.phase !== 'idle') applyDemo(boot.demo, true)
 
@@ -458,9 +494,29 @@ async function main() {
         // 회전 모드: 파노라마 이미지를 천천히 회전(uYaw 자동 증가) + 한 바퀴마다 다음 이미지로 크로스페이드.
         // 벽시계 기준(startMs): 지난 바퀴 수 = 현재 이미지, 나머지 = 회전 위상.
         u.uBlur.value = 0
-        const turns = (nowMs - rotate.startMs) / 1000 / rotate.secPerTurn
-        const targetIdx = Math.floor(turns) % rotate.indices.length
+        const effSecPerTurn = rotate.secPerTurn / rotateSpeedMul // [debug] q/w 속도 배수 반영
+        const turns = (nowMs - rotate.startMs) / 1000 / effSecPerTurn
+        // 각 이미지는 딱 한 번만 등장 — 랩(모듈로) 금지. 0→1→…→마지막까지 단일 패스로 순회하고,
+        // 마지막 이미지를 지나면 그 이미지에 머문 채(반복 없이) reel 완료를 서버에 알려 대화로 전환한다.
+        // Q/W로 빨라지면 이 순회를 더 빨리 끝내 전환도 그만큼 앞당겨진다(전환 시각 = 이미지수 × 24s / 속도배수).
+        const targetIdx = Math.min(Math.floor(turns), rotate.indices.length - 1)
         const yaw = turns - Math.floor(turns)
+        if (!rotate.doneSent && turns >= rotate.indices.length) {
+          rotate.doneSent = true
+          window.zoetrope.sendReelDone?.() // reel당 1회만. 기본 속도면 서버 폴백 타이머와 같은 시점.
+        }
+        // 느린 쪽도 보장: 도는 동안 ~3s마다 heartbeat → 서버 안전 폴백(deadman) 리셋. Q로 느려도 안 끊긴다.
+        if (!rotate.doneSent && nowMs - (rotate.lastTickMs || 0) > 3000) {
+          rotate.lastTickMs = nowMs
+          window.zoetrope.sendReelProgress?.()
+        }
+        // [debug] 매초 실효 회전값 — 이 줄이 안 뜨면 rotate 국면이 아님. W 누를 때 effSec가 줄면 정상 동작.
+        if (window.__reelDebug !== false && nowMs - (rotate._logMs || 0) > 1000) {
+          rotate._logMs = nowMs
+          console.log(
+            `[debug/frame] rotate mul=${rotateSpeedMul.toFixed(2)} effSec=${effSecPerTurn.toFixed(1)}s turns=${turns.toFixed(2)} yaw=${yaw.toFixed(3)}`
+          )
+        }
         if (targetIdx !== rotate.idx) {
           // 바퀴 넘어감 → 이전 이미지를 uTexVideo 슬롯에 두고 crossSec 동안 새 이미지(uTexImage)로 페이드.
           const fromTex = textures[rotate.indices[rotate.idx]]
@@ -595,22 +651,36 @@ async function main() {
   //  Enter → 멈춤/진입/재개 (server 상태 기계가 상태별 의미 결정)
   //  V     → 뷰 토글(파노라마 ↔ 실린더)
   //  Space → 재생/정지 (개발용)
+  //  Q / W → [debug] reel 회전(surround) 속도 느리게 / 빠르게 (실효 secPerTurn 콘솔 출력)
   window.addEventListener('keydown', (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return
+    // [debug] 모든 키 수신 확인 — W 눌렀는데 이 로그가 없으면 포커스가 페이지가 아님(예: DevTools).
+    // 끄기: 콘솔에서 window.__reelDebug = false
+    if (window.__reelDebug !== false) console.log('[debug] keydown:', e.key)
     const yawStep = e.shiftKey ? 0.02 : 0.004 // 0.004 ≈ 1.4°, shift ≈ 7°
     const pitchStep = e.shiftKey ? 0.02 : 0.004
     if (e.key === 'Enter') {
       e.preventDefault()
       window.zoetrope.sendInput?.('stopEnter')
-    } else if (e.key === 'v' || e.key === 'V') {
+    } else if (e.key === 'v' || e.key === 'V' || e.code === 'KeyV') {
       e.preventDefault()
       window.zoetrope.toggleView?.()
-    } else if (e.key === 'c' || e.key === 'C') {
+    } else if (e.key === 'c' || e.key === 'C' || e.code === 'KeyC') {
       e.preventDefault()
       toggleCalibrationMode()
     } else if (e.key === ' ' || e.code === 'Space') {
       e.preventDefault()
       window.zoetrope.togglePlay?.()
+    } else if (e.key === 'q' || e.key === 'Q' || e.code === 'KeyQ') {
+      // e.code = 물리 키 → 한글 IME(e.key='ㅂ')·레이아웃과 무관하게 잡힌다.
+      e.preventDefault()
+      console.log(`[debug] Q(느리게) 눌림 · demoPhase=${demoPhase} · rotate=${rotate ? 'active' : 'null'}`)
+      nudgeRotateSpeed(1 / 1.25) // [debug] reel 회전 느리게
+    } else if (e.key === 'w' || e.key === 'W' || e.code === 'KeyW') {
+      // e.code = 물리 키 → 한글 IME(e.key='ㅈ')·레이아웃과 무관하게 잡힌다.
+      e.preventDefault()
+      console.log(`[debug] W(빠르게) 눌림 · demoPhase=${demoPhase} · rotate=${rotate ? 'active' : 'null'}`)
+      nudgeRotateSpeed(1.25) // [debug] reel 회전 빠르게
     } else if (e.key === 'ArrowLeft') {
       e.preventDefault()
       nudgeCalibration(-yawStep, 0)

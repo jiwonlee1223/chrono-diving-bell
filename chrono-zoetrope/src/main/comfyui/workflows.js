@@ -585,7 +585,6 @@ export function composeSeedanceLoopPrompt(s) {
     `Seen from a slightly elevated high angle looking gently down, quietly observing this life from just above. ` +
     `The central person breathes and moves softly, hair and clothing stir in a faint breeze, ambient life drifts — ` +
     `and everything eases back to exactly where it began so the motion loops seamlessly. ` +
-    `Every other person's face stays soft, blurred and indistinct, wiped away like a brushstroke, never sharp. ` +
     `Warm faded film grain, gentle unhurried motion, cinematic, no text, no captions.`
   )
 }
@@ -603,8 +602,7 @@ export function composeSeedanceTransitionPrompt(a, b) {
     `The scene begins in this moment — ${a.scene}${at}, held softly for a breath, ` +
     `then dreamlike melts and transforms into the next memory — ${b.scene}${bt}. ` +
     `Seen from a slightly elevated high angle looking gently down, quietly observing this life from just above. ` +
-    `The central person is the subject and stays visible; every other person's face remains soft, blurred and indistinct, ` +
-    `wiped away like a brushstroke, never sharp. Warm faded film grain, gentle drifting motion, cinematic, no text, no captions.`
+    `The central person is the subject and stays visible. Warm faded film grain, gentle drifting motion, cinematic, no text, no captions.`
   )
 }
 

@@ -259,8 +259,6 @@ export function composeKontextPrompt(profile, item) {
     ` the floor or ground filling much of the frame, as if observing a memory from above.` +
     ` ${who} is the central subject, clearly visible in this moment seen from above: ${item.scene}.` +
     ` Keep this main person's own face visible and in focus.` +
-    ` Every other person's face is wiped away like a smear of paint — smooth, soft, blurred, featureless,` +
-    ` painterly, as if brushed out, not distorted and not grotesque, simply an indistinct smudge.` +
     (extra ? ` ${extra}.` : '') +
     ` ${STYLE}`
   )
@@ -287,9 +285,6 @@ export function composeGeminiScenePrompt(profile, item) {
     ` as if the viewer were floating a little above and behind, quietly watching a memory of their own life pass by below them.` +
     ` In the scene, seen from this high angle looking down, ${who} in this moment: ${item.scene}.` +
     ` This central person is the subject and is clearly visible, their own face shown and in focus.` +
-    ` Every other person in the scene has their face wiped away as if smeared out with a single brushstroke:` +
-    ` smooth, soft, featureless and blurred — painterly, not distorted, not grotesque, simply an indistinct smudge where the face would be,` +
-    ` like a face erased from memory.` +
     future +
     (extra ? ` ${extra}.` : '') +
     ` ${STYLE}` +
@@ -301,7 +296,7 @@ export function composeGeminiScenePrompt(profile, item) {
 export function composeSdxlPrompt(profile, item) {
   const who = `a ${item.age}-year-old Korean ${subjectNoun(item.age, profile.gender)}`
   const extra = (profile.descriptors || []).join(', ')
-  return `strong high angle shot, elevated camera raised well above and tilted downward looking down on the scene, third person view seen from above, floor and ground filling much of the frame, observing a memory from outside, ${who} as the central subject clearly visible with their own face in focus, ${item.scene}, all other people with faces smeared and wiped away like erased brushstrokes, featureless indistinct smudged faces, not distorted, not grotesque${extra ? `, ${extra}` : ''}, ${STYLE}`
+  return `strong high angle shot, elevated camera raised well above and tilted downward looking down on the scene, third person view seen from above, floor and ground filling much of the frame, observing a memory from outside, ${who} as the central subject clearly visible with their own face in focus, ${item.scene}${extra ? `, ${extra}` : ''}, ${STYLE}`
 }
 
 /**
@@ -346,7 +341,7 @@ const EQUIRECT_GEO =
 /**
  * 1인칭 360° equirect gaze 프롬프트 — 주인공이 화면 중앙에서 그 장면의 행동을 능동적으로 수행하고,
  * 360°로 그 행동의 맥락(주변)을 보여준다. 주인공은 "그냥 서 있는" 역할이 아니라 그 순간의 주체다.
- * 다른 인물은 배경 조연일 뿐 주인공의 역할을 대신하지 않으며 얼굴은 붓으로 지운다. 진짜 360 기하.
+ * 다른 인물은 배경 조연일 뿐 주인공의 역할을 대신하지 않는다(얼굴 blur/smear 처리는 제거함, 2026-07-22). 진짜 360 기하.
  * 순수 Gemini 생성이라 Flux(seamfix 이음매·kontext) 단계가 없다.
  */
 export function composeEquirectGazePrompt(profile, item) {
@@ -358,7 +353,7 @@ export function composeEquirectGazePrompt(profile, item) {
     ` At the exact CENTER of the frame is ${who} — the person whose memory this is and the one and only main subject.` +
     ` THEY are unmistakably the one performing the action of this moment, fully and actively engaged in it (not merely standing or posing); their face is clearly visible and in sharp focus, though they need not face the camera.` +
     ` The place wraps a full 360 degrees around them, revealing the surroundings and the context of what they are doing.` +
-    ` Anyone else present is only a secondary bystander in the background and never takes over the main action — the central person is the sole active protagonist. Every other person's face is wiped away like a soft featureless smear of paint, smooth, painterly, not distorted, not grotesque, like a face erased from memory.` +
+    ` Anyone else present is only a secondary bystander in the background and never takes over the main action — the central person is the sole active protagonist.` +
     EQUIRECT_GEO +
     future +
     (extra ? ` ${extra}.` : '')
@@ -383,9 +378,7 @@ export function composePanoramaScenePrompt(profile, item) {
     ` standing inside the scene and surrounded by it on every side, the place of this memory wrapping all the way around the viewer.` +
     ` The surrounding environment of this moment, seen from within: ${item.scene}.` +
     ` At the center of it is ${who} — the one and only main subject, actively and unmistakably performing the action of this moment (not merely standing or posing), their face clearly visible and in focus.` +
-    ` Any other people are only secondary bystanders in the background and never take over the action; every other person's face is wiped away like a smear of paint —` +
-    ` smooth, soft, featureless and blurred, painterly, not distorted, not grotesque, simply an indistinct smudge where the face would be,` +
-    ` like a face erased from memory.` +
+    ` Any other people are only secondary bystanders in the background and never take over the action.` +
     ` One continuous unbroken environment with no visible seam, edge or border; the far left and far right flow into one another.` +
     // 이음매(far-left ≡ far-right wrap)의 '접합선 그 자리'만 단순면(벽·기둥)에 걸리게 한다. 콘텐츠를 엣지에서
     // 멀리 떼면 큰 민무늬 여백이 생기므로, 장면은 좌우 끝까지 자연스레 채우되 딱 이어지는 선만 단순면이면 된다.

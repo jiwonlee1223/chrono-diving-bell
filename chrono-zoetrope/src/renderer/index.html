@@ -5,10 +5,12 @@
     <title>CDB</title>
     <!-- https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP -->
     <!-- 웹앱: 라이브러리 미디어는 서버 동일 오리진 /media/* 로 서빙(과거 zoe: 프로토콜 대체).
-         connect-src 'self' = /api/events(SSE)·/api/*(fetch). 프리로드 영상은 blob 없이 직접 src. -->
+         connect-src 'self' = /api/events(SSE)·/api/*(fetch). 프리로드 영상은 blob 없이 직접 src.
+         유령 음성(ElevenLabs Conversational AI): WebSocket wss://*.elevenlabs.io + 서명URL REST https://*.elevenlabs.io.
+         오디오 파이프라인이 AudioWorklet(blob 워커)·MediaStream을 써서 worker-src/script-src blob:·media-src mediastream: 허용. -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'"
+      content="default-src 'self'; script-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: mediastream:; connect-src 'self' https://*.elevenlabs.io wss://*.elevenlabs.io; worker-src 'self' blob:"
     />
     <style>
       html,

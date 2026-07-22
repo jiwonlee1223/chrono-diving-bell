@@ -52,6 +52,17 @@ if (montage.reel?.birthToCurrentOnly !== false) {
     console.log(`[${pid}] 릴 범위: 탄생~현재(${currentYear - birthYear}세) → ${images.length}/${before}장 (미래 제외)`)
   }
 }
+// 나잇대별 1장만(montage.reel.onePerStage, 기본 true) — 단계별 첫 장면.
+if (montage.reel?.onePerStage !== false) {
+  const seenAge = new Set()
+  const before = images.length
+  images = images.filter((im) => {
+    if (seenAge.has(im.age)) return false
+    seenAge.add(im.age)
+    return true
+  })
+  console.log(`[${pid}] 나잇대별 1장: ${images.length}/${before}장`)
+}
 const ids = images.map((im) => im.id) // 출생→죽음 순서 유지
 
 console.log(`[${pid}] ${profile?.name || '?'} · Firebase 클립 ${ids.length}장 확보 중…`)

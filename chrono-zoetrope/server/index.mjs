@@ -211,27 +211,55 @@ const DEMO_PLAYBACK_RATE = montageConfig.demo?.reelPlaybackRate ?? 3
 const DEMO_REEL_MODE = montageConfig.demo?.reelMode ?? 'rotate'
 const DEMO_ROTATE_SEC = montageConfig.demo?.rotateSecPerTurn ?? 24
 const DEMO_ROTATE_XFADE = montageConfig.demo?.rotateCrossfadeSec ?? 1.5
+// reel 회전 전환은 클라이언트 'reel-done'(한 바퀴 완료)이 주도한다. 이건 클라이언트 무응답(죽음·헤드리스)
+// 대비 안전 폴백까지의 무-heartbeat 허용시간(ms). 정상 클라이언트는 도는 동안 계속 heartbeat하므로,
+// Q로 느리게 해도 끊기지 않는다(느린 쪽 보장).
+const REEL_DEADMAN_MS = montageConfig.demo?.reelDeadmanMs ?? 10000
 
-// 회전 모드가 순회할 이미지 = 재생목록 인덱스(탄생~현재 나이만, reel.birthToCurrentOnly 존중).
+// 회전 모드가 순회할 이미지 = 재생목록 인덱스. 탄생~현재 나이(birthToCurrentOnly) + 나잇대별 1장(onePerStage).
 function reelImageIndices() {
   const all = library?.images || []
   if (!all.length) return []
   const currentYear = new Date().getFullYear()
   const birthToCurrent = montageConfig.reel?.birthToCurrentOnly !== false
+  const onePerStage = montageConfig.reel?.onePerStage !== false
   const idxs = []
+  const seenAge = new Set()
   all.forEach((im, i) => {
-    if (!birthToCurrent || (im.year ?? 9999) <= currentYear) idxs.push(i)
+    if (birthToCurrent && (im.year ?? 9999) > currentYear) return
+    if (onePerStage) {
+      if (seenAge.has(im.age)) return // 나잇대별 첫 장면만(재생목록은 나이·장면 순서)
+      seenAge.add(im.age)
+    }
+    idxs.push(i)
   })
   return idxs
 }
 
 let demo = { phase: 'idle', startedAt: Date.now() } // { phase, startedAt, spinupMs?, url? }
 let demoTimers = []
+let reelDeadman = null // reel 회전 안전 폴백 타이머(heartbeat로 리셋). null = 미가동.
 let currentReelSec = 0 // 현재 페르소나 reel.mp4 길이(초) — manifest.reel.durationSec
 
 function clearDemoTimers() {
   for (const t of demoTimers) clearTimeout(t)
   demoTimers = []
+  if (reelDeadman) {
+    clearTimeout(reelDeadman)
+    reelDeadman = null
+  }
+}
+
+// reel 회전 안전 폴백(deadman). 클라이언트가 도는 동안 /api/reel-progress heartbeat를 보낼 때마다 리셋한다.
+// 무응답이 REEL_DEADMAN_MS 지속되면(클라이언트 죽음·헤드리스) 유령으로 폴백. 정상 클라이언트는 회전이
+// 느려도(Q) 계속 heartbeat하므로 끊기지 않고, 한 바퀴를 다 돌면 reel-done으로 전환한다(느린 쪽 보장).
+function armReelDeadman() {
+  if (reelDeadman) clearTimeout(reelDeadman)
+  reelDeadman = setTimeout(() => {
+    reelDeadman = null
+    console.warn('[server] reel: 클라이언트 무응답 — 안전 폴백으로 유령 전환')
+    enterGhostPhase()
+  }, REEL_DEADMAN_MS)
 }
 
 function reelMediaUrl() {
@@ -278,8 +306,10 @@ function startReelPhase() {
     demo = { phase: 'reel', mode: 'rotate', startedAt: Date.now(), indices }
     broadcast(Channels.REEL_DEMO, demoPayload())
     const totalSec = indices.length * DEMO_ROTATE_SEC
-    console.log(`[server] 데모: reel 회전 (${indices.length}장 × ${DEMO_ROTATE_SEC}s/바퀴 = ${totalSec}s)`)
-    demoTimers.push(setTimeout(enterGhostPhase, totalSec * 1000))
+    console.log(
+      `[server] 데모: reel 회전 (${indices.length}장, 기본 ${totalSec}s — 전환은 클라이언트 한 바퀴 완료 시, Q/W 속도 따라감)`
+    )
+    armReelDeadman() // 전환 트리거 = 클라이언트 reel-done(한 바퀴). 이건 무응답 대비 안전 폴백.
     return
   }
   // 영상 모드: 사전 합성 reel.mp4 배속 재생.
@@ -337,6 +367,63 @@ function bootstrapPayload() {
         }
       : null
   }
+}
+
+// ── 유령 음성 대화 세션 (ghost.voice) ────────────────────────────────
+// reel 종료 후 'ghost' 국면에서만 브라우저가 호출한다. API 키는 서버에만 두고
+// ElevenLabs Conversational AI 서명 URL을 발급해 넘긴다. §1 경계·첫 질문·언어·보이스는
+// ghost-persona.md + montage.json(ghost.voice)에서 읽어 오버라이드로 함께 내려준다.
+// 미설정(agentId·키 없음)·발급 실패면 { enabled:false } — 브라우저는 조용히 유령만 띄운다(§1 침묵).
+async function ghostSessionPayload() {
+  const vcfg = montageConfig.ghost?.voice
+  if (!vcfg || vcfg.enabled === false || !vcfg.agentId) return { enabled: false }
+
+  // API 키(gitignore된 secrets/) — 서버만 읽는다.
+  let apiKey = ''
+  try {
+    const keyPath = path.resolve(root, vcfg.apiKeyPath || './secrets/elevenlabs-api-key.txt')
+    apiKey = (await fs.readFile(keyPath, 'utf8')).trim()
+  } catch {
+    console.warn('[server] 유령 음성: API 키 파일 없음 — 음성 비활성(유령만)')
+    return { enabled: false }
+  }
+  if (!apiKey) return { enabled: false }
+
+  // ElevenLabs 서명 URL 발급(WebSocket). 키는 헤더로만 나가고 브라우저엔 노출되지 않는다.
+  let signedUrl
+  try {
+    const r = await fetch(
+      `https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=${encodeURIComponent(vcfg.agentId)}`,
+      { headers: { 'xi-api-key': apiKey } }
+    )
+    if (!r.ok) throw new Error(`get-signed-url ${r.status}`)
+    const j = await r.json()
+    signedUrl = j.signed_url || j.signedUrl
+    if (!signedUrl) throw new Error('signed_url 누락')
+  } catch (e) {
+    console.warn(`[server] 유령 음성: 서명 URL 발급 실패 — ${e.message}`)
+    return { enabled: false }
+  }
+
+  // §1 경계 페르소나(프로즈 파일) — 대화 두뇌의 시스템 프롬프트로 오버라이드.
+  let systemPrompt = ''
+  if (vcfg.systemPromptPath) {
+    try {
+      systemPrompt = (await fs.readFile(path.resolve(root, vcfg.systemPromptPath), 'utf8')).trim()
+    } catch {
+      console.warn('[server] 유령 음성: 페르소나 파일 없음 — 에이전트 기본 프롬프트 사용')
+    }
+  }
+
+  // 브라우저 SDK(startSession)에 넘길 오버라이드. 빈 값은 넣지 않는다(에이전트 대시보드 설정 존중).
+  // 주의: 오버라이드는 ElevenLabs 에이전트 '보안 설정'에서 항목별로 허용해야 실제 반영된다.
+  const overrides = { agent: {} }
+  if (systemPrompt) overrides.agent.prompt = { prompt: systemPrompt }
+  if (vcfg.firstMessage) overrides.agent.firstMessage = vcfg.firstMessage
+  if (vcfg.language) overrides.agent.language = vcfg.language
+  if (vcfg.voiceId) overrides.tts = { voiceId: vcfg.voiceId }
+
+  return { enabled: true, signedUrl, overrides, startDelayMs: vcfg.startDelayMs ?? 2600 }
 }
 
 // ── HTTP 헬퍼 (admin-server 패턴) ────────────────────────────────────
@@ -426,6 +513,11 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, bootstrapPayload())
     }
 
+    // ---- 유령 음성 대화 세션 발급 — 'ghost' 국면에서 브라우저가 호출(서명 URL은 서버가 발급) ----
+    if (req.method === 'GET' && url.pathname === '/api/ghost/session') {
+      return sendJson(res, 200, await ghostSessionPayload())
+    }
+
     // ---- SSE 상태 스트림 (main→renderer 방송 대체) ----
     if (req.method === 'GET' && url.pathname === '/api/events') {
       res.writeHead(200, {
@@ -479,10 +571,31 @@ const server = http.createServer(async (req, res) => {
     }
 
     // reel 데모 수동 트리거(테스트용 — 참가자 교체 없이 현재 페르소나로 시퀀스 실행).
+    // { phase:'ghost' } 를 주면 spinup·reel을 건너뛰고 유령(음성) 국면으로 바로 점프한다(음성 반복 테스트용).
     if (req.method === 'POST' && url.pathname === '/api/reel-demo') {
       const body = await readBody(req)
+      if (body?.phase === 'ghost') {
+        enterGhostPhase()
+        return sendJson(res, 200, { ok: true, phase: 'ghost' })
+      }
       runReelDemo(Number.isFinite(body?.spinupMs) ? body.spinupMs : undefined)
       return sendJson(res, 200, { ok: true, reel: reelMediaUrl() })
+    }
+
+    // reel(회전) 한 바퀴 완료 신호 — 클라이언트가 전 이미지를 1회 순회하면 보낸다(Q/W로 빨라지면 조기 도착).
+    // 대화(유령)로 조기 전환. reel 국면일 때만(중복·stale 무시). 기본 속도면 서버 폴백 타이머와 같은 시점.
+    if (req.method === 'POST' && url.pathname === '/api/reel-done') {
+      await readBody(req)
+      if (demo.phase === 'reel') enterGhostPhase()
+      return sendJson(res, 200, { ok: true })
+    }
+
+    // reel 진행 heartbeat — 회전 중 주기적으로 도착. 안전 폴백(deadman)을 리셋해, Q로 느리게 해도
+    // (회전이 길어져도) 서버가 중간에 끊지 않게 한다(느린 쪽 보장). reel 국면일 때만 유효.
+    if (req.method === 'POST' && url.pathname === '/api/reel-progress') {
+      await readBody(req)
+      if (demo.phase === 'reel') armReelDeadman()
+      return sendJson(res, 200, { ok: true })
     }
 
     // ---- 개발용 Space(재생/정지) 트리거도 열어둔다(선택). ----

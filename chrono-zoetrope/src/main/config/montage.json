@@ -21,7 +21,9 @@
     "maxStretch": 1.25,
     "transition": "fade",
     "$birthToCurrentOnly": "true(기본)면 릴은 탄생~현재 나이 장면만으로 합성한다(장면 age가 현재 나이 이하). 현재 나이 이후(미래) 장면 영상은 릴에서 빼고 부끄부끄(유령) 인터랙션에서 찾아보게 남긴다. 클립 자체는 30장 전부 생성된다. false면 30장 전부로 합성(옛 동작).",
-    "birthToCurrentOnly": true
+    "birthToCurrentOnly": true,
+    "$onePerStage": "true(기본)면 나잇대(단계)마다 딱 1장씩만 릴에 쓴다(단계별 첫 장면=sceneIndex 1). 30장(10단계×3)→10장, birthToCurrentOnly와 함께면 현재 나이까지의 단계 수만큼. 나머지 장면은 인터랙션용. false면 단계당 3장 전부.",
+    "onePerStage": true
   },
   "demo": {
     "$comment": "1차 흐름(서버 소유 국면): 세션 지정 → spinup(실타래 배속) → reel(배속 재생) → ghost(유령 뜬 idle, 1인칭 진입 대기). 서버가 타이머로 진행하고 국면을 방송·부트스트랩에 실어, 런타임 페이지를 새로고침해도 직전 국면을 이어간다. 중단은 admin '세션 나가기'로만.",
@@ -31,6 +33,26 @@
     "rotateSecPerTurn": 24,
     "rotateCrossfadeSec": 1.5,
     "reelPlaybackRate": 3
+  },
+  "ghost": {
+    "$comment": "유령 에이전트 음성 대화. reel 종료 후 'ghost' 국면에서만 유령이 관람객에게 말을 건다(20대 여성·상냥·인간적, 양방향). 목소리 엔진=ElevenLabs Conversational AI(브라우저 SDK). API 키는 서버에만 둔다(서버가 서명 URL 발급). §1 경계=질문·되물음만 → ghost-persona.md에 프로즈로. 1인칭 진입(IMMERSION)·몽타주 재생 등 다른 국면에선 목소리를 끈다(§1 침묵).",
+    "voice": {
+      "enabled": true,
+      "provider": "elevenlabs",
+      "$agentId": "ElevenLabs 대시보드에서 만든 Conversational AI 에이전트 ID. 비우면 음성 비활성(유령만 조용히 뜬다).",
+      "agentId": "agent_7101ky4wmb2wfj4bnf3ajcpbgsfw",
+      "$apiKeyPath": "ElevenLabs API 키 파일(gitignore된 secrets/). 서버만 읽어 서명 URL을 발급한다.",
+      "apiKeyPath": "./secrets/elevenlabs-api-key.txt",
+      "language": "ko",
+      "$voiceId": "20대 한국어 여성 보이스 ID(선택). 비우면 에이전트 기본 보이스. 오버라이드는 에이전트 보안설정에서 허용해야 적용됨. 현재=Annie(ko·seoul·young·female·soft).",
+      "voiceId": "Lb7qkOn5hF8p7qfCDH8q",
+      "$firstMessage": "유령이 건네는 첫 질문(정해진 말). 관람객 응답을 받아 이어서 대화한다.",
+      "firstMessage": "너는 지금 여기서 죽게 되었지만, 만약에 한 번의 기회를 얻어 계속 살 수 있다면 무얼 하고 싶어?",
+      "$systemPromptPath": "유령의 페르소나·§1 경계 시스템 프롬프트(프로즈). 서버가 읽어 대화 두뇌에 오버라이드로 전달.",
+      "systemPromptPath": "src/main/config/ghost-persona.md",
+      "$startDelayMs": "유령이 나타난(show 램프) 뒤 말을 걸기까지 지연(ms). ghost.js 가시성 램프 2.5s와 맞춤.",
+      "startDelayMs": 2600
+    }
   },
   "regen": {
     "$comment": "영상 생성 백엔드. mode: wan = 로컬 Wan2.2 I2V(현재 기본 — 종횡비 제한 없어 4:1 seamless 파노라마 그대로 애니메이션) | seedance = ByteDance Seedance FLF 루프(API 노드·과금, 단 지원 종횡비 16:9~21:9뿐이라 4:1 파노라마 입력 거부됨) | mock = 개발용(서버 없이 폴백). minWaitMs = 캐시 적중 시에도 유지하는 최소 대기(의례).",
@@ -53,7 +75,7 @@
       "$video": "4:1 = seamless 360° 파노라마(4096×1024) 비율 유지. 1920×480은 16의 배수·720p와 동일 latent 비용. 비파노라마(1.79) 페르소나엔 좌우 늘어남 — 파노라마 구도 기준값. width/height는 16의 배수.",
       "$length": "영상 길이(초) = length/fps. length는 반드시 4k+1(4의 배수+1). 목표초 → round((초×fps-1)/4)×4+1. 예: 5s=81, 10s=161. 주의: 프레임 2배면 생성시간·VRAM 대략 2배(1920×480×161 ≈ 290s/클립), Wan2.2는 ~5s(81f) 학습이라 그 이상은 모션이 늘어지거나 반복될 수 있음. IMMERSION은 어차피 loop 재생이라 length는 '반복 주기'.",
       "video": { "width": 1920, "height": 480, "length": 81, "fps": 16, "steps": 4, "shift": 5.0 },
-      "promptPrefix": "The scene gently comes alive with subtle natural motion, kept in its elevated high-angle view looking down on the moment from above, as if watching a memory of one's own life pass by below. The central person breathes and moves softly, hair and clothing stir in a faint breeze, ambient life continues around them. Every other person's face stays wiped away and featureless, a soft painterly smudge, and never sharpens into a recognizable face. The camera holds its high vantage nearly still with a very slow drift. Cinematic, realistic, understated motion."
+      "promptPrefix": "The scene gently comes alive with subtle natural motion, kept in its elevated high-angle view looking down on the moment from above, as if watching a memory of one's own life pass by below. The central person breathes and moves softly, hair and clothing stir in a faint breeze, ambient life continues around them. The camera holds its high vantage nearly still with a very slow drift. Cinematic, realistic, understated motion."
     }
   }
 }

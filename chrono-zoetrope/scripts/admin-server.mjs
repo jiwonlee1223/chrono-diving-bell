@@ -591,7 +591,18 @@ async function pumpVideo() {
           )
         }
       }
-      if (reelScenes.length === 0) throw new Error('릴에 넣을 탄생~현재 장면이 없습니다')
+      // 나잇대별 1장만(montage.reel.onePerStage, 기본 true) — 단계별 첫 장면(scenes는 나이·장면 순서).
+      if (montage.reel?.onePerStage !== false) {
+        const seenAge = new Set()
+        const before = reelScenes.length
+        reelScenes = reelScenes.filter((s) => {
+          if (seenAge.has(s.age)) return false
+          seenAge.add(s.age)
+          return true
+        })
+        logAction(`  나잇대별 1장: ${reelScenes.length}/${before}장`)
+      }
+      if (reelScenes.length === 0) throw new Error('릴에 넣을 장면이 없습니다')
       videoJob = { pid, kind, phase: 'concat', done: 0, total: reelScenes.length }
       logAction(`▶ 릴 합성 시작 [${mode}]: ${manifest.profile?.name || pid}`)
       const outPath = path.join(personaDir, 'reel.mp4')
