@@ -32,6 +32,8 @@
     "reelMode": "rotate",
     "rotateSecPerTurn": 24,
     "rotateCrossfadeSec": 1.5,
+    "$filmstripGutterFrac": "reel 전용 사진 필름스트립(사진이 있으면 rotate 대신 자동 사용)의 프레임 사이 검정 거터 폭 — 프레임 높이 대비 비율. 프레임 비율은 각 사진 원본 비율을 그대로 따른다. 스크롤 속도는 rotateSecPerTurn(실린더 1바퀴 시간)을 공유한다.",
+    "filmstripGutterFrac": 0.05,
     "reelPlaybackRate": 3
   },
   "ghost": {

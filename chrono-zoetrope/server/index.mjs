@@ -118,6 +118,7 @@ let sm = null //       상태 기계 (라이브러리 로드 후 생성).
 let library = null //  몽타주 재생 목록.
 let regenerator = null // 현재 페르소나용 영상 캐시 조회기.
 let pendingPersonaId //   세션 진행 중 들어온 참가자 교체 — IDLE 복귀 시 반영 (undefined = 없음).
+let reelPhotoPlaylist = [] // reel 전용 3:4 사진(manifest.reelPhotos, 필름스트립용). 없으면 파노라마 rotate 폴백.
 
 // 페르소나 하나를 (재)로드: 라이브러리 + 영상 캐시 + 상태 기계를 새로 만든다.
 // personaId=null 이면 library-loader가 가장 최근 것을 자동 선택. 실패 시 이전 상태를 유지.
@@ -174,11 +175,20 @@ async function loadPersona(personaId) {
     library = lib
     regenerator = regen
     // reel 배속 종료 타이밍용 — reel.mp4 실제 길이(초). 없으면 0(fallback 90/rate).
+    // + reel 전용 3:4 사진(필름스트립): manifest.reelPhotos 중 로컬 파일이 실제로 있는 것만 재생목록으로.
     try {
       const mf = JSON.parse(await fs.readFile(path.join(lib.dir, 'manifest.json'), 'utf8'))
       currentReelSec = mf.reel?.durationSec || 0
+      reelPhotoPlaylist = (mf.reelPhotos || [])
+        .filter((e) => !e.failed && e.file)
+        .map((e) => ({ id: e.id, age: e.age, abs: path.join(lib.dir, e.file) }))
+        .filter((e) => existsSync(e.abs))
+        .map((e) => ({ id: e.id, age: e.age, url: toMediaUrl(e.abs) }))
+      if (reelPhotoPlaylist.length)
+        console.log(`[server] reel 사진 ${reelPhotoPlaylist.length}장 (필름스트립 모드)`)
     } catch {
       currentReelSec = 0
+      reelPhotoPlaylist = []
     }
     sm = new ZoetropeStateMachine({
       broadcast,
@@ -302,7 +312,12 @@ function demoPayload() {
   const p = { phase: demo.phase, elapsedMs: Date.now() - demo.startedAt }
   if (demo.phase === 'spinup') p.spinupMs = demo.spinupMs
   if (demo.phase === 'reel') {
-    if (demo.mode === 'rotate') {
+    if (demo.mode === 'filmstrip') {
+      p.mode = 'filmstrip'
+      p.photos = demo.photos // [{ id, age, url }] — 클라이언트가 이어 붙여 스트립 텍스처 합성
+      p.secPerTurn = DEMO_ROTATE_SEC
+      p.gutterFrac = montageConfig.demo?.filmstripGutterFrac ?? 0.05
+    } else if (demo.mode === 'rotate') {
       p.mode = 'rotate'
       p.indices = demo.indices
       p.secPerTurn = DEMO_ROTATE_SEC
@@ -324,6 +339,18 @@ function runReelDemo(spinupMs = DEMO_SPINUP_MS) {
 }
 
 function startReelPhase() {
+  // 필름스트립 모드(신규 기본): reel 전용 3:4 사진(파노라마와 별개 플로우)이 있으면 그 사진들을
+  // 필름처럼 이어 붙여 연속 회전한다. 전환은 클라이언트 'reel-done'(스트립 1사이클 완료)이 주도하고,
+  // deadman·heartbeat는 rotate와 동일하게 재사용한다. 사진이 없는 기존 페르소나는 rotate 폴백.
+  if (DEMO_REEL_MODE === 'rotate' && reelPhotoPlaylist.length > 0) {
+    demo = { phase: 'reel', mode: 'filmstrip', startedAt: Date.now(), photos: reelPhotoPlaylist }
+    broadcast(Channels.REEL_DEMO, demoPayload())
+    console.log(
+      `[server] 데모: reel 필름스트립 (${reelPhotoPlaylist.length}장 — 전환은 클라이언트 스트립 1사이클 완료 시, Q/W 속도 따라감)`
+    )
+    armReelDeadman()
+    return
+  }
   // 회전 모드: Gemini 파노라마 이미지들을 천천히 회전시키며 순회. reel.mp4 불필요.
   if (DEMO_REEL_MODE === 'rotate') {
     const indices = reelImageIndices()
@@ -392,6 +419,7 @@ function bootstrapPayload() {
             calibration // 설치 정렬 오프셋(yaw/pitch) — 셰이더 초기값
           },
           playlist: library.images.map((im) => ({ id: im.id, url: toMediaUrl(im.absPath) })),
+          reelPhotos: reelPhotoPlaylist, // reel 전용 3:4 사진 — 필름스트립 재개(새로고침)용
           ...sm.snapshot()
         }
       : null

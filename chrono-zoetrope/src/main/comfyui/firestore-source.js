@@ -27,6 +27,8 @@ let defaultBucket = null //   업로드용 기본 Storage 버킷 이름 (config.
 // 생성물 링크를 기록하는 Firestore 컬렉션 이름(프로필별 문서 = 이름_생년월일6자). 여기서만 바꾸면 된다.
 export const COLLECTION_IMAGES = 'generatedPanoramaImages'
 export const COLLECTION_VIDEOS = 'generatedVideos'
+// reel 전용 3:4 사진(필름스트립) 정본 — 파노라마와 별도 컬렉션. 문서 키는 위와 동일한 '이름_생년월일6자'.
+export const COLLECTION_REEL_IMAGES = 'generatedReelImage'
 // persona manifest 정본. 로컬 library/{pid}/manifest.json 을 Firebase에 올려 어느 머신에서든
 // 리뷰·재생성·세션재생이 되게 한다(로컬은 read-through 캐시). 키는 파노라마와 같은 '이름_생년월일6자'.
 export const COLLECTION_MANIFESTS = 'personaManifests'
@@ -205,6 +207,82 @@ export async function uploadPersonaPanoramaImage({ profile, personaId, dir, imag
     { merge: true }
   )
   return { key, id: image.id, url, storagePath }
+}
+
+// 재생성 이력 보존 상한 — 문서 1MB 한계 대비 안전판(버전당 ~5KB, 20이면 충분히 여유).
+const REEL_HISTORY_MAX = 20
+
+/**
+ * reel 전용 사진(_reel/)들을 Storage에 업로드하고, 전용 컬렉션(COLLECTION_REEL_IMAGES =
+ * 'generatedReelImage') 문서에 프로필별로 기록한다 — 파노라마(generatedPanoramaImages)와 분리된
+ * 정본. 문서 키는 파노라마와 동일(이름_생년월일6자)이라 hydrate가 같은 프로필로 조회한다.
+ *
+ * 재생성 이력: 업로드마다 rev(타임스탬프) 폴더에 올려 이전 버전 바이트를 덮어쓰지 않고,
+ * 문서의 이전 reelPhotos 배열을 history에 밀어 넣는다(REEL_HISTORY_MAX 상한). 정본(최신)은
+ * 항상 top-level reelPhotos — 런타임·hydrate·admin은 이것만 읽으므로 자동으로 최신을 쓴다.
+ * @param {object} p { profile:{name,birthDate,id?}, personaId, dir, reelPhotos: manifest.reelPhotos, bucket? }
+ * @returns {Promise<{key:string, count:number, rev:string}>}
+ */
+export async function uploadPersonaReelPhotos({ profile, personaId, dir, reelPhotos, bucket }) {
+  if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  const bkt = getStorage(app).bucket(bucket || defaultBucket)
+  const key = panoramaDocKey(profile)
+  const rev = new Date().toISOString().replace(/[:.]/g, '-') // Storage 폴더명 안전 문자
+  const ok = (reelPhotos || []).filter((e) => !e.failed && e.file)
+  const uploaded = []
+  for (const e of ok) {
+    const local = path.join(dir, e.file)
+    const objectPath = `generated-reel-photos/${key}/${rev}/${path.posix.basename(e.file)}`
+    const { url, storagePath } = await uploadFileToStorage(bkt, local, objectPath, 'image/png')
+    uploaded.push({
+      id: e.id,
+      idx: e.idx ?? null,
+      age: e.age,
+      year: e.year,
+      scene: e.scene ?? null,
+      file: e.file, // persona 디렉토리 기준 상대경로(_reel/…) — hydrate가 같은 자리로 복원
+      url,
+      storagePath
+    })
+  }
+
+  // 이전 버전을 history로 보존(기록만 — 소비처는 전부 top-level reelPhotos=최신을 읽는다).
+  const ref = db.collection(COLLECTION_REEL_IMAGES).doc(key)
+  const snap = await ref.get()
+  const prev = snap.exists ? snap.data() : null
+  const history = [...(prev?.history || [])]
+  if (prev?.reelPhotos?.length) {
+    history.push({
+      rev: prev.rev ?? null,
+      archivedAt: new Date().toISOString(),
+      count: prev.reelPhotos.length,
+      reelPhotos: prev.reelPhotos
+    })
+    while (history.length > REEL_HISTORY_MAX) history.shift()
+  }
+
+  await ref.set(
+    {
+      name: profile.name || null,
+      birthDate: profile.birthDate || null,
+      personaId,
+      bucket: bkt.name,
+      rev,
+      count: uploaded.length,
+      reelPhotos: uploaded,
+      history,
+      updatedAt: FieldValue.serverTimestamp()
+    },
+    { merge: true }
+  )
+  return { key, count: uploaded.length, rev }
+}
+
+/** reel 전용 사진 정본 문서 조회(generatedReelImage). 없으면 null. */
+export async function fetchPersonaReelPhotos(profile) {
+  if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  const snap = await db.collection(COLLECTION_REEL_IMAGES).doc(panoramaDocKey(profile)).get()
+  return snap.exists ? snap.data() : null
 }
 
 /**
@@ -626,6 +704,33 @@ export async function ensurePersonaMediaFromFirebase(profile, dir, { onProgress 
       onProgress({ phase: 'image', done: result.images, total: imgs.length, file })
     } catch {
       result.missing.push(file)
+    }
+  }
+
+  // reel 전용 3:4 사진(_reel/) — 전용 컬렉션(generatedReelImage) 문서에서 받는다. 컬렉션 분리 전에
+  // 올라간 구 기록(파노라마 문서의 reelPhotos 필드)은 폴백으로 읽는다. file(상대경로)이 있으면
+  // 그 자리로, 없으면(구 기록) basename을 _reel/ 밑으로 복원한다.
+  result.reelPhotos = 0
+  let reelDoc = null
+  try {
+    reelDoc = await fetchPersonaReelPhotos(profile)
+  } catch {
+    /* 문서 없음/조회 실패 → 폴백(파노라마 문서 필드)으로 진행 */
+  }
+  const reelPhotoRefs = reelDoc?.reelPhotos?.length ? reelDoc.reelPhotos : imgDoc?.reelPhotos || []
+  for (const rp of reelPhotoRefs) {
+    const rel =
+      rp.file || `_reel/${(rp.storagePath || rp.url || '').split('/').pop()?.split('?')[0] || ''}`
+    if (!rel || rel === '_reel/') continue
+    const local = path.join(dir, rel)
+    if (await fileExists(local)) continue
+    try {
+      await fs.mkdir(path.dirname(local), { recursive: true })
+      await downloadStorageObject(rp, local)
+      result.reelPhotos++
+      onProgress({ phase: 'reel-photo', done: result.reelPhotos, file: rel })
+    } catch {
+      result.missing.push(rel)
     }
   }
 

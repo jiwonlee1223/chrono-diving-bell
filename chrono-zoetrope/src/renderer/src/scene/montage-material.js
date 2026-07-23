@@ -37,7 +37,8 @@ const FRAG = /* glsl */ `
   uniform float uImageAspect;   // 이미지 w/h
   uniform float uVideoAspect;   // 영상 w/h
   uniform float uQuadAspect;    // 사분면 벽 가로/세로 = (2πR/4)/H
-  uniform float uMapping;       // 0 = repeat4, 1 = front, 2 = panorama(360°에 한 번 감김)
+  uniform float uMapping;       // 0 = repeat4, 1 = front, 2 = panorama(360°에 한 번 감김), 3 = filmstrip(스트립이 종횡비 유지한 채 감겨 스크롤)
+  uniform float uStripScale;    // filmstrip: 실린더 둘레 종횡비(2πR/H) / 스트립 텍스처 종횡비 — 1보다 작으면 스트립이 둘레보다 길다
   uniform float uFit;           // 0 = width(레터박스), 1 = height(크롭)
   uniform float uEdgeFeather;   // 이미지 가장자리 페더 (어둠 속에 떠 있는 사진)
   uniform float uYaw;           // 설치 캘리브레이션: 둘레 회전(0..1=360°, wrap). 실린더 안 좌우 정렬.
@@ -87,6 +88,24 @@ const FRAG = /* glsl */ `
 
   void main() {
     bool hasContent = uHasImage > 0.5 || (uHasVideo > 0.5 && uVideoMix > 0.001);
+
+    // filmstrip(uMapping=3): reel 전용 3:4 사진들을 이어 붙인 스트립 텍스처가 종횡비를 유지한 채
+    // 둘레에 감기고, uYaw 증가로 필름처럼 연속 스크롤한다. 스트립이 둘레보다 길면(uStripScale<1)
+    // 한 시점에 일부 구간만 보이고 나머지는 돌아오면서 나타난다. 캘리브레이션 pitch는 panorama와 동일.
+    if (uMapping > 2.5) {
+      if (!hasContent) {
+        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+      }
+      float py = vUv.y - uPitch;
+      if (py < 0.0 || py > 1.0) {
+        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+      }
+      vec2 cuv = vec2(fract((vUv.x + uYaw) * uStripScale), py);
+      gl_FragColor = vec4(sampleBlurred(uTexImage, cuv, uBlur), 1.0);
+      return;
+    }
 
     // panorama(uMapping=2): 하나의 파노라마/reel이 360°(전 타일)에 한 번 감긴다.
     // 방위 u를 텍스처 x에 1:1 대응 → 4타일이 4:1 한 장을 90°씩 나눠 갖는다(반복 없음).
@@ -153,8 +172,10 @@ export function createMontageMaterial(install, montageConfig) {
       uVideoAspect: { value: 16 / 9 },
       uQuadAspect: { value: quadAspect },
       uMapping: {
-        value: montageConfig?.mapping === 'panorama' ? 2 : montageConfig?.mapping === 'front' ? 1 : 0
+        value:
+          montageConfig?.mapping === 'panorama' ? 2 : montageConfig?.mapping === 'front' ? 1 : 0
       },
+      uStripScale: { value: 1 }, // filmstrip(uMapping=3) 진입 시 renderer가 실측으로 설정
       uFit: { value: montageConfig?.fitMode === 'height' ? 1 : 0 },
       uEdgeFeather: { value: montageConfig?.edgeFeather ?? 0.05 },
       uYaw: { value: montageConfig?.calibration?.yaw ?? 0 },

@@ -225,6 +225,66 @@ export function buildScenePlan(profile, { perStage = 3, now = new Date() } = {})
   return plan
 }
 
+// ── reel 전용 사진 플랜 재료 (파노라마와 별개 플로우) ─────────────────────────────
+// reel(주마등 회전)은 이제 파노라마가 아니라 3:4 일반 사진 12장을 필름스트립으로 돌린다.
+// 나이 배열·장면 선택·프롬프트를 여기 모아 결정론(§1 — 같은 프로필 = 같은 재료)을 유지한다.
+
+/**
+ * reel 사진의 나이 배열 — 기억이 시작되는 startAge(3)부터 현재 나이까지 균등 count(12)개.
+ * 어린 사용자는 반올림으로 나이가 중복될 수 있다(장면은 idx 시드로 다르게 뽑힌다).
+ * currentAge < startAge면 0~currentAge로 클램프(극단 케이스 안전판).
+ * @param {number} currentAge
+ * @param {{count?:number, startAge?:number}} [opts]
+ * @returns {number[]} 오름차순 정수 count개
+ */
+export function reelAges(currentAge, { count = 12, startAge = 3 } = {}) {
+  const end = Math.max(0, Math.floor(currentAge))
+  const start = Math.min(startAge, end)
+  if (count <= 1) return [end]
+  const ages = []
+  for (let i = 0; i < count; i++) ages.push(Math.round(start + ((end - start) * i) / (count - 1)))
+  return ages
+}
+
+/**
+ * reel 사진 한 장의 장면 문구 — STAGES에서 그 나이에 가장 가까운 단계의 감각 재료 풀에서
+ * 결정론적으로 1개 뽑는다({occ} 치환은 호출부 몫). 나이가 중복되는 어린 사용자를 위해
+ * seedString에 idx를 섞어 같은 나이라도 다른 장면이 나오게 한다.
+ * @param {number} age
+ * @param {string} seedString  보통 `${name}|${birthDate}|reel|${idx}`
+ * @returns {string}
+ */
+export function reelSceneForAge(age, seedString) {
+  let stage = STAGES[0]
+  for (const s of STAGES) if (Math.abs(s.age - age) < Math.abs(stage.age - age)) stage = s
+  const rand = mulberry32(hashString(seedString))
+  return pick(rand, stage.scenes, 1)[0]
+}
+
+/**
+ * reel 사진 프롬프트 — 가로형(4:3) 일반 사진. 파노라마·부감 지시 없음. 인물이 프레임 정중앙에서
+ * 그 순간의 행동을 능동적으로 수행하고, 시대 배경(과거 연대의 한국)을 입힌다. 복장·헤어는
+ * 장면·시대를 따르게 한다(얼굴 정체성 유지는 face-anchor 접두어가 담당 — 여기서는 장면만).
+ * §1: 장소·빛·사물·행동만 서술, 감정·의미 서술어 없음.
+ * @param {{gender?:string, descriptors?:string[]}} profile
+ * @param {{age:number, year:number, scene:string}} item
+ */
+export function composeReelPhotoPrompt(profile, item) {
+  const who = `a ${item.age}-year-old ${subjectNoun(item.age, profile?.gender)}`
+  const era = `${Math.floor(item.year / 10) * 10}s Korea`
+  const extra = (profile?.descriptors || []).join(', ')
+  return (
+    `A landscape-orientation candid snapshot photograph (wider than tall) of ONE single person: ${who} in this moment — ${item.scene}.` +
+    ` The person is at the exact CENTER of the frame, their face clearly visible and in sharp focus,` +
+    ` actively doing what this moment is about (not posing for the camera).` +
+    ` The setting, clothing and hairstyle authentically reflect ${era} — everyday period-accurate details of that time and place.` +
+    ` Anyone else present is only a background bystander.` +
+    (extra ? ` ${extra}.` : '') +
+    ` ${STYLE}` +
+    NO_TEXT_DIRECTIVE
+  )
+}
+
 // 나이에 맞는 성별 명사. gender가 없으면 중립 표현으로 폴백한다.
 export function subjectNoun(age, gender) {
   const child = age <= 14

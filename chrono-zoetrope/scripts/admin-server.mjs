@@ -42,6 +42,7 @@ import {
   updateProfileFields,
   uploadPersonaVideos,
   uploadPersonaPanoramaImage,
+  uploadPersonaReelPhotos,
   ensureLocalClipsFromFirebase,
   ensurePersonaMediaFromFirebase,
   fetchPersonaVideos,
@@ -53,6 +54,12 @@ import {
 import { recoverClipsFromComfy } from '../src/main/comfyui/recover-clips.js'
 import { processProfile, processLifeGraphSession } from '../src/main/comfyui/profile-worker.js'
 import { composeScenePromptFor, personaId } from '../src/main/comfyui/prompt-builder.js'
+import {
+  buildReelPhotoPlan,
+  generateReelPhotos,
+  REEL_DIR
+} from '../src/main/comfyui/reel-photos.js'
+import { synthesizeAgeScenes } from '../src/main/comfyui/life-graph-plan.js'
 import { prefixForEntry } from '../src/main/comfyui/face-anchor.js'
 import { ensureEntryAgedAnchor } from '../src/main/comfyui/aged-anchor.js'
 import { regenerateSeamfix } from '../src/main/comfyui/seamfix-legacy.js' // LEGACY: 기존 seamfix persona 재생성 전용
@@ -393,6 +400,175 @@ async function startRegenAll(pid) {
 
 // applySeamFix·regenerateSeamfix(seamfix 재생성)는 seamfix-legacy.js로 이동함(2026-07-22 격리).
 // regenerate()가 wf==="seamfix"일 때 거기서 import한 regenerateSeamfix에 deps를 주입해 호출한다.
+
+// ── 릴 사진(reel 전용 가로형, 필름스트립) 백필/재생성 대기열 ─────────────────────
+// 새 제출은 워커(processProfile/processLifeGraphSession)가 파노라마 전에 자동 생성하지만,
+// 그 이전에 만들어진 페르소나는 이 대기열로 사후 생성한다. 여러 명을 연달아 눌러도 순차 실행
+// (동시 1잡 — 진행 표시·manifest 기록이 안 꼬인다). 한 잡 안에서는 generateReelPhotos가
+// Gemini API를 concurrency장씩 병렬 호출해 1인당 소요를 줄인다.
+// force=true면 기존 _reel/과 manifest.reelPhotos를 비우고 전부 새로(기본은 resume).
+let reelPhotoQueue = [] // 대기열 [{ pid, force }]
+let reelPhotoJob = null // { pid, name, done, total, startedAt }
+let reelPhotoAbort = null // AbortController
+let reelPhotoLast = null // { pid, name, ok, err, cancelled?, error?, at }
+
+// 대기열 등록 — 즉시 반환(유휴면 곧바로 시작). 같은 pid 중복 등록은 거부.
+function enqueueReelPhotos(pid, { force = false } = {}) {
+  if (reelPhotoJob?.pid === pid) throw new Error('이 페르소나의 릴 사진을 이미 생성 중입니다')
+  if (reelPhotoQueue.some((q) => q.pid === pid)) throw new Error('이미 대기열에 있습니다')
+  reelPhotoQueue.push({ pid, force })
+  pumpReelPhotos() // fire-and-forget — 에러는 pump 내부에서 reelPhotoLast로 기록
+  return reelPhotoQueue.length // 등록 직후 대기 순번(0이면 바로 시작됨)
+}
+
+// 대기열 펌프 — 동시 1잡. reelPhotoJob을 **첫 await 전에 동기로** 세워 동시 클릭 경합을 차단한다.
+// (이전 구현은 준비 단계(await)를 마친 뒤에야 잡을 세워, 거의 동시에 두 명을 누르면 둘 다 가드를
+//  통과해 잡 상태·중지 컨트롤러가 서로 덮어써졌다 — "생성 중인데 표시가 사라지는" 증상의 원인.)
+async function pumpReelPhotos() {
+  if (reelPhotoJob || reelPhotoQueue.length === 0) return
+  const { pid, force } = reelPhotoQueue.shift()
+  reelPhotoJob = {
+    pid,
+    name: pid, // 준비 후 실명으로 갱신
+    done: 0,
+    total: config.reelPhotos?.count ?? 12,
+    startedAt: Date.now()
+  }
+  reelPhotoAbort = new AbortController()
+  try {
+    await runReelPhotosJob(pid, { force })
+  } catch (e) {
+    reelPhotoLast = { pid, name: reelPhotoJob?.name || pid, error: e.message, at: Date.now() }
+    logAction(`✗ 릴 사진 생성 실패: ${e.message}`)
+  } finally {
+    reelPhotoJob = null
+    reelPhotoAbort = null
+    pumpReelPhotos() // 다음 대기 항목으로
+  }
+}
+
+async function runReelPhotosJob(pid, { force = false } = {}) {
+  await ensurePersonaLocal(pid).catch(() => {})
+  const manifest = await readManifest(pid)
+  const profile = manifest.profile || {}
+  if (!profile.birthDate)
+    throw new Error('manifest.profile.birthDate가 없어 나이 배열을 만들 수 없습니다')
+  const personaDir = path.join(LIBRARY, pid)
+
+  if (force) {
+    await fs.rm(path.join(personaDir, REEL_DIR), { recursive: true, force: true }).catch(() => {})
+    if (manifest.reelPhotos) {
+      delete manifest.reelPhotos
+      await writeManifest(pid, manifest)
+    }
+  }
+
+  // 얼굴 앵커 — 생성 때 내려받은 로컬 캐시(_input) 첫 사진 → manifest에 기록된 경로 순으로 시도.
+  // 하나도 없으면 텍스트-only로 생성한다(얼굴 정체성은 못 실음 — 로그로 알린다).
+  const candidates = []
+  try {
+    const inputDir = path.join(personaDir, '_input')
+    for (const f of (await fs.readdir(inputDir)).sort()) candidates.push(path.join(inputDir, f))
+  } catch {
+    /* _input 없음 */
+  }
+  if (manifest.referenceImage?.local) candidates.push(manifest.referenceImage.local)
+  for (const ph of profile.photos || []) candidates.push(ph)
+  let faceRef = null
+  for (const c of candidates) {
+    try {
+      faceRef = { buffer: await fs.readFile(c), path: path.relative(personaDir, c) }
+      break
+    } catch {
+      /* 다음 후보 */
+    }
+  }
+  if (!faceRef) logAction(`⚠ 릴 사진: 얼굴 앵커 사진 없음 — 텍스트-only로 생성 (${pid})`)
+
+  // life-graph(cdb-crafter) 페르소나면 가장 최근 제출 세션의 글로 나이별 장면을 재합성한다
+  // (워커 자동 생성과 같은 재료). 실패·해당 없음이면 STAGES 폴백(§1 — 결정론 재료).
+  let ageScenes = null
+  const doc = profiles.find((p) => p.id === (profile.id || pid))
+  if (doc) {
+    const key = ['first', 'second', 'third']
+      .filter((k) => doc[k])
+      .sort(
+        (a, b) => (toMillis(doc[`${b}SubmittedAt`]) || 0) - (toMillis(doc[`${a}SubmittedAt`]) || 0)
+      )[0]
+    if (key) {
+      try {
+        const synthClient = new GeminiClient({
+          apiKey: await resolveGeminiApiKey(config.gemini),
+          textModel: config.gemini?.textModel,
+          timeoutMs: config.timeoutMs
+        })
+        ageScenes = await synthesizeAgeScenes(synthClient, doc, doc[key] || {})
+      } catch (e) {
+        logAction(`⚠ 릴 사진: 장면 합성 실패 — STAGES 폴백 (${e.message})`)
+      }
+    }
+  }
+
+  const plan = buildReelPhotoPlan(profile, { ...(config.reelPhotos || {}), ageScenes })
+  // 잡 자체는 pump가 이미 동기로 세워뒀다(경합 차단) — 여기서는 표시 정보만 채운다.
+  if (reelPhotoJob) {
+    reelPhotoJob.name = profile.name || pid
+    reelPhotoJob.total = plan.length
+  }
+  logAction(
+    `▶ 릴 사진 생성 시작: ${profile.name || pid} (${plan.length}장${force ? ', 전체 재생성' : ''})`
+  )
+  const gclient = new GeminiClient({
+    apiKey: await resolveGeminiApiKey(config.gemini),
+    model: config.gemini.model, // pro — 일반 비율 지원
+    textModel: config.gemini.textModel,
+    timeoutMs: config.timeoutMs
+  })
+  const r = await generateReelPhotos({
+    plan,
+    profile,
+    personaDir,
+    gclient,
+    model: config.gemini.model,
+    imageSize: config.gemini.imageSize,
+    aspectRatio: config.reelPhotos?.aspectRatio, // 미지정이면 기본 4:3(가로형)
+    concurrency: config.reelPhotos?.concurrency, // 잡 안 병렬 호출 수(미지정이면 기본 3)
+    faceRef,
+    retries: config.sceneRetries,
+    signal: reelPhotoAbort.signal,
+    log: logAction,
+    onManifest: async (m) => {
+      if (reelPhotoJob) reelPhotoJob.done = (m.reelPhotos || []).length
+      if (firebaseReady) await upsertPersonaManifest(m)
+    }
+  })
+  if (r.okCount && firebaseReady) {
+    try {
+      const up = await uploadPersonaReelPhotos({
+        profile,
+        personaId: pid,
+        dir: personaDir,
+        reelPhotos: r.reelPhotos
+      })
+      logAction(`☁ 릴 사진 ${up.count}장 Firebase 업로드 (${profile.name || pid})`)
+    } catch (e) {
+      logAction(`⚠ 릴 사진 Firebase 업로드 실패(무시): ${e.message}`)
+    }
+  }
+  reelPhotoLast = {
+    pid,
+    name: profile.name || pid,
+    ok: r.okCount,
+    err: r.failedCount,
+    cancelled: r.cancelled,
+    at: Date.now()
+  }
+  logAction(
+    r.cancelled
+      ? `⏹ 릴 사진 생성 중지: ${reelPhotoLast.name} (${r.okCount}/${plan.length} — 재실행으로 이어짐)`
+      : `✓ 릴 사진 생성 완료: ${reelPhotoLast.name} (성공 ${r.okCount}, 실패 ${r.failedCount})`
+  )
+}
 
 // ── HTTP 서버 ─────────────────────────────────────────────────────
 const MIME = {
@@ -967,9 +1143,11 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, html, MIME['.html'])
     }
 
-    // GET /img/{pid}/{file} → 라이브러리 이미지
-    if (req.method === 'GET' && parts[0] === 'img' && parts.length === 3) {
-      const file = path.join(LIBRARY, parts[1], path.basename(parts[2])) // 경로 탈출 방지
+    // GET /img/{pid}/{...경로} → 라이브러리 이미지 (릴 사진 _reel/ 하위 경로 포함)
+    if (req.method === 'GET' && parts[0] === 'img' && parts.length >= 3) {
+      const personaRoot = path.normalize(path.join(LIBRARY, parts[1]))
+      const file = path.normalize(path.join(personaRoot, parts.slice(2).join('/')))
+      if (!file.startsWith(personaRoot)) return send(res, 403, { error: 'forbidden' }) // 경로 탈출 차단
       const data = await fs.readFile(file)
       return send(res, 200, data, MIME[path.extname(file)] || 'application/octet-stream')
     }
@@ -1020,7 +1198,8 @@ const server = http.createServer(async (req, res) => {
         lastResult: last,
         queue: queueView(),
         video: { building: videoBuilding, queue: videoQueue, job: videoJob, last: videoLast },
-        regenAll: { job: regenJob, last: regenLast }
+        regenAll: { job: regenJob, last: regenLast },
+        reelPhotos: { job: reelPhotoJob, queue: reelPhotoQueue, last: reelPhotoLast }
       })
     }
 
@@ -1093,6 +1272,25 @@ const server = http.createServer(async (req, res) => {
         `⏸ 영상 ${videoCancelKind === 'pause' ? '일시정지' : '중단'} 요청 → ${videoBuilding.pid}`
       )
       return send(res, 200, { stopped: true, pid: videoBuilding.pid })
+    }
+
+    // POST /api/reel-photos/stop → 진행 중인 릴 사진 생성 중지(진행분은 manifest에 남아 재실행 시
+    // 이어짐). 대기열의 다음 항목은 계속 진행된다 — 대기 항목까지 비우려면 { clearQueue: true }.
+    if (req.method === 'POST' && url.pathname === '/api/reel-photos/stop') {
+      const { clearQueue = false } = await readBody(req).catch(() => ({}))
+      const clearedCount = clearQueue ? reelPhotoQueue.length : 0
+      if (clearQueue) reelPhotoQueue = []
+      if (!reelPhotoJob)
+        return send(res, 200, {
+          stopped: false,
+          cleared: clearedCount,
+          note: clearedCount ? `대기열 ${clearedCount}건 비움` : '진행 중인 릴 사진 생성 없음'
+        })
+      logAction(
+        `⏹ 릴 사진 생성 중지 요청 → ${reelPhotoJob.name}${clearedCount ? ` (대기 ${clearedCount}건도 비움)` : ' (대기열은 이어서 진행)'}`
+      )
+      reelPhotoAbort?.abort()
+      return send(res, 200, { stopped: true, pid: reelPhotoJob.pid, cleared: clearedCount })
     }
 
     // POST /api/regen-all/stop → 진행 중인 전체 재생성 중지(현재 장면까지 마치고 멈춤).
@@ -1374,6 +1572,20 @@ const server = http.createServer(async (req, res) => {
           return send(res, 400, { error: e.message })
         }
         return send(res, 200, { started: true, pid })
+      }
+
+      // 릴 사진(가로형 필름스트립) 생성/재생성 — 대기열 등록(여러 명 연달아 눌러도 순차 실행).
+      // 진행은 /api/queue의 reelPhotos로 폴링. body { force: true }면 기존 릴 사진을 비우고
+      // 전부 새로(기본은 빠진/실패 장만 채움).
+      if (req.method === 'POST' && parts[3] === 'reel-photos') {
+        if (VIEW_ONLY) return send(res, 400, { error: '뷰어 모드에서는 생성 불가' })
+        const { force = false } = await readBody(req)
+        try {
+          const position = enqueueReelPhotos(pid, { force })
+          return send(res, 200, { queued: true, pid, force, position })
+        } catch (e) {
+          return send(res, 400, { error: e.message })
+        }
       }
 
       // 영상(클립) 생성 — 전 장면을 Wan 클립으로. 비동기 큐 등록(오래 걸림). 진행은 /api/queue의 video로 폴링.

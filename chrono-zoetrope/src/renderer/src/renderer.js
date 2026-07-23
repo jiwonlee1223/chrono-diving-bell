@@ -326,20 +326,121 @@ async function main() {
   // [debug] 회전 속도를 factor배 하되 startMs를 재기준해 위상 점프 없이 바꾼다.
   //  현재 실효 secPerTurn(= rotateSecPerTurn / 배수)을 콘솔에 찍어 montage.json에 옮겨 적을 수 있게 한다.
   function nudgeRotateSpeed(factor) {
-    if (!rotate) {
-      console.log('[debug] q/w: reel 회전(rotate) 중에만 동작합니다')
+    const target = rotate || filmstrip // 필름스트립도 같은 배수·위상 재기준 규칙을 공유한다
+    if (!target) {
+      console.log('[debug] q/w: reel 회전(rotate/filmstrip) 중에만 동작합니다')
       return
     }
     const now = performance.now()
     const oldMul = rotateSpeedMul
     const newMul = Math.max(0.05, Math.min(40, oldMul * factor))
-    rotate.startMs = now - (now - rotate.startMs) * (oldMul / newMul) // 위상 연속 유지(점프 방지)
+    target.startMs = now - (now - target.startMs) * (oldMul / newMul) // 위상 연속 유지(점프 방지)
     rotateSpeedMul = newMul
-    const effSec = rotate.secPerTurn / newMul
+    const effSec = target.secPerTurn / newMul
     console.log(
       `[debug] reel 회전 속도 ×${newMul.toFixed(2)} → 1바퀴 ${effSec.toFixed(1)}s (montage.json demo.rotateSecPerTurn)`
     )
   }
+  // reel 필름스트립 모드 — reel 전용 3:4 사진들을 한 장의 스트립 텍스처(캔버스)로 이어 붙여
+  // 실린더에 종횡비 유지한 채 감고(uMapping=3, uStripScale), 필름처럼 연속 스크롤한다.
+  // 스크롤 속도 = 실린더 1바퀴 / secPerTurn(rotate와 동일 파라미터·Q/W 배수 공유).
+  // 스트립이 정확히 1사이클(모든 사진이 한 번씩 지나감) 돌면 reel-done을 서버에 1회 보낸다.
+  let filmstrip = null // { secPerTurn, startMs, stripScale, texture, doneSent, lastTickMs } | null
+  const baseMapping = montageMaterial?.uniforms.uMapping.value ?? 2
+  function setStripMapping(on) {
+    if (montageMaterial) montageMaterial.uniforms.uMapping.value = on ? 3 : baseMapping
+  }
+  function stopFilmstrip() {
+    if (!filmstrip) return
+    filmstrip.texture?.dispose()
+    filmstrip = null
+    setStripMapping(false)
+  }
+
+  // 사진들을 순서대로 이어 붙인 스트립 캔버스 합성. 각 프레임은 그 사진의 실제 비율 그대로
+  // (생성 설정이 4:3 가로형이든 과거 3:4든 자동 적응 — 크롭 없음), 프레임 사이·양 끝에
+  // 검정 거터(필름 프레임 간격) — 스트립 좌우 끝이 거터라 wrap 이음매가 검정 안에 떨어져 안 보인다.
+  function buildFilmstripTexture(photos, gutterFrac, onDone) {
+    const H = 1024
+    const imgs = new Array(photos.length).fill(null)
+    let remaining = photos.length
+    if (!remaining) return onDone(null)
+    const finish = () => {
+      const loaded = imgs.filter(Boolean)
+      if (!loaded.length) return onDone(null)
+      const gutter = Math.round(H * (gutterFrac ?? 0.05))
+      const frameWs = loaded.map((im) => Math.round(H * (im.width / im.height)))
+      const cv = document.createElement('canvas')
+      cv.width = frameWs.reduce((a, w) => a + w + gutter, 0)
+      cv.height = H
+      const ctx = cv.getContext('2d')
+      ctx.fillStyle = '#000'
+      ctx.fillRect(0, 0, cv.width, cv.height)
+      let x = 0
+      loaded.forEach((im, i) => {
+        ctx.drawImage(im, 0, 0, im.width, im.height, x + gutter / 2, 0, frameWs[i], H)
+        x += frameWs[i] + gutter
+      })
+      const tex = new THREE.CanvasTexture(cv)
+      tex.colorSpace = THREE.NoColorSpace
+      tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping // wrap은 셰이더 fract가 담당(이음매는 거터 안)
+      onDone({ texture: tex, aspect: cv.width / cv.height })
+    }
+    photos.forEach((p, i) => {
+      const im = new Image()
+      im.crossOrigin = 'anonymous'
+      im.onload = () => {
+        imgs[i] = im
+        if (--remaining === 0) finish()
+      }
+      im.onerror = () => {
+        if (--remaining === 0) finish() // 실패 장은 빠진 채 진행
+      }
+      im.src = p.url
+    })
+  }
+
+  function startFilmstrip(payload) {
+    const photos = payload?.photos || []
+    stopFilmstrip()
+    if (!photos.length || !montageMaterial) return
+    const secPerTurn = payload?.secPerTurn || 24
+    const elapsedSec = Math.max(0, (payload?.elapsedMs ?? 0) / 1000)
+    // 실린더 둘레 종횡비(2πR/H) — 스트립이 종횡비를 유지한 채 감기도록 uStripScale의 분자가 된다.
+    const circumAspect = (2 * Math.PI * install.cylinder.radius) / install.cylinder.height
+    const fs = {
+      secPerTurn,
+      startMs: performance.now() - elapsedSec * 1000, // 벽시계 기준 — 새로고침 재개 반영
+      stripScale: 1,
+      stripTurns: 1, // 스트립 1사이클에 필요한 실린더 바퀴 수(= stripAspect / circumAspect)
+      texture: null,
+      doneSent: false,
+      lastTickMs: 0
+    }
+    filmstrip = fs
+    teardownVideo()
+    setMontageImage(montageMaterial, null) // 스트립 준비 전까지 이전 텍스처 대신 검정
+    buildFilmstripTexture(photos, payload?.gutterFrac, (result) => {
+      if (filmstrip !== fs) {
+        result?.texture?.dispose() // 이미 다른 국면으로 넘어감
+        return
+      }
+      if (!result) {
+        console.warn('[filmstrip] 사진 로드 전부 실패 — 검정 화면 유지')
+        return
+      }
+      fs.texture = result.texture
+      fs.stripScale = circumAspect / result.aspect
+      fs.stripTurns = result.aspect / circumAspect
+      setMontageImage(montageMaterial, result.texture)
+      montageMaterial.uniforms.uStripScale.value = fs.stripScale
+      setStripMapping(true)
+      montageMaterial.uniforms.uBlur.value = 0
+      montageMaterial.uniforms.uVideoMix.value = 0
+      montageMaterial.uniforms.uHasVideo.value = 0
+    })
+  }
+
   function startRotate(payload) {
     const indices = payload?.indices || []
     if (!indices.length) {
@@ -377,6 +478,7 @@ async function main() {
     if (phase === 'spinup') {
       demoPhase = 'spinup'
       rotate = null
+      stopFilmstrip()
       ghost.hide()
       ghostVoice?.stop()
       teardownVideo()
@@ -389,16 +491,22 @@ async function main() {
       demoPhase = 'reel'
       ghost.hide()
       ghostVoice?.stop()
-      if (payload?.mode === 'rotate') {
+      if (payload?.mode === 'filmstrip') {
+        rotate = null
+        startFilmstrip(payload) // reel 전용 3:4 사진 스트립을 필름처럼 연속 스크롤
+      } else if (payload?.mode === 'rotate') {
+        stopFilmstrip()
         startRotate(payload) // Gemini 파노라마 이미지를 천천히 회전시키며 순회
       } else {
         rotate = null
+        stopFilmstrip()
         const rate = payload?.playbackRate ?? REEL_PLAYBACK_RATE
         playReelOnce(payload?.url, { seekSec: elapsedSec * rate, playbackRate: rate, flash: !immediate })
       }
     } else if (phase === 'ghost') {
       demoPhase = null
       rotate = null
+      stopFilmstrip()
       teardownVideo()
       tweenTo(videoMix, 0, dur(0.6))
       tweenTo(blur, 0, dur(0.4))
@@ -409,6 +517,7 @@ async function main() {
       // idle (admin 세션 나가기) — 앰비언트, 유령 숨김.
       demoPhase = null
       rotate = null
+      stopFilmstrip()
       ghost.hide()
       ghostVoice?.stop()
       teardownVideo()
@@ -418,6 +527,24 @@ async function main() {
     }
   }
   window.zoetrope.onReelDemo?.((payload) => applyDemo(payload, false))
+
+  // [debug] 콘솔 진단용 — window.__cdbState()로 데모/필름스트립 상태를 본다(전시 동작 무관).
+  window.__cdbState = () => ({
+    demoPhase,
+    appState,
+    calibrationMode,
+    montage: !!montageMaterial,
+    mapping: montageMaterial?.uniforms.uMapping.value,
+    rotate: !!rotate,
+    filmstrip: filmstrip
+      ? {
+          ready: !!filmstrip.texture,
+          stripScale: filmstrip.stripScale,
+          stripTurns: filmstrip.stripTurns,
+          doneSent: filmstrip.doneSent
+        }
+      : null
+  })
 
   // 테스트용 수동 트리거 버튼(좌하단) — 참가자 교체 없이 현재 페르소나로 데모 시퀀스 실행.
   document.getElementById('demoBtn')?.addEventListener('click', () => {
@@ -544,6 +671,32 @@ async function main() {
         u.uBlur.value = 0
         u.uVideoMix.value = 0
         // uYaw/uPitch는 방향키(setMontageCalibration)가 관리한다.
+      } else if (filmstrip) {
+        // 필름스트립: 스트립 텍스처를 연속 스크롤. 위상은 벽시계 기준(startMs), Q/W 배수 반영.
+        u.uBlur.value = 0
+        u.uVideoMix.value = 0
+        const effSecPerTurn = filmstrip.secPerTurn / rotateSpeedMul
+        const turns = (nowMs - filmstrip.startMs) / 1000 / effSecPerTurn
+        // uYaw는 스트립 주기(stripTurns 바퀴)로 wrap — 장시간 구동 시 float 정밀도 저하 방지.
+        const phaseTurns = filmstrip.stripTurns > 0 ? turns % filmstrip.stripTurns : turns
+        u.uYaw.value = cal.yaw + phaseTurns
+        // 완료: 스트립 1사이클(모든 사진이 한 번씩 지나감) — 이후에도 서버 전환까지 계속 돈다.
+        if (!filmstrip.doneSent && filmstrip.texture && turns >= filmstrip.stripTurns) {
+          filmstrip.doneSent = true
+          window.zoetrope.sendReelDone?.()
+        }
+        // 도는 동안 ~3s마다 heartbeat → 서버 안전 폴백(deadman) 리셋(Q로 느려도 안 끊김).
+        // 텍스처가 준비된 뒤에만 — 사진 로드가 전부 실패하면 heartbeat를 멈춰 deadman이 유령으로 넘긴다.
+        if (!filmstrip.doneSent && filmstrip.texture && nowMs - filmstrip.lastTickMs > 3000) {
+          filmstrip.lastTickMs = nowMs
+          window.zoetrope.sendReelProgress?.()
+        }
+        if (window.__reelDebug !== false && nowMs - (filmstrip._logMs || 0) > 1000) {
+          filmstrip._logMs = nowMs
+          console.log(
+            `[debug/frame] filmstrip mul=${rotateSpeedMul.toFixed(2)} effSec=${effSecPerTurn.toFixed(1)}s turns=${turns.toFixed(2)}/${filmstrip.stripTurns.toFixed(2)}`
+          )
+        }
       } else if (rotate) {
         // 회전 모드: 파노라마 이미지를 천천히 회전(uYaw 자동 증가) + 한 바퀴마다 다음 이미지로 크로스페이드.
         // 벽시계 기준(startMs): 지난 바퀴 수 = 현재 이미지, 나머지 = 회전 위상.

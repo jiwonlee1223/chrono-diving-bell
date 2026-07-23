@@ -123,6 +123,9 @@ export async function generateLifeLibrary(profile, opts = {}) {
   } catch {
     /* 첫 생성 */
   }
+  // reel 사진(reel-photos.js — 파노라마보다 먼저 생성됨)은 워크플로우 변경과 무관하게 carry-over —
+  // 아래에서 manifest를 새로 구성해 통째로 덮어쓰므로, 여기서 안 옮기면 reelPhotos가 유실된다.
+  const priorReelPhotos = prior?.reelPhotos || null
   if (prior?.workflow !== mode) prior = null
   const priorImages = new Map((prior?.images || []).map((i) => [i.id, i]))
   const fileExists = (f) =>
@@ -161,6 +164,7 @@ export async function generateLifeLibrary(profile, opts = {}) {
       : {}),
     // 사진 바이너리는 제외하고 경로만 기록
     profile: { ...profile, photos: profile.photos || [] },
+    ...(priorReelPhotos ? { reelPhotos: priorReelPhotos } : {}), // reel 사진 플로우 기록 보존
     images: []
   }
   const writeManifest = async () => {

@@ -12,6 +12,7 @@ import { generateLifeLibrary } from './life-library.js'
 import { composeScenePromptFor, buildScenePlan } from './prompt-builder.js'
 import { selectSceneReference } from './face-anchor.js'
 import { prepareAgedAnchors } from './aged-anchor.js'
+import { buildReelPhotoPlan, generateReelPhotos } from './reel-photos.js'
 import {
   buildLifeGraphPlan,
   collectSessionPhotoURLs,
@@ -27,7 +28,8 @@ import {
   claimLifeGraphSession,
   setLifeGraphSessionStatus,
   upsertPersonaManifest,
-  uploadPersonaPanoramas
+  uploadPersonaPanoramas,
+  uploadPersonaReelPhotos
 } from './firestore-source.js'
 
 const noop = () => {}
@@ -47,6 +49,62 @@ async function uploadPanoramasBestEffort(pid, outDir, manifest, log) {
     log(`  ☁ 파노라마 ${r.count}장 Firebase 업로드`)
   } catch (err) {
     log(`  ⚠ 파노라마 Firebase 업로드 실패(무시): ${err.message}`)
+  }
+}
+
+// reel 전용 3:4 사진 12장 — 파노라마보다 먼저 도는 두 번째 생성 플로우(reel-photos.js).
+// 두 흐름(occupation·life-graph)이 공유한다. best-effort: 전면 실패해도 파노라마 생성은 계속하고
+// (§ reel은 별도 산출물), 진행분은 manifest.reelPhotos에 남아 재실행 시 이어진다(resume).
+// 성공분은 곧바로 Firebase 정본(generatedPanoramaImages.reelPhotos)에 올린다 — 실패는 무시.
+async function generateReelPhotosBestEffort({
+  profile,
+  personaDir,
+  pid,
+  config,
+  gclient,
+  faceRef,
+  stageRefFor = null,
+  ageScenes = null,
+  signal,
+  log
+}) {
+  if (signal?.aborted) return
+  try {
+    const reelPlan = buildReelPhotoPlan(profile, { ...(config.reelPhotos || {}), ageScenes })
+    const r = await generateReelPhotos({
+      plan: reelPlan,
+      profile,
+      personaDir,
+      gclient,
+      model: config.gemini.model, // pro — 일반 비율 지원
+      imageSize: config.gemini.imageSize,
+      aspectRatio: config.reelPhotos?.aspectRatio, // 미지정이면 기본 4:3(가로형)
+      concurrency: config.reelPhotos?.concurrency, // Gemini API 병렬 호출 수(미지정이면 기본 3)
+      faceRef,
+      stageRefFor,
+      retries: config.sceneRetries,
+      signal,
+      log,
+      onManifest: (m) => upsertPersonaManifest(m)
+    })
+    log(
+      `  📷 reel 사진 ${r.okCount}/${reelPlan.length}장${r.failedCount ? ` (실패 ${r.failedCount})` : ''}${r.cancelled ? ' — 중지됨' : ''}`
+    )
+    if (r.okCount) {
+      try {
+        const up = await uploadPersonaReelPhotos({
+          profile,
+          personaId: pid,
+          dir: personaDir,
+          reelPhotos: r.reelPhotos
+        })
+        log(`  ☁ reel 사진 ${up.count}장 Firebase 업로드`)
+      } catch (err) {
+        log(`  ⚠ reel 사진 Firebase 업로드 실패(무시): ${err.message}`)
+      }
+    }
+  } catch (err) {
+    log(`  ⚠ reel 사진 생성 실패(파노라마는 계속): ${err.message}`)
   }
 }
 
@@ -96,21 +154,33 @@ export async function processProfile(
     const faceRef = faceAnchor
       ? { buffer: faceAnchor, path: path.relative(personaDir, photoPaths[0]) }
       : null
+    // pro 모델 클라이언트 — reel 사진(3:4)과 aged 앵커 포트레이트(3:4)가 공유한다.
+    const proGclient = new GeminiClient({
+      apiKey: await resolveGeminiApiKey(config.gemini),
+      model: config.gemini.model, // pro — 3:4 포트레이트라 파노라마 4:1 제약을 받지 않는다
+      textModel: config.gemini.textModel,
+      timeoutMs: config.timeoutMs
+    })
+
+    // 2.4) reel 전용 3:4 사진 — 파노라마보다 먼저(관람 순서상 reel이 먼저 보인다). best-effort.
+    await generateReelPhotosBestEffort({
+      profile: genProfile,
+      personaDir,
+      pid,
+      config,
+      gclient: proGclient,
+      faceRef,
+      signal,
+      log
+    })
+
     // 2단계 aged 앵커 프리패스 — 파노라마(flash)가 얼굴을 aging하지 않도록, 성인 나이의 '그 나이 얼굴'을
     // pro로 미리 크게 뽑아 캐시한다(_aged/{age}.png). 아래 selectFor(referencesFor·promptFor)가 이 맵을
     // 조회해, 준비된 나이는 KEEP_FACE로 얼굴을 유지만 시킨다. occupation은 스테이지 사진이 없어 모든 성인
     // 나이가 aging 대상(needsAged: 항상 true). 플랜을 여기서 결정론적으로 확정해 그대로 넘긴다(내부 재빌드와 동일).
     const plan = buildScenePlan(genProfile, { perStage: config.perStage })
-    const agedGclient = faceRef
-      ? new GeminiClient({
-          apiKey: await resolveGeminiApiKey(config.gemini),
-          model: config.gemini.model, // pro — 3:4 포트레이트라 파노라마 4:1 제약을 받지 않는다
-          textModel: config.gemini.textModel,
-          timeoutMs: config.timeoutMs
-        })
-      : null
     const agedByAge = await prepareAgedAnchors({
-      gclient: agedGclient,
+      gclient: faceRef ? proGclient : null,
       faceRef,
       profile: genProfile, // gender 알면 포트레이트 명사에 반영(없으면 중립 — 얼굴 참조가 실제 성별을 이끈다)
       plan,
@@ -276,20 +346,35 @@ export async function processLifeGraphSession(
     const ageScenes = await synthesizeAgeScenes(synthClient, profile, sessionPoints)
     log(`  나이별 장면 합성 완료: ${Object.keys(ageScenes).length}개 나이 (LLM), 나머지는 폴백`)
 
+    // pro 모델 클라이언트 — reel 사진(3:4)과 aged 앵커 포트레이트(3:4)가 공유한다.
+    const proGclient = new GeminiClient({
+      apiKey: await resolveGeminiApiKey(config.gemini),
+      model: config.gemini.model, // pro — 3:4 포트레이트라 파노라마 4:1 제약을 받지 않는다
+      textModel: config.gemini.textModel,
+      timeoutMs: config.timeoutMs
+    })
+
+    // 1.85) reel 전용 3:4 사진 — 파노라마보다 먼저(관람 순서상 reel이 먼저 보인다). best-effort.
+    // 그 단계의 실제 제출 사진(stageRefFor)이 있으면 그걸 최우선 앵커로 쓴다(아동 나이 커버).
+    await generateReelPhotosBestEffort({
+      profile,
+      personaDir,
+      pid,
+      config,
+      gclient: proGclient,
+      faceRef,
+      stageRefFor,
+      ageScenes,
+      signal,
+      log
+    })
+
     // 1.9) 2단계 aged 앵커 프리패스 — 스테이지 실제 사진이 없는 성인 나이만 aging 대상(있는 나이는 그
     // 사진을 앵커로 씀). 그 나이의 '그 나이 얼굴'을 pro로 미리 뽑아 _aged/{age}.png에 캐시하고, 아래
     // selectFor가 조회한다. 플랜을 여기서 확정해(ageScenes 필요) 프리패스와 생성 루프가 같은 플랜을 쓴다.
     const lifePlan = buildLifeGraphPlan(profile, sessionPoints, ageScenes) // 나이 10개 × 3장 = 최대 30장
-    const agedGclient = faceRef
-      ? new GeminiClient({
-          apiKey: await resolveGeminiApiKey(config.gemini),
-          model: config.gemini.model, // pro — 3:4 포트레이트라 파노라마 4:1 제약을 받지 않는다
-          textModel: config.gemini.textModel,
-          timeoutMs: config.timeoutMs
-        })
-      : null
     const agedByAge = await prepareAgedAnchors({
-      gclient: agedGclient,
+      gclient: faceRef ? proGclient : null,
       faceRef,
       profile, // Firestore 문서 — gender 있으면 포트레이트 명사에 반영(없으면 중립, 얼굴 참조가 실제 성별을 이끈다)
       plan: lifePlan,

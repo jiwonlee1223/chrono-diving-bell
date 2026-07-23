@@ -8,6 +8,8 @@
   "$seamfix": "[LEGACY — equirect 통일(2026-07-22)로 새 생성 미사용] seamfix 이음매 보정 밴드. workflow='seamfix'일 때만 의미. 기존 seamfix persona 재생성(seamfix-legacy.js)에서만 참조. bandWidth=이음매(좌우 wrap 접합부)를 Flux Fill로 덮어써 재생성하는 세로 띠 폭(px). feather=띠 좌우 블렌드 폭(px).",
   "seamfix": { "bandWidth": 256, "feather": 96 },
   "perStage": 3,
+  "$reelPhotos": "reel 전용 가로형 사진 생성(파노라마와 별개 플로우 — 파노라마는 영상 생성 전용). count장을 startAge살~현재 나이에 균등 분배해 워커가 파노라마보다 먼저 생성한다(_reel/). aspectRatio=가로형 4:3 기본. concurrency=한 사람 안에서 Gemini API 동시 호출 장 수(쿼터 여유 있으면 올려도 됨). 모델은 gemini.model(pro) 재사용. admin 버튼은 대기열 — 여러 명 연달아 눌러도 순차 실행.",
+  "reelPhotos": { "count": 12, "startAge": 3, "aspectRatio": "4:3", "concurrency": 3 },
   "$lifeGraphSkipSeamfix": "[LEGACY — equirect엔 이음매 보정 단계가 없어 무의미] 과거 seamfix 시절 옵션. workflow='seamfix'일 때만 효과. 현행 equirect에선 무시됨.",
   "lifeGraphSkipSeamfix": true,
   "outDir": "library",
