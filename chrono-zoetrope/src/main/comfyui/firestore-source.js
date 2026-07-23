@@ -434,6 +434,56 @@ export async function fetchManifestByPersonaId(pid) {
   return await fetchPersonaManifest(entry.docKey)
 }
 
+// ── 런타임 세션 포인터 정본(Firestore) ────────────────────────────────────────
+// 세션 포인터(_session.json)는 원래 로컬 파일이라 런타임과 같은 머신의 admin만 지정할 수 있었다.
+// 'runtime/session' 문서 하나를 정본으로 두면 어느 머신의 admin이든 세션을 지정·해제할 수 있고,
+// 설치 런타임이 이 문서를 구독해 자기 로컬 _session.json에 미러링해 따라간다(기존 파일 감시 재사용).
+// Firebase 미연결이면 로컬 파일만으로 기존과 동일하게 동작한다(best-effort).
+const RUNTIME_SESSION_COLLECTION = 'runtime'
+const RUNTIME_SESSION_DOC = 'session'
+
+/** 세션 지정/해제를 정본에 기록. sel.personaId=null 이면 '세션 나가기'. selectedAt은 로컬 파일과 동일 값 유지. */
+export async function setRuntimeSession({ personaId = null, name = null, selectedAt = null } = {}) {
+  if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  await db
+    .collection(RUNTIME_SESSION_COLLECTION)
+    .doc(RUNTIME_SESSION_DOC)
+    .set({
+      personaId,
+      name,
+      selectedAt: selectedAt || new Date().toISOString(),
+      updatedAt: FieldValue.serverTimestamp()
+    })
+}
+
+/** 정본 세션 포인터 1회 조회. 문서 없으면 null, 있으면 { personaId(null=해제됨), name, selectedAt }. */
+export async function fetchRuntimeSession() {
+  if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  const snap = await db.collection(RUNTIME_SESSION_COLLECTION).doc(RUNTIME_SESSION_DOC).get()
+  if (!snap.exists) return null
+  const d = snap.data()
+  return { personaId: d.personaId ?? null, name: d.name ?? null, selectedAt: d.selectedAt ?? null }
+}
+
+/** 정본 세션 포인터 실시간 구독 — 변경마다 onChange(fetchRuntimeSession과 같은 형태 | null). @returns 해제 함수 */
+export function listenRuntimeSession(onChange) {
+  return db
+    .collection(RUNTIME_SESSION_COLLECTION)
+    .doc(RUNTIME_SESSION_DOC)
+    .onSnapshot(
+      (snap) => {
+        if (!snap.exists) return onChange(null)
+        const d = snap.data()
+        onChange({
+          personaId: d.personaId ?? null,
+          name: d.name ?? null,
+          selectedAt: d.selectedAt ?? null
+        })
+      },
+      (err) => console.error(`[firestore-source] 세션 포인터 리스너 오류: ${err.message}`)
+    )
+}
+
 /**
  * 어드민 사용자 리스트용 — Firebase 전체 명단을 한 번에 모은다.
  * profiles(제출 전부) 를 기준으로, personaManifests / generatedPanoramaImages / generatedVideos 를

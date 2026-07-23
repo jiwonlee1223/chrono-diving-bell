@@ -29,12 +29,14 @@ import { State } from '../src/shared/states.js'
 import { loadMontageLibrary } from '../src/main/library-loader.js'
 import { ZoetropeStateMachine } from '../src/main/state-machine.js'
 import { VideoRegenerator } from '../src/main/comfyui/video-cache.js'
-import { readSession, SESSION_FILE } from '../src/main/session-pointer.js'
+import { readSession, writeSession, clearSession, SESSION_FILE } from '../src/main/session-pointer.js'
 import { readCalibration, writeCalibration } from '../src/main/calibration.js'
 import {
   initFirebase,
   ensurePersonaMediaFromFirebase,
-  fetchManifestByPersonaId
+  fetchManifestByPersonaId,
+  fetchRuntimeSession,
+  listenRuntimeSession
 } from '../src/main/comfyui/firestore-source.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -209,9 +211,14 @@ async function applySessionSelection(personaId) {
   const ok = await loadPersona(personaId)
   if (!ok) return
   // 테스트 경험(사용자 확정): 참가자 선택이 곧바로 reel 데모 시퀀스를 트리거한다.
-  // (페이지 리로드 없이 SSE로 구동 — 실타래·reel은 몽타주 텍스처가 필요 없다. 되돌리려면 여기서 RELOAD로.)
   console.log('[server] 세션 참가자 반영 → reel 데모 트리거')
   runReelDemo()
+  // 열려 있는 런타임 페이지를 재부트스트랩한다. 몽타주 텍스처(playlist)는 부트스트랩에서 한 번만
+  // 로드되므로, reelMode 'rotate'가 새 참가자의 파노라마를 실린더에 감으려면 리로드가 필요하다.
+  // (과거 'video' 모드는 <video>를 즉석 생성해 텍스처가 필요 없었다 — rotate 전환으로 필수가 됐다.)
+  // runReelDemo가 국면을 spinup으로 먼저 바꿔두므로, 리로드된 페이지는 부트스트랩의 demo 국면을
+  // 이어받아 새 playlist 텍스처로 spinup→reel을 진행한다.
+  broadcast(Channels.RELOAD, {})
 }
 
 // 개발용 뷰 토글: §4.1 프로젝터 예왜곡 렌더 ↔ 펼친 파노라마 프리뷰.
@@ -691,6 +698,33 @@ const server = http.createServer(async (req, res) => {
 // ── 부팅 ─────────────────────────────────────────────────────────────
 // 어떤 참가자를 재생할지: admin 세션 포인터(_session.json) 최우선, 없으면 montage.json 고정 personaId,
 // 그것도 없으면 자동(최근). 라이브러리가 없으면 서버는 뜨되 IDLE 앰비언트만 동작.
+
+// 세션 포인터 정본(Firestore 'runtime/session') 채택 — 다른 머신 admin이 지정한 세션을 부팅 시
+// 이어받는다. 아직 파일 감시가 걸리기 전이라 reel 데모는 트리거되지 않고 조용히 로드만 된다.
+// 정본 문서가 없거나 Firebase 미연결이면 로컬 파일 그대로(기존 동작).
+if (firebaseReady) {
+  try {
+    const cloud = await fetchRuntimeSession()
+    const local = await readSession(libraryRoot)
+    if (cloud?.personaId) {
+      if (
+        !local ||
+        local.personaId !== cloud.personaId ||
+        local.selectedAt !== cloud.selectedAt
+      ) {
+        await writeSession(libraryRoot, cloud) // selectedAt 보존 — 감시 중복 판정과 일치
+        console.log(`[server] 세션 정본 채택: ${cloud.name || cloud.personaId}`)
+      }
+    } else if (cloud && local) {
+      // 정본이 명시적 '세션 나가기'(personaId:null) 상태 — 로컬 잔재를 지우고 IDLE로 부팅.
+      await clearSession(libraryRoot)
+      console.log('[server] 세션 정본이 해제 상태 — 로컬 세션 포인터 제거')
+    }
+  } catch (e) {
+    console.warn(`[server] 세션 정본 조회 실패(로컬로 진행): ${e.message}`)
+  }
+}
+
 const session = await readSession(libraryRoot)
 const initialPersonaId = session?.personaId ?? montageConfig.personaId ?? null
 if (session) console.log(`[server] 세션 참가자: ${session.name || session.personaId}`)
@@ -730,6 +764,39 @@ try {
   })
 } catch (err) {
   console.warn('[server] 세션 포인터 감시 실패 (부팅 시 선택만 반영됨):', err.message)
+}
+
+// 세션 포인터 정본(Firestore) 구독 — 어느 머신의 admin이 지정/해제하든 로컬 _session.json에
+// 미러링만 한다. 실제 반영(리로드·reel 트리거·IDLE 복귀)은 위 파일 감시 경로가 전담하므로
+// 로컬 admin 지정과 원격 지정이 완전히 같은 코드로 처리된다. selectedAt이 같으면 이미 반영된
+// 선택(로컬 admin이 파일+정본을 동시에 쓴 경우, 또는 부팅 채택분)이라 건너뛴다.
+if (firebaseReady) {
+  try {
+    listenRuntimeSession(async (cloud) => {
+      try {
+        // 정본 문서가 아예 없음(null) = 아직 아무 admin도 정본에 쓴 적 없음 — 로컬을 건드리지
+        // 않는다. '세션 나가기'는 문서가 존재하되 personaId가 null인 명시적 해제 상태만 뜻한다.
+        if (cloud === null) return
+        const local = await readSession(libraryRoot)
+        if (cloud.personaId) {
+          if (
+            local &&
+            local.personaId === cloud.personaId &&
+            local.selectedAt === cloud.selectedAt
+          )
+            return
+          await writeSession(libraryRoot, cloud)
+        } else if (local) {
+          await clearSession(libraryRoot)
+        }
+      } catch (e) {
+        console.warn(`[server] 세션 정본 미러 실패: ${e.message}`)
+      }
+    })
+    console.log('[server] 세션 정본(Firestore runtime/session) 구독 — 원격 admin 지정을 따라간다')
+  } catch (e) {
+    console.warn(`[server] 세션 정본 구독 실패(로컬 파일만 감시): ${e.message}`)
+  }
 }
 
 server.listen(PORT, () => {

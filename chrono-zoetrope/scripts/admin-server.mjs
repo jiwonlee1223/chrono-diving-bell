@@ -47,7 +47,8 @@ import {
   fetchPersonaVideos,
   upsertPersonaManifest,
   fetchPersonaManifest,
-  listAllPersonasFromFirebase
+  listAllPersonasFromFirebase,
+  setRuntimeSession
 } from '../src/main/comfyui/firestore-source.js'
 import { recoverClipsFromComfy } from '../src/main/comfyui/recover-clips.js'
 import { processProfile, processLifeGraphSession } from '../src/main/comfyui/profile-worker.js'
@@ -1159,6 +1160,10 @@ const server = http.createServer(async (req, res) => {
         personaId: pid,
         name: manifest.profile?.name || null
       })
+      // 세션 포인터 정본(Firestore 'runtime/session') 미러 — 다른 머신에서 도는 설치 런타임도
+      // 이 지정을 따라간다. selectedAt을 로컬과 동일하게 실어 중복 트리거를 막는다(best-effort).
+      if (firebaseReady)
+        await setRuntimeSession(sel).catch((e) => logAction(`세션 정본 미러 실패: ${e.message}`))
       logAction(`◆ 세션 참가자 설정 → ${sel.name || pid}`)
       return send(res, 200, sel)
     }
@@ -1166,6 +1171,11 @@ const server = http.createServer(async (req, res) => {
     // DELETE /api/session → 세션 나가기(선택 해제). 런타임은 IDLE 대기로 복귀.
     if (req.method === 'DELETE' && url.pathname === '/api/session') {
       await clearSession(LIBRARY)
+      // 정본에도 해제를 기록(personaId:null) — 다른 머신 런타임이 IDLE로 복귀한다(best-effort).
+      if (firebaseReady)
+        await setRuntimeSession({ personaId: null }).catch((e) =>
+          logAction(`세션 정본 미러 실패: ${e.message}`)
+        )
       logAction('◇ 세션 나가기 — 선택 해제')
       return send(res, 200, { personaId: null })
     }

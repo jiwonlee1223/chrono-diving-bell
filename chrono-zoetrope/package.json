@@ -16,7 +16,7 @@
     "worker:listen": "node scripts/generate-from-firestore.mjs --listen",
     "lint": "eslint --cache .",
     "build": "vite build",
-    "dev": "node server/index.mjs & vite",
+    "dev": "node scripts/dev.mjs",
     "start": "node server/index.mjs",
     "preview": "vite preview"
   },

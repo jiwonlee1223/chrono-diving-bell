@@ -36,10 +36,12 @@ export async function readSession(libraryRoot) {
 
 /**
  * 세션 선택 쓰기 (연구자 admin이 호출).
- * @param {{ personaId: string, name?: string|null }} sel
+ * selectedAt을 주면 그대로 보존한다 — 런타임이 Firestore 정본(runtime/session)을 로컬로
+ * 미러링할 때 정본과 같은 값을 유지해, 감시 경로의 selectedAt 중복 판정이 재트리거를 막게 한다.
+ * @param {{ personaId: string, name?: string|null, selectedAt?: string|null }} sel
  */
-export async function writeSession(libraryRoot, { personaId, name = null }) {
-  const selection = { personaId, name, selectedAt: new Date().toISOString() }
+export async function writeSession(libraryRoot, { personaId, name = null, selectedAt = null }) {
+  const selection = { personaId, name, selectedAt: selectedAt || new Date().toISOString() }
   await writeFile(sessionPath(libraryRoot), JSON.stringify(selection, null, 2))
   return selection
 }
