@@ -44,10 +44,10 @@
       "$apiKeyPath": "ElevenLabs API 키 파일(gitignore된 secrets/). 서버만 읽어 서명 URL을 발급한다.",
       "apiKeyPath": "./secrets/elevenlabs-api-key.txt",
       "language": "ko",
-      "$voiceId": "20대 한국어 여성 보이스 ID(선택). 비우면 에이전트 기본 보이스. 오버라이드는 에이전트 보안설정에서 허용해야 적용됨. 현재=Annie(ko·seoul·young·female·soft).",
-      "voiceId": "Lb7qkOn5hF8p7qfCDH8q",
+      "$voiceId": "20대 한국어 여성 보이스 ID(선택). 비우면 에이전트 기본 보이스. 오버라이드는 에이전트 보안설정에서 허용해야 적용됨. 현재=Rosa Oh(ko·seoul·young·female·calm/soft).",
+      "voiceId": "sf8Bpb1IU97NI9BHSMRf",
       "$firstMessage": "유령이 건네는 첫 질문(정해진 말). 관람객 응답을 받아 이어서 대화한다.",
-      "firstMessage": "너는 지금 여기서 죽게 되었지만, 만약에 한 번의 기회를 얻어 계속 살 수 있다면 무얼 하고 싶어?",
+      "firstMessage": "너는 지금 여기서 죽게 되었지만, 만약에 한 번의 기회를 얻어 삶을 이어갈 수 있다면, 몇 년 뒤의 너를 보고 싶어?",
       "$systemPromptPath": "유령의 페르소나·§1 경계 시스템 프롬프트(프로즈). 서버가 읽어 대화 두뇌에 오버라이드로 전달.",
       "systemPromptPath": "src/main/config/ghost-persona.md",
       "$startDelayMs": "유령이 나타난(show 램프) 뒤 말을 걸기까지 지연(ms). ghost.js 가시성 램프 2.5s와 맞춤.",
@@ -74,7 +74,7 @@
     "wan": {
       "$video": "4:1 = seamless 360° 파노라마(4096×1024) 비율 유지. 1920×480은 16의 배수·720p와 동일 latent 비용. 비파노라마(1.79) 페르소나엔 좌우 늘어남 — 파노라마 구도 기준값. width/height는 16의 배수.",
       "$length": "영상 길이(초) = length/fps. length는 반드시 4k+1(4의 배수+1). 목표초 → round((초×fps-1)/4)×4+1. 예: 5s=81, 10s=161. 주의: 프레임 2배면 생성시간·VRAM 대략 2배(1920×480×161 ≈ 290s/클립), Wan2.2는 ~5s(81f) 학습이라 그 이상은 모션이 늘어지거나 반복될 수 있음. IMMERSION은 어차피 loop 재생이라 length는 '반복 주기'.",
-      "video": { "width": 1920, "height": 480, "length": 81, "fps": 16, "steps": 4, "shift": 5.0 },
+      "video": { "width": 1920, "height": 480, "length": 161, "fps": 16, "steps": 4, "shift": 5.0 },
       "promptPrefix": "The scene gently comes alive with subtle natural motion, kept in its elevated high-angle view looking down on the moment from above, as if watching a memory of one's own life pass by below. The central person breathes and moves softly, hair and clothing stir in a faint breeze, ambient life continues around them. The camera holds its high vantage nearly still with a very slow drift. Cinematic, realistic, understated motion."
     }
   }

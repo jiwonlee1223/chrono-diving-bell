@@ -369,6 +369,35 @@ function bootstrapPayload() {
   }
 }
 
+// 미래 자기 모습 영상 카탈로그 — 유령 인터랙션(대화)에서 관람객이 '몇 년 뒤'를 답하면 그 미래 나잇대
+// 영상을 원본 속도로 튼다. 현재 나이 초과 장면만, 나잇대별로 묶어 영상 URL(cachedPath→/media)로.
+// 나이 계산: birthYear = 임의 장면의 year - age (일관). currentAge = 올해 - birthYear.
+function futureCatalog() {
+  const imgs = library?.images || []
+  const ref = imgs.find((im) => Number.isFinite(im.year) && Number.isFinite(im.age))
+  if (!ref || !regenerator) return { currentAge: null, futureStages: [] }
+  const currentAge = new Date().getFullYear() - (ref.year - ref.age)
+  const byAge = new Map()
+  for (const im of imgs) {
+    if (!(im.age > currentAge)) continue // 현재 나이 이후(미래) 장면만
+    const vp = regenerator.cachedPath(im.id)
+    if (!vp) continue // 영상 없는 장면은 제외
+    if (!byAge.has(im.age)) byAge.set(im.age, [])
+    byAge.get(im.age).push({ id: im.id, url: toMediaUrl(vp), scene: im.scene || '' })
+  }
+  const futureStages = [...byAge.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([age, scenes]) => ({
+      age,
+      yearsAhead: age - currentAge,
+      videos: scenes
+        .sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }))
+        .map((s) => ({ url: s.url, scene: s.scene })) // scene = 큐레이터 설명용 장면 텍스트
+    }))
+    .filter((s) => s.videos.length)
+  return { currentAge, futureStages }
+}
+
 // ── 유령 음성 대화 세션 (ghost.voice) ────────────────────────────────
 // reel 종료 후 'ghost' 국면에서만 브라우저가 호출한다. API 키는 서버에만 두고
 // ElevenLabs Conversational AI 서명 URL을 발급해 넘긴다. §1 경계·첫 질문·언어·보이스는
@@ -423,7 +452,13 @@ async function ghostSessionPayload() {
   if (vcfg.language) overrides.agent.language = vcfg.language
   if (vcfg.voiceId) overrides.tts = { voiceId: vcfg.voiceId }
 
-  return { enabled: true, signedUrl, overrides, startDelayMs: vcfg.startDelayMs ?? 2600 }
+  return {
+    enabled: true,
+    signedUrl,
+    overrides,
+    startDelayMs: vcfg.startDelayMs ?? 2600,
+    future: futureCatalog() // 미래 자기 모습 영상 카탈로그(대화 client tool이 사용)
+  }
 }
 
 // ── HTTP 헬퍼 (admin-server 패턴) ────────────────────────────────────

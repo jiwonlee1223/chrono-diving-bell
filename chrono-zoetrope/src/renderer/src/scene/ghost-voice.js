@@ -13,9 +13,10 @@
 
 import { Conversation } from '@elevenlabs/client'
 
-// getSession: () => Promise<{ enabled, signedUrl, overrides, startDelayMs } | { enabled:false }>
+// getSession: () => Promise<{ enabled, signedUrl, overrides, startDelayMs, future } | { enabled:false }>
 // onSpeaking: (boolean) => void  — 유령이 말하는 동안 true (발광 부스트 등 시각 연동용).
-export function createGhostVoice({ getSession, onSpeaking } = {}) {
+// playFutureVideo: (url) => Promise — 미래 자기 모습 영상을 원본 속도로 재생하고 끝나면 resolve(대화 tool용).
+export function createGhostVoice({ getSession, onSpeaking, playFutureVideo } = {}) {
   let convo = null //     현재 Conversation 세션(없으면 null).
   let starting = false // start 진행 중(중복 시작 방지).
   let stopped = true //   stop 요청 상태 — 시작 지연 도중 취소를 감지한다.
@@ -49,11 +50,56 @@ export function createGhostVoice({ getSession, onSpeaking } = {}) {
       }
       if (stopped) return
 
+      // 미래 자기 모습 영상 재생용 client tools — 에이전트(대화 두뇌)가 대화 중 호출한다.
+      //  show_future_self(years_ahead): '몇 년 뒤'에 가장 가까운 미래 나잇대의 첫 영상 재생.
+      //  show_another(): 같은 나잇대의 다음 영상(그 시기 3장면을 차례로). 반환 문자열이 에이전트에 전달돼
+      //   다음 대사('다른 것도 보여줄게' 등)를 잇게 한다. 영상은 renderer가 원본 속도로 재생하고 끝까지 대기한다.
+      const future = session.future || { currentAge: null, futureStages: [] }
+      let stage = null // 현재 보여주는 미래 나잇대 { age, yearsAhead, videos:[url…] }
+      let cursor = 0 //   그 나잇대에서 다음에 보여줄 장면 인덱스
+      const pickStage = (yearsAhead) => {
+        const stages = future.futureStages || []
+        if (!stages.length) return null
+        // 가장 가까운 미래 나잇대(사용자 확정): |나잇대.yearsAhead - 말한 년수| 최소.
+        return stages.reduce((best, s) =>
+          Math.abs(s.yearsAhead - yearsAhead) < Math.abs(best.yearsAhead - yearsAhead) ? s : best
+        )
+      }
+      // tool 반환은 문자열 — 에이전트가 이걸 읽고 큐레이터처럼 [화면 속 장면]을 2인칭으로 풀어 주고
+      // 미래를 상상하게 묻는다(페르소나 흐름). 장면 텍스트를 그대로 실어 보낸다.
+      const describe = (v, remaining, first) => {
+        const head = `${stage.age}세(약 ${stage.yearsAhead}년 뒤)의 ${first ? '' : '다른 '}모습이야.`
+        const desc = v.scene ? ` [화면 속 장면] ${v.scene}` : ''
+        const more = remaining > 0 ? ` (이 시기 장면 ${remaining}개 더 있음)` : ' (이 시기 마지막 장면)'
+        return head + desc + more
+      }
+      const clientTools = {
+        show_future_self: async (params = {}) => {
+          const yearsAhead = Number(params.years_ahead) || 0
+          stage = pickStage(yearsAhead)
+          cursor = 0
+          if (!stage || !stage.videos.length) return '보여줄 미래 영상이 없어.'
+          const v = stage.videos[cursor]
+          await playFutureVideo?.(v.url)
+          cursor = 1
+          return describe(v, stage.videos.length - cursor, true)
+        },
+        show_another: async () => {
+          if (!stage) return '아직 보여준 시기가 없어. 먼저 show_future_self를 써.'
+          if (cursor >= stage.videos.length) return '이 시기 장면은 이게 마지막이었어. 더 없어.'
+          const v = stage.videos[cursor]
+          await playFutureVideo?.(v.url)
+          cursor += 1
+          return describe(v, stage.videos.length - cursor, false)
+        }
+      }
+
       convo = await Conversation.startSession({
         signedUrl: session.signedUrl,
         connectionType: 'websocket',
         // §1 경계·페르소나·첫 질문·언어·보이스는 서버가 만든 오버라이드에 담겨 있다.
         overrides: session.overrides,
+        clientTools, // 미래 영상 재생 tool 구현(에이전트가 호출 → renderer가 재생)
         onModeChange: ({ mode } = {}) => onSpeaking?.(mode === 'speaking'),
         onStatusChange: () => {},
         onError: (message) => console.warn('[ghost-voice] 세션 오류:', message),

@@ -53,6 +53,7 @@ import { recoverClipsFromComfy } from '../src/main/comfyui/recover-clips.js'
 import { processProfile, processLifeGraphSession } from '../src/main/comfyui/profile-worker.js'
 import { composeScenePromptFor, personaId } from '../src/main/comfyui/prompt-builder.js'
 import { prefixForEntry } from '../src/main/comfyui/face-anchor.js'
+import { ensureEntryAgedAnchor } from '../src/main/comfyui/aged-anchor.js'
 import { regenerateSeamfix } from '../src/main/comfyui/seamfix-legacy.js' // LEGACY: 기존 seamfix persona 재생성 전용
 import { readSession, writeSession, clearSession } from '../src/main/session-pointer.js'
 import { VideoRegenerator } from '../src/main/comfyui/video-cache.js'
@@ -198,6 +199,34 @@ async function regenerate(pid, id) {
   // 현행 워크플로우(equirect)·모델(flash)로 재생성돼 생성과 완전히 같다. manifest.workflow도 갱신해 정합.
   const wf = config.workflow
   manifest.workflow = wf
+  // 2단계 aged 앵커 — aging 성인 장면(referenceKind 'anchor'/'aged')이면 그 나이의 얼굴 포트레이트를
+  // 확보(없으면 pro로 1회 생성해 _aged/에 캐시)하고 entry를 'aged'로 업그레이드한다. 그러면 아래
+  // prefixForEntry가 KEEP_FACE(얼굴 유지)를, regenerateGemini의 loadEntryReference가 그 포트레이트를
+  // 싣는다 — 파노라마(flash)는 aging 없이 얼굴을 배치만 한다. 단일·전체 재생성 공통 진입점이라, 기존
+  // persona도 전체 재생성 한 번으로 2단계 방식으로 옮겨진다(나이당 pro 1콜, 이후 캐시 재사용).
+  if (wf === 'equirect' || wf === 'gemini') {
+    try {
+      const agedGclient = new GeminiClient({
+        apiKey: await resolveGeminiApiKey(config.gemini),
+        model: config.gemini?.model, // pro (gemini-3-pro-image) — 3:4 포트레이트라 4:1 제약 없음
+        textModel: config.gemini?.textModel,
+        timeoutMs: config.timeoutMs
+      })
+      const upgraded = await ensureEntryAgedAnchor({
+        gclient: agedGclient,
+        personaDir: path.join(LIBRARY, pid),
+        entry,
+        profile: manifest.profile,
+        model: config.gemini?.model,
+        imageSize: manifest.gemini?.imageSize || config.gemini?.imageSize,
+        log: logAction
+      })
+      if (upgraded) logAction(`${pid}  🧑 aged 앵커 적용  장면 ${entry.id} (${entry.age}세)`)
+    } catch (e) {
+      logAction(`aged 포트레이트 확보 실패(${entry.id}, 기존 방식으로 폴백): ${e.message}`)
+    }
+  }
+
   // 프롬프트도 항상 현재 prompt-builder 코드로 재조립한다(프롬프트 수정 시 기존 persona도 "재생성"
   // 한 번으로 반영). 장면 컨텍스트(entry.scene/age/isPast)와 레퍼런스(entry.referenceFile·referenceKind)는
   // entry에 남아 유지되므로 얼굴 앵커·나이 변환 접두어(prefixForEntry)도 함께 재적용된다.

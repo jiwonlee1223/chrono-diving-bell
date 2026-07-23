@@ -9,8 +9,9 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { generateLifeLibrary } from './life-library.js'
-import { composeScenePromptFor } from './prompt-builder.js'
+import { composeScenePromptFor, buildScenePlan } from './prompt-builder.js'
 import { selectSceneReference } from './face-anchor.js'
+import { prepareAgedAnchors } from './aged-anchor.js'
 import {
   buildLifeGraphPlan,
   collectSessionPhotoURLs,
@@ -95,13 +96,40 @@ export async function processProfile(
     const faceRef = faceAnchor
       ? { buffer: faceAnchor, path: path.relative(personaDir, photoPaths[0]) }
       : null
-    const selectFor = (item) => selectSceneReference(item, { faceRef })
+    // 2단계 aged 앵커 프리패스 — 파노라마(flash)가 얼굴을 aging하지 않도록, 성인 나이의 '그 나이 얼굴'을
+    // pro로 미리 크게 뽑아 캐시한다(_aged/{age}.png). 아래 selectFor(referencesFor·promptFor)가 이 맵을
+    // 조회해, 준비된 나이는 KEEP_FACE로 얼굴을 유지만 시킨다. occupation은 스테이지 사진이 없어 모든 성인
+    // 나이가 aging 대상(needsAged: 항상 true). 플랜을 여기서 결정론적으로 확정해 그대로 넘긴다(내부 재빌드와 동일).
+    const plan = buildScenePlan(genProfile, { perStage: config.perStage })
+    const agedGclient = faceRef
+      ? new GeminiClient({
+          apiKey: await resolveGeminiApiKey(config.gemini),
+          model: config.gemini.model, // pro — 3:4 포트레이트라 파노라마 4:1 제약을 받지 않는다
+          textModel: config.gemini.textModel,
+          timeoutMs: config.timeoutMs
+        })
+      : null
+    const agedByAge = await prepareAgedAnchors({
+      gclient: agedGclient,
+      faceRef,
+      profile: genProfile, // gender 알면 포트레이트 명사에 반영(없으면 중립 — 얼굴 참조가 실제 성별을 이끈다)
+      plan,
+      personaDir,
+      model: config.gemini.model,
+      imageSize: config.gemini.imageSize,
+      signal,
+      log,
+      needsAged: () => true
+    })
+    const agedRefFor = (age) => agedByAge.get(age) || null
+    const selectFor = (item) => selectSceneReference(item, { faceRef, agedRefFor })
     const t0 = Date.now()
     const result = await generateLifeLibrary(genProfile, {
       host: config.host,
       outDir,
       workflow: config.workflow,
       perStage: config.perStage,
+      plan, // 위에서 확정한 플랜(aged 프리패스와 동일 플랜을 생성 루프도 쓰게)
       image: config.image,
       panorama: config.panorama, // seamfix(B안) 파노라마 크기 override (없으면 2048×1024 기본)
       seamfix: config.seamfix, // 이음매 밴드 폭/페더 (없으면 workflow 기본 256/96)
@@ -230,14 +258,12 @@ export async function processLifeGraphSession(
     stageIds.forEach((sid, idx) => {
       stageRelPathById[sid] = path.relative(personaDir, stagePhotoLocalPaths[idx])
     })
-    const selectFor = (item) =>
-      selectSceneReference(item, {
-        stageRef:
-          item.stageId && stagePhotoBuffers[item.stageId]
-            ? { buffer: stagePhotoBuffers[item.stageId], path: stageRelPathById[item.stageId] }
-            : null,
-        faceRef
-      })
+    // 그 순간의 실제 스테이지 사진(있으면). selectFor(아래)와 aged 프리패스의 needsAged가 공유한다 —
+    // 스테이지 사진이 있는 나이는 그 실제 얼굴·장소를 앵커로 쓰므로 aging(aged 포트레이트)이 불필요하다.
+    const stageRefFor = (item) =>
+      item.stageId && stagePhotoBuffers[item.stageId]
+        ? { buffer: stagePhotoBuffers[item.stageId], path: stageRelPathById[item.stageId] }
+        : null
 
     // 1.8) 1차 합성 — 세션의 7단계 text 전체를 한 번에 LLM에 넣어, 옛 occupation 플로우의
     // STAGES와 같은 골격(나이 3·7·14·18·25·32·45·55·68·82마다 장면 후보 3개)으로 이 사람 고유의
@@ -249,6 +275,34 @@ export async function processLifeGraphSession(
     })
     const ageScenes = await synthesizeAgeScenes(synthClient, profile, sessionPoints)
     log(`  나이별 장면 합성 완료: ${Object.keys(ageScenes).length}개 나이 (LLM), 나머지는 폴백`)
+
+    // 1.9) 2단계 aged 앵커 프리패스 — 스테이지 실제 사진이 없는 성인 나이만 aging 대상(있는 나이는 그
+    // 사진을 앵커로 씀). 그 나이의 '그 나이 얼굴'을 pro로 미리 뽑아 _aged/{age}.png에 캐시하고, 아래
+    // selectFor가 조회한다. 플랜을 여기서 확정해(ageScenes 필요) 프리패스와 생성 루프가 같은 플랜을 쓴다.
+    const lifePlan = buildLifeGraphPlan(profile, sessionPoints, ageScenes) // 나이 10개 × 3장 = 최대 30장
+    const agedGclient = faceRef
+      ? new GeminiClient({
+          apiKey: await resolveGeminiApiKey(config.gemini),
+          model: config.gemini.model, // pro — 3:4 포트레이트라 파노라마 4:1 제약을 받지 않는다
+          textModel: config.gemini.textModel,
+          timeoutMs: config.timeoutMs
+        })
+      : null
+    const agedByAge = await prepareAgedAnchors({
+      gclient: agedGclient,
+      faceRef,
+      profile, // Firestore 문서 — gender 있으면 포트레이트 명사에 반영(없으면 중립, 얼굴 참조가 실제 성별을 이끈다)
+      plan: lifePlan,
+      personaDir,
+      model: config.gemini.model,
+      imageSize: config.gemini.imageSize,
+      signal,
+      log,
+      needsAged: (item) => !stageRefFor(item)
+    })
+    const agedRefFor = (age) => agedByAge.get(age) || null
+    const selectFor = (item) =>
+      selectSceneReference(item, { stageRef: stageRefFor(item), faceRef, agedRefFor })
 
     // 2) 생애 라이브러리 생성 — occupation 템플릿(buildScenePlan) 대신 이 세션의 실제 장면 plan을
     // 넘긴다. 프롬프트는 occupation과 동일하게 config.workflow(현재 equirect=김주만 gaze 구조)를
@@ -268,7 +322,7 @@ export async function processLifeGraphSession(
         signal,
         gemini: config.gemini,
         pid,
-        plan: buildLifeGraphPlan(profile, sessionPoints, ageScenes), // 나이 10개 × 3장 = 최대 30장
+        plan: lifePlan, // 위 1.9)에서 확정(aged 프리패스와 동일 플랜)
         // 장면별 레퍼런스·프롬프트·기록 메타를 한 규칙(selectFor=face-anchor.js)에서 뽑는다:
         //  (1) 그 순간의 실제 제출 사진이 있으면 그걸(실제 얼굴·장소 보존, 과거·아동 커버),
         //  (2) 없고 성인 나이면 현재 얼굴 앵커로 그 나이 변환(과거=젊게, 미래=늙게),

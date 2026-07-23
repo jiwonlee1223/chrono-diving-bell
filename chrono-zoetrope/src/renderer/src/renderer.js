@@ -141,6 +141,7 @@ async function main() {
   let videoTexture = null
   let videoSyncTimer = null
   let videoStartAtMs = 0
+  let futureVideoActive = false // 미래 자기 모습 영상 재생 중(ghost 대화 tool). frame()이 보면 영상 재료를 렌더.
 
   function teardownVideo() {
     if (videoSyncTimer) clearInterval(videoSyncTimer)
@@ -268,6 +269,55 @@ async function main() {
     videoEl.load()
   }
 
+  // 미래 자기 모습 영상 하나를 원본 속도로 loop 재생(ghost 대화 client tool이 호출). Promise 반환 —
+  // loop라 얼지 않고 계속 살아 움직인다. 'ended'가 안 오므로, 첫 한 바퀴(대략 영상 길이) 뒤에 resolve해
+  // 에이전트가 다음 대사로 넘어가게 하고, 영상은 다음 영상 재생/국면 전환(teardown) 전까지 계속 loop로 흐른다.
+  // futureVideoActive=true인 동안 frame()이 실린더에 영상을 그린다(국면 전환 시 applyDemo가 해제).
+  // 안전장치: 로드/재생 실패나 canplaythrough 누락 시에도 상한 뒤 resolve해 대화가 멈추지 않게 한다.
+  function playFutureVideoLoop(url) {
+    return new Promise((resolve) => {
+      teardownVideo()
+      if (!url || !montageMaterial) {
+        resolve()
+        return
+      }
+      futureVideoActive = true
+      const v = document.createElement('video')
+      v.muted = true // 클립은 무음(-an). 자동재생 안전 위해 muted.
+      v.loop = true // 계속 loop — 얼지 않고 살아 움직인다. 다음 영상/국면 전환 때 teardown으로 교체·정지.
+      v.playsInline = true
+      v.preload = 'auto'
+      v.crossOrigin = 'anonymous'
+      v.src = url
+      v.playbackRate = 1 // 원본 속도(배속 아님)
+      videoEl = v
+      let settled = false
+      let timer = setTimeout(finish, 18000) // 로드 지연 대비 상한(에이전트 tool 타임아웃 20s 전에)
+      function finish() {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolve() // pause하지 않는다 — loop로 계속 재생(살아 움직임 유지)
+      }
+      v.addEventListener(
+        'canplaythrough',
+        () => {
+          videoTexture = new THREE.VideoTexture(v)
+          videoTexture.colorSpace = THREE.NoColorSpace
+          setMontageVideo(montageMaterial, videoTexture)
+          videoMix.v = videoMix.from = videoMix.to = 1 // 영상 즉시 표시
+          v.play().catch(() => {})
+          clearTimeout(timer)
+          const dur = isFinite(v.duration) && v.duration > 0 ? v.duration : 8
+          timer = setTimeout(finish, Math.min(dur * 1000 + 300, 18000)) // 첫 한 바퀴 뒤 에이전트 진행
+        },
+        { once: true }
+      )
+      v.addEventListener('error', finish, { once: true }) // 로드 실패해도 대화는 진행
+      v.load()
+    })
+  }
+
   // reel 회전 모드 — Gemini 파노라마 이미지들을 천천히 회전시키며 순회(한 바퀴=secPerTurn초, 바퀴마다
   // 다음 이미지로 크로스페이드). uYaw 합성(설치 캘리브레이션 + 회전)은 frame()이 한다(cal이 그때
   // 정의돼 있어 TDZ 회피). 크로스페이드는 uTexVideo 슬롯을 다음 이미지로 재사용해 uVideoMix로 섞는다.
@@ -322,6 +372,7 @@ async function main() {
   function applyDemo(payload, immediate = false) {
     const phase = payload?.phase ?? 'idle'
     const elapsedSec = Math.max(0, (payload?.elapsedMs ?? 0) / 1000)
+    futureVideoActive = false // 국면 전환 시 미래 영상 재생 해제(ghost 대화 tool이 다시 켠다)
     const dur = (s) => (immediate ? 0.001 : s)
     if (phase === 'spinup') {
       demoPhase = 'spinup'
@@ -436,7 +487,8 @@ async function main() {
   // 목소리 엔진·페르소나·§1 경계는 서버(/api/ghost/session)와 ghost-persona.md가 소유한다.
   ghostVoice = createGhostVoice({
     getSession: () => window.zoetrope.getGhostSession?.(),
-    onSpeaking: (on) => ghost.setGlow?.(on ? 1 : 0)
+    onSpeaking: (on) => ghost.setGlow?.(on ? 1 : 0),
+    playFutureVideo: (url) => playFutureVideoLoop(url) // 대화 tool이 미래 영상을 원본 속도로 loop 재생(첫 바퀴 뒤 resolve)
   })
 
   // 새로고침 재개: 서버가 준 현재 1차 흐름 국면으로 즉시 점프(진행 중인 reel은 위치까지 이어감).
@@ -471,11 +523,13 @@ async function main() {
     // 캘리브레이션 모드면 상태와 무관하게 몽타주(정적 기준 프레임)를 강제한다.
     const montageActive = calibrationMode
       ? !!montageMaterial
-      : demoPhase === 'reel'
+      : futureVideoActive
         ? !!montageMaterial
-        : demoPhase === 'spinup'
-          ? false
-          : montageMaterial && MONTAGE_STATES.has(appState)
+        : demoPhase === 'reel'
+          ? !!montageMaterial
+          : demoPhase === 'spinup'
+            ? false
+            : montageMaterial && MONTAGE_STATES.has(appState)
     setSurfaceMaterial(montageActive ? montageMaterial : threadMaterial)
 
     if (montageActive) {
@@ -550,8 +604,8 @@ async function main() {
         }
         // 설치 캘리브레이션 오프셋 + 회전 위상 합성
         u.uYaw.value = (((cal.yaw + yaw) % 1) + 1) % 1
-      } else if (demoPhase === 'reel') {
-        // reel 데모(영상 모드): videoMix가 실타래→reel 크로스페이드.
+      } else if (demoPhase === 'reel' || futureVideoActive) {
+        // reel 데모/미래 영상(ghost 대화): videoMix로 영상 표시.
         u.uBlur.value = 0
         u.uVideoMix.value = tweenUpdate(videoMix)
         u.uYaw.value = cal.yaw // 회전 override 복원

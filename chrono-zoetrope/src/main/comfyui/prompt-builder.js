@@ -233,6 +233,56 @@ export function subjectNoun(age, gender) {
   return child ? 'child' : 'person'
 }
 
+// ── 2단계 얼굴 앵커 A단계: "그 나이의 얼굴" 포트레이트 ─────────────────────────────
+// 파노라마(flash 4:1)는 얼굴이 작고 왜곡돼 정체성+aging을 동시에 못 살린다. 그래서 얼굴 앵커
+// 사진 하나에서 "그 나이의 같은 사람" 얼굴을 pro로 크게(3:4) 먼저 뽑아 두고, 그 포트레이트를
+// 파노라마 단계의 레퍼런스로 넘긴다(파노라마는 aging을 안 하고 이 얼굴을 배치만 한다). 배선·캐시는
+// aged-anchor.js. Kontext 노트 교훈: 모델은 "N살로 바꿔라" 같은 추상 지시를 무시하므로 나이대별로
+// '무엇이 물리적으로 달라지는지'를 직접 나열한다.
+
+// 목표 나이의 표면적 노화/성장 특징. 정체성(골격·이목구비 간격·눈 모양)은 유지하고, 여기 나열한
+// 표면 특징만 그 나이에 맞게 바뀌도록 한다.
+function ageTraitsFor(age) {
+  if (age < 25)
+    return 'youthful smooth clear taut skin, no wrinkles, full thick hair, bright fresh under-eyes — a young adult face in its early bloom'
+  if (age < 35)
+    return 'smooth skin with only the faintest early expression lines, still-full hair, a healthy adult face in its prime'
+  if (age < 45)
+    return 'light forehead lines and eye-corner creases beginning to set in, subtly maturing skin, hair still mostly full but perhaps a touch thinner'
+  if (age < 55)
+    return 'clear forehead lines and crow’s-feet, softening cheeks and early nasolabial folds, hair thinning and greying at the temples'
+  if (age < 65)
+    return 'deeper wrinkles across the forehead and around the eyes and mouth, a loosening jawline, visibly grey and thinning hair, mature older-adult skin'
+  if (age < 75)
+    return 'deep-set wrinkles, sagging jowls and a creased neck, age spots, sparse grey or white hair — clearly elderly features'
+  return 'heavily wrinkled and creased skin, hollowed and sagging features, thin white hair, prominent age spots — a frail, very old face'
+}
+
+/**
+ * A단계 포트레이트 프롬프트 — 얼굴 앵커 사진을 "그 나이의 같은 사람" 근접 포트레이트로 변환.
+ * pro 모델 + 3:4 근접 프레임 전제(장면·배경·왜곡 없음)라, 모델이 픽셀을 오롯이 정체성+나이 변환에
+ * 쓴다. 결과 포트레이트가 파노라마 단계(flash)의 레퍼런스가 된다. §1 무관(감정·서사 없이 얼굴만).
+ * @param {{gender?:string}} profile
+ * @param {number} age
+ * @param {{isPast?:boolean}} [opts]  과거=젊게, 미래=늙게 (문구만 다르고 특징은 age가 결정)
+ */
+export function composeAgedPortraitPrompt(profile, age, { isPast = false } = {}) {
+  const noun = subjectNoun(age, profile?.gender)
+  const when = isPast
+    ? `exactly as this same person looked when they were ${age} years old`
+    : `exactly as this same person will realistically look when they are ${age} years old in the future`
+  return (
+    `A clear, evenly lit head-and-shoulders portrait photograph of ONE single person — ${when}.` +
+    ` The attached photograph is the reference for this person’s facial identity: keep the SAME underlying bone structure,` +
+    ` the same eye shape, and the same spacing and proportions of the eyes, nose and mouth — unmistakably the same individual.` +
+    ` Change ONLY what genuinely changes with age: ${ageTraitsFor(age)}.` +
+    ` A ${age}-year-old ${noun}, face turned toward the camera, calm neutral relaxed expression,` +
+    ` a plain softly-lit neutral studio background, the face large in frame and in sharp focus.` +
+    ` Photorealistic, natural realistic skin texture, soft warm light, 35mm photograph.` +
+    NO_TEXT_DIRECTIVE
+  )
+}
+
 // ── 3인칭 관조(부감) 구도 — 크리스마스 캐롤의 스크루지가 자기 삶을 내려다보듯 ──────────
 // 모든 장면은 그 순간을 약간 위에서 내려다보는 3인칭 부감(high angle)으로 본다. 관람객은
 // 자기 삶의 한 장면을 바깥에서, 조금 떨어진 위쪽에서 관조한다. 이 부감 구도가 필수다.
