@@ -417,6 +417,24 @@ export async function fetchPersonaManifest(profileOrKey) {
 }
 
 /**
+ * personaId(p-해시)로 Firebase 정본 manifest를 찾는다. personaManifests는 docKey(이름_YYMMDD)로
+ * 키잉되므로 문서 키를 personaId로 직접 조회할 수 없다 — 전체 명단(listAll)에서 내부 personaId가
+ * 일치하는 항목의 docKey를 거쳐 조회한다. manifest를 가진 persona는 그 문서에 personaId가 baked돼
+ * listAll이 채워주므로 매칭이 성립한다(manifest 없는 profiles-only 항목은 애초에 복원 대상이 아니다).
+ * 런타임·admin이 "로컬 manifest가 없을 때 정본에서 복원"에 공유한다(admin ensureLocalManifest와 동형). 없으면 null.
+ * @param {string} pid
+ * @returns {Promise<object|null>} manifest 또는 null
+ */
+export async function fetchManifestByPersonaId(pid) {
+  if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  if (!pid) return null
+  const list = await listAllPersonasFromFirebase()
+  const entry = list.find((p) => p.personaId === pid)
+  if (!entry) return null
+  return await fetchPersonaManifest(entry.docKey)
+}
+
+/**
  * 어드민 사용자 리스트용 — Firebase 전체 명단을 한 번에 모은다.
  * profiles(제출 전부) 를 기준으로, personaManifests / generatedPanoramaImages / generatedVideos 를
  * docKey 로 조인해 각 사람의 { docKey, name, birthDate, personaId, 상태, 생성물 카운트 } 를 만든다.

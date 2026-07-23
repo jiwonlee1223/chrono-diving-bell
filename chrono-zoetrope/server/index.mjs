@@ -33,7 +33,8 @@ import { readSession, SESSION_FILE } from '../src/main/session-pointer.js'
 import { readCalibration, writeCalibration } from '../src/main/calibration.js'
 import {
   initFirebase,
-  ensurePersonaMediaFromFirebase
+  ensurePersonaMediaFromFirebase,
+  fetchManifestByPersonaId
 } from '../src/main/comfyui/firestore-source.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -120,6 +121,27 @@ let pendingPersonaId //   세션 진행 중 들어온 참가자 교체 — IDLE 
 // personaId=null 이면 library-loader가 가장 최근 것을 자동 선택. 실패 시 이전 상태를 유지.
 async function loadPersona(personaId) {
   try {
+    // Firebase manifest hydrate: 로컬에 manifest가 없고 Firebase가 켜져 있으면 정본에서 받아 로컬에 쓴다.
+    // 런타임은 원래 로컬 manifest만 읽었다(library-loader) — 서비스계정 키만 있고 library/가 없는 머신에서도
+    // personaId만으로 부트스트랩되게 한다. 이 뒤의 미디어 read-through·loadMontageLibrary가 이 manifest를 읽는다.
+    // (자동선택 personaId=null은 로컬 최근본 대상이라 hydrate 불가 — admin이 참가자를 지정하면 그때 복원된다.)
+    if (firebaseReady && personaId) {
+      const manifestPath = path.join(libraryRoot, personaId, 'manifest.json')
+      if (!existsSync(manifestPath)) {
+        try {
+          const m = await fetchManifestByPersonaId(personaId)
+          if (m) {
+            await fs.mkdir(path.dirname(manifestPath), { recursive: true })
+            await fs.writeFile(manifestPath, JSON.stringify(m, null, 2))
+            console.log(`[server] Firebase에서 manifest hydrate: ${personaId}`)
+          } else {
+            console.warn(`[server] Firebase 정본에 manifest 없음(로컬로 진행): ${personaId}`)
+          }
+        } catch (e) {
+          console.warn(`[server] manifest hydrate 실패(로컬로 진행): ${e.message}`)
+        }
+      }
+    }
     // Firebase 정본에서 미디어를 로컬 캐시로 확보(read-through). 로컬에 이미 있으면 그대로 재사용.
     // manifest의 profile로 문서 키(이름_생년월일)를 얻으므로 personaId 지정 시에만 수행한다.
     if (firebaseReady && personaId) {
