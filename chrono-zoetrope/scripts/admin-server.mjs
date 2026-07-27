@@ -51,7 +51,8 @@ import {
   listAllPersonasFromFirebase,
   setRuntimeSession
 } from '../src/main/comfyui/firestore-source.js'
-import { recoverClipsFromComfy } from '../src/main/comfyui/recover-clips.js'
+// ComfyUI 서버 output에서 직접 회수하던 복구는 CLI 전용(scripts/recover-comfy-videos.mjs)으로 남기고,
+// admin 버튼은 Firebase 정본 기준 '이어서 생성'(kind: 'resume')으로 대체했다.
 import { processProfile, processLifeGraphSession } from '../src/main/comfyui/profile-worker.js'
 import { composeScenePromptFor, personaId } from '../src/main/comfyui/prompt-builder.js'
 import {
@@ -687,8 +688,7 @@ async function pumpVideo() {
   try {
     const mode = montage.regen.mode // 'seedance' | 'wan' | 'mock'
     const sd = mode === 'seedance'
-    // recover는 ComfyUI history에서 회수만 하므로 Seedance 키가 필요 없다.
-    if (sd && kind !== 'recover' && !COMFY_API_KEY)
+    if (sd && !COMFY_API_KEY)
       throw new Error(
         'Seedance API 키 없음 — secrets/comfy-api-key.txt 필요 (또는 regen.mode를 wan으로)'
       )
@@ -742,31 +742,45 @@ async function pumpVideo() {
           videoLast = { ...(videoLast || {}), firebaseWarn: `클립 업로드 실패: ${e.message}` }
         }
       }
-    } else if (kind === 'recover') {
-      // ComfyUI output 복구: 생성은 됐으나 /view 다운로드 실패로 로컬/Firebase가 빈 경우, 서버 output에서 회수.
-      const ids = scenes.map((s) => s.id)
-      videoJob = { pid, kind, phase: 'recover', done: 0, total: ids.length }
-      logAction(`▶ ComfyUI 복구 시작: ${manifest.profile?.name || pid} (${ids.length}장)`)
-      const { recovered, missing } = await recoverClipsFromComfy({
-        host: config.host,
-        ids,
-        videosDir: path.join(personaDir, 'videos'),
-        onProgress: (e) => (videoJob = { pid, kind, ...e })
+    } else if (kind === 'resume') {
+      // 이어서 생성: 생성 중 ComfyUI 큐가 끊겨 일부만 만들어진 경우. manifest.clips.done 이 어긋나
+      // 0/30 으로 보여도, Firebase 정본에 이미 저장된 클립을 로컬 캐시로 내려받아 그만큼 건너뛰고,
+      // 부족한 장면만 새로 생성한 뒤 다시 업로드한다. (진행 상황의 정본은 Firebase 클립 문서다.)
+      const total = scenes.length
+      videoJob = { pid, kind, phase: 'fetch', done: 0, total }
+      logAction(`▶ 이어서 생성 시작 [${mode}]: ${manifest.profile?.name || pid} (${total}장)`)
+      // 1) Firebase 정본에서 이미 생성된 클립을 로컬 캐시(videos/<id>.mp4)로 하이드레이트.
+      //    없는 장면은 missing 으로 남고, 아래 ensureClips 가 그 장면만 생성한다.
+      let fetched = 0
+      if (firebaseReady) {
+        try {
+          const { paths } = await ensureLocalClipsFromFirebase(manifest.profile, personaDir, {
+            ids: scenes.map((s) => s.id),
+            onProgress: (e) => (videoJob = { pid, kind, ...e })
+          })
+          fetched = paths.size
+          logAction(`  ↓ Firebase에서 회수: ${fetched}/${total}장 (나머지만 생성)`)
+        } catch (e) {
+          logAction(`  ⚠ Firebase 클립 조회 실패(로컬 캐시만으로 이어감): ${e.message}`)
+        }
+      }
+      // 2) 캐시 적중은 건너뛰고 부족한 장면만 생성.
+      const clips = await builder.ensureClips(scenes, {
+        onProgress: (e) => (videoJob = { pid, kind, ...e }),
+        shouldCancel: () => videoCancel
       })
+      const done = clips.filter(Boolean).length
       manifest.clips = {
         mode,
-        done: recovered.length,
-        total: ids.length,
+        done,
+        total,
         builtAt: new Date().toISOString(),
-        recoveredAt: new Date().toISOString()
+        resumedAt: new Date().toISOString()
       }
       await writeManifest(pid, manifest)
       videoLast = { pid, kind, ok: true, at: Date.now() }
-      logAction(
-        `✓ 복구 완료: ${pid} — ${recovered.length}/${ids.length}` +
-          (missing.length ? ` (누락 ${missing.join(', ')})` : '')
-      )
-      if (firebaseReady && config.firebase?.uploadGenerated !== false && recovered.length > 0) {
+      logAction(`✓ 이어서 생성 완료: ${pid} — ${done}/${total} (Firebase 회수 ${fetched} + 신규 ${done - fetched})`)
+      if (firebaseReady && config.firebase?.uploadGenerated !== false && done > 0) {
         try {
           const up = await uploadPersonaVideos({
             profile: manifest.profile,
@@ -1602,11 +1616,11 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, { queued: true, pid, kind: 'reel' })
       }
 
-      // ComfyUI 복구 — 생성됐으나 다운로드 실패한 클립을 서버 output에서 회수 → 로컬 + Firebase.
-      if (req.method === 'POST' && parts[3] === 'recover-clips') {
+      // 이어서 생성 — 큐가 끊긴 경우 Firebase 정본에 저장된 클립만큼 회수하고 부족분만 생성 → 재업로드.
+      if (req.method === 'POST' && parts[3] === 'resume-clips') {
         await readManifest(pid) // 존재 확인
-        enqueueVideo(pid, 'recover')
-        return send(res, 200, { queued: true, pid, kind: 'recover' })
+        enqueueVideo(pid, 'resume')
+        return send(res, 200, { queued: true, pid, kind: 'resume' })
       }
     }
 

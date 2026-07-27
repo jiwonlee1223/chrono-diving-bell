@@ -182,6 +182,11 @@ export function createGhostVoice({ getSession, onSpeaking, playVideo } = {}) {
       if (stopped) return
       if (reply?.say) await speak(reply.say) // 예: "기다려봐. 그때의 기억으로 돌아가자."
       if (stopped) return
+      if (reply?.end && !reply?.video) {
+        // 체험 종료(마지막 화답까지 마쳤다) — 듣기를 멈추고 조용히 곁에 머문다(영상은 계속 흐른다).
+        console.log('[ghost-voice] 체험 종료 — 유령은 침묵한다')
+        return
+      }
       if (reply?.video?.url) {
         // 검정 → 그 순간이 떠오른다(pingpong loop). resolveAfterSec: 첫 loop 한 바퀴(최대 18s)를
         // 기다리지 않고 fade-in 직후 후속 대사로 넘어간다 — 영상은 뒤에서 계속 돈다.
@@ -195,6 +200,10 @@ export function createGhostVoice({ getSession, onSpeaking, playVideo } = {}) {
             'event'
           )
           if (!stopped && follow?.say) await speak(follow.say)
+          if (follow?.end) {
+            console.log('[ghost-voice] 체험 종료 — 유령은 침묵한다')
+            return
+          }
         } catch {
           /* 다음 듣기로 계속 */
         }

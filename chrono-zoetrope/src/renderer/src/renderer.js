@@ -235,6 +235,37 @@ async function main() {
     })
   }
 
+  // ---- 전환 베일: 모든 화면 전환은 무조건 fade in/out ----
+  // 검정 전면 오버레이 하나로 통일한다 — 국면 전환(spinup↔reel↔ghost↔idle)과 대화 영상 교체가
+  // 전부 "cover(어두워짐) → 전환 → uncover(밝아짐)"를 거친다. z-index 15: 캔버스 위,
+  // 섬광(20)·유령(31) 아래 — 유령은 어둠 위로 떠오른다.
+  const veil = (() => {
+    const el = document.createElement('div')
+    el.style.cssText =
+      'position:fixed;inset:0;background:#000;opacity:0;pointer-events:none;z-index:15;'
+    document.body.appendChild(el)
+    function to(opacity, sec) {
+      return new Promise((resolve) => {
+        const from = parseFloat(getComputedStyle(el).opacity) || 0
+        const anim = el.animate([{ opacity: from }, { opacity }], {
+          duration: Math.max(1, sec * 1000),
+          easing: 'ease-in-out',
+          fill: 'forwards'
+        })
+        const done = () => {
+          el.style.opacity = String(opacity)
+          resolve()
+        }
+        anim.onfinish = done
+        anim.oncancel = done // 새 전환이 덮어써도 대기 중 promise는 풀어준다
+      })
+    }
+    return {
+      cover: (sec = 0.6) => to(1, sec), //   fade-out: 화면이 어두워진다
+      uncover: (sec = 0.9) => to(0, sec) // fade-in: 새 화면이 떠오른다
+    }
+  })()
+
   // ---- reel 배속 재생. 종료(→유령 idle)는 서버가 국면으로 방송하므로 여기선 재생만 한다. ----
   //  seekSec: 새로고침 재개 시 영상 위치(실경과 × 배속). flash: 시작 섬광(재개 땐 생략).
   function playReelOnce(
@@ -277,23 +308,25 @@ async function main() {
   // 에이전트가 다음 대사로 넘어가게 하고, 영상은 다음 영상 재생/국면 전환(teardown) 전까지 계속 loop로 흐른다.
   // convoVideoActive=true인 동안 frame()이 실린더에 영상을 그린다(국면 전환 시 applyDemo가 해제).
   // 안전장치: 로드/재생 실패나 canplaythrough 누락 시에도 상한 뒤 resolve해 대화가 멈추지 않게 한다.
-  //  fadeIn: 과거 회귀 연출("화면이 fade in된다") — 검정으로 떨어뜨린 뒤 videoMix 트윈으로 서서히
-  //  떠오른다. 미래 흐름(2차)은 기존대로 즉시 표시(fadeIn 미지정).
+  //  fadeIn: 과거 회귀 연출("화면이 fade in된다") — 베일로 이전 화면을 어둠에 내려놓고(cover),
+  //  영상이 준비되면 베일을 걷어(uncover) 그 순간이 떠오른다. 미래 흐름(2차)은 기존대로 즉시 표시.
   //  resolveAfterSec: 지정하면 재생 시작 후 그 시간 뒤에 resolve(대화가 빨리 이어짐 — 과거 회귀).
   //  미지정이면 첫 한 바퀴(영상 길이) 뒤 resolve(기존 미래 흐름 동작 유지).
-  function playConversationVideo(
+  async function playConversationVideo(
     url,
     { fadeIn = false, fadeInSec = 1.5, resolveAfterSec = 0 } = {}
   ) {
+    if (fadeIn) await veil.cover(0.6) // 이전 화면(릴·직전 장면)이 어둠으로 저문다
     return new Promise((resolve) => {
       teardownVideo()
       if (!url || !montageMaterial) {
+        if (fadeIn) veil.uncover(0.6) // 검정에 갇히지 않게
         resolve()
         return
       }
       convoVideoActive = true
       if (fadeIn) {
-        // 이전 텍스처(필름스트립·몽타주 잔상) 대신 검정 베이스에서 시작 — videoMix 0 = 검정.
+        // 베일 아래에서 이전 텍스처(필름스트립·몽타주 잔상)를 치워 검정 베이스로.
         setMontageImage(montageMaterial, null)
         videoMix.v = videoMix.from = videoMix.to = 0
       }
@@ -312,6 +345,7 @@ async function main() {
         if (settled) return
         settled = true
         clearTimeout(timer)
+        if (fadeIn) veil.uncover(0.6) // 어떤 경로로 끝나든 화면이 검정에 갇히지 않게(이미 걷혔으면 no-op)
         resolve() // pause하지 않는다 — loop로 계속 재생(살아 움직임 유지)
       }
       v.addEventListener(
@@ -320,12 +354,9 @@ async function main() {
           videoTexture = new THREE.VideoTexture(v)
           videoTexture.colorSpace = THREE.NoColorSpace
           setMontageVideo(montageMaterial, videoTexture)
-          if (fadeIn) {
-            tweenTo(videoMix, 1, fadeInSec) // 검정 → 영상 fade-in
-          } else {
-            videoMix.v = videoMix.from = videoMix.to = 1 // 영상 즉시 표시
-          }
+          videoMix.v = videoMix.from = videoMix.to = 1 // 영상 표시(fade는 베일이 담당)
           v.play().catch(() => {})
+          if (fadeIn) veil.uncover(fadeInSec) // 어둠이 걷히며 그 순간이 떠오른다
           clearTimeout(timer)
           const dur = isFinite(v.duration) && v.duration > 0 ? v.duration : 8
           const waitMs =
@@ -491,7 +522,19 @@ async function main() {
 
   // 서버 소유 1차 흐름 국면 적용. immediate=true는 부트스트랩 재개(트윈 없이 그 국면으로 점프).
   //  idle: 앰비언트(유령 숨김, admin 세션 나가기) · spinup: 실타래 배속 · reel: 회전/배속 재생 · ghost: 유령 뜬 idle
-  function applyDemo(payload, immediate = false) {
+  // 전환은 무조건 fade: 국면이 실제로 바뀌면(재개·동일국면 갱신 제외) 베일로 화면을 덮은 뒤 새 국면을
+  // 세팅하고 베일을 걷는다 — reel→ghost, spinup→reel 등 모든 화면 전환이 검정을 거쳐 부드럽게 넘어간다.
+  let lastDemoPhase = null
+  async function applyDemo(payload, immediate = false) {
+    const phase = payload?.phase ?? 'idle'
+    const transition = !immediate && phase !== lastDemoPhase
+    lastDemoPhase = phase
+    if (transition) await veil.cover(0.6) // 이전 국면이 어둠으로 저문다
+    applyDemoInner(payload, immediate)
+    if (transition) veil.uncover(0.9) // 새 국면이 떠오른다 (필름스트립 로드 중이면 검정 위에서 뜬다)
+  }
+
+  function applyDemoInner(payload, immediate = false) {
     const phase = payload?.phase ?? 'idle'
     const elapsedSec = Math.max(0, (payload?.elapsedMs ?? 0) / 1000)
     convoVideoActive = false // 국면 전환 시 대화 영상 재생 해제(ghost 대화 tool이 다시 켠다)

@@ -957,7 +957,7 @@
         const job = (videoState && videoState.job) || {}
         const buildingClips = b && b.pid === pid && b.kind === 'clips'
         const buildingReel = b && b.pid === pid && b.kind === 'reel'
-        const buildingRecover = b && b.pid === pid && b.kind === 'recover'
+        const buildingResume = b && b.pid === pid && b.kind === 'resume'
         const qHas = (kind) =>
           videoState && (videoState.queue || []).some((v) => v.pid === pid && v.kind === kind)
 
@@ -969,8 +969,9 @@
             `<span class="video-label">영상 ${unit} <b>${job.done || 0}/${job.total || cs.clipsTotal}</b> 생성 중…</span>` +
             `<button id="video-pause" class="stop-btn">일시정지</button>` +
             `<button id="video-stop" class="stop-btn">중단</button>`
-        } else if (buildingRecover) {
-          clipRow = `<span class="video-label">ComfyUI 복구 <b>${job.done || 0}/${job.total || cs.clipsTotal}</b> …</span>`
+        } else if (buildingResume) {
+          const ph = job.phase === 'fetch' ? 'Firebase 회수' : '이어서 생성'
+          clipRow = `<span class="video-label">${ph} <b>${job.done || 0}/${job.total || cs.clipsTotal}</b> …</span>`
         } else {
           const label = qHas('clips')
             ? '대기 중…'
@@ -980,17 +981,20 @@
                 ? `이어서 생성 (${cs.clipsDone}/${cs.clipsTotal})`
                 : '영상 완료 ✓'
           const done = cs.clipsDone >= cs.clipsTotal && cs.clipsTotal > 0
-          // 부족분이 있으면 ComfyUI 서버 output에서 회수하는 복구 버튼 노출(생성됐으나 다운로드 실패한 경우).
-          const recoverBtn =
-            !done && !qHas('recover')
-              ? `<button id="video-recover" title="ComfyUI 서버에 남은 클립을 회수해 로컬+Firebase로 복구">ComfyUI에서 복구</button>`
-              : qHas('recover')
-                ? `<button disabled>복구 대기 중…</button>`
+          // 생성 중 큐가 끊겨 진행도가 어긋난 경우(예: 0/30), Firebase 정본에 저장된 클립만큼 회수하고
+          // 부족분만 이어서 생성하는 버튼. Firebase 클립 수(fb.clips)를 함께 보여줘 실제 진행도를 알린다.
+          const fb = manifest._firebase
+          const fbClips = fb ? fb.clips : null
+          const resumeBtn =
+            !done && !qHas('resume')
+              ? `<button id="video-resume" title="Firebase에 저장된 클립을 회수하고 부족한 장면만 이어서 생성 → 재업로드">이어서 생성${fbClips != null ? ` (☁ ${fbClips}/${cs.clipsTotal})` : ''}</button>`
+              : qHas('resume')
+                ? `<button disabled>이어서 생성 대기 중…</button>`
                 : ''
           clipRow =
             `<span class="video-label">영상 ${unit} <b>${cs.clipsDone}/${cs.clipsTotal}</b>${done ? ' · 완료' : ''}</span>` +
             `<button id="video-genclips"${qHas('clips') || done ? ' disabled' : ''}>${label}</button>` +
-            recoverBtn
+            resumeBtn
         }
 
         // ── ② 릴 합성 행 ──
@@ -1064,7 +1068,7 @@
             `<div class="video-row"><span class="video-label" style="opacity:.85">` +
             `☁ Firebase <b>${fb.clips}/${fb.total}</b> 클립 · reel ${fb.reel ? '✓' : '✗'}` +
             (behind
-              ? ` <span style="color:#e0a030">— 로컬보다 부족(복구/재업로드 필요)</span>`
+              ? ` <span style="color:#e0a030">— 아직 부족(이어서 생성 필요)</span>`
               : '') +
             `</span></div>`
         }
@@ -1106,11 +1110,11 @@
           '릴 합성 시작 — Firebase 클립(없으면 로컬)으로 90초 합성',
           '릴 합성 실패'
         )
-      const recoverClips = () =>
+      const resumeClips = () =>
         postVideo(
-          `/api/personas/${pid}/recover-clips`,
-          'ComfyUI 복구 시작 — 서버 output에서 회수해 로컬+Firebase로 복구',
-          '복구 실패'
+          `/api/personas/${pid}/resume-clips`,
+          '이어서 생성 시작 — Firebase 저장분을 회수하고 부족한 장면만 생성해 재업로드',
+          '이어서 생성 실패'
         )
       const pauseVideo = () =>
         postVideo(
@@ -1284,7 +1288,7 @@
           $('#zoom').classList.add('show')
         } else if (t.id === 'reel-photos-gen') genReelPhotos(t.dataset.force === '1')
         else if (t.id === 'reel-photos-stop') stopReelPhotos()
-        else if (t.id === 'video-recover') recoverClips()
+        else if (t.id === 'video-resume') resumeClips()
         else if (t.id === 'video-genclips') genClips()
         else if (t.id === 'video-pause') pauseVideo()
         else if (t.id === 'video-stop') stopVideo()
@@ -1393,7 +1397,7 @@
             if (vl.ok && vl.pid === pid)
               loadManifest().catch(() => {}) // 클립 완료→_clipStatus 갱신, 릴 완료→플레이어
             else mountVideo()
-            const label = vl.kind === 'reel' ? '릴' : vl.kind === 'recover' ? '복구' : '영상 클립'
+            const label = vl.kind === 'reel' ? '릴' : vl.kind === 'resume' ? '이어서 생성' : '영상 클립'
             setStatus(
               vl.cancelled
                 ? `${label} ${vl.pauseKind === 'pause' ? '일시정지' : '중단'}됨: ${vl.pid}`
