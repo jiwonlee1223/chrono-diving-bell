@@ -1,78 +1,93 @@
 // 유령 에이전트 — 4타일 스트립을 배회하는 앰비언트 발광체.
 //
-// 요구(대화): 눈코입 없는 부끄부끄(Boo) 실루엣(둥근 몸 + 너덜한 밑단 + 작은 팔),
-// 단 "구름에 가려진 빛"처럼 아웃라인이 잘 안 보이는 발광체. 앱 실행 후 4개 화면을 돌아다닌다.
-// (귀엽게 수정: 세로로 길쭉→가로로 넓은 통통 비율, 얕은 밑단, 젤리 스쿼시&스트레치 바운스.)
+// 요구(대화): 유성별(별똥별) 디자인 — 안에 밝은 심지(core)가 든 하얀 구름 뭉치가 머리,
+// 그 뒤로 빛 꼬리가 흐른다. 선명한 외곽선 없이 "구름에 가려진 빛"의 결은 유지(§1).
+// 앱 실행 후 4개 화면을 돌아다닌다.
 //
 // 구현: WebGL 렌더 경로(preview/installation)와 무관하게 항상 보이도록 DOM/SVG 오버레이로 띄운다.
-//  - 실루엣: 돔형 상단 + 얕은 스캘롭 밑단 path, 양옆 작은 앞팔 nub.
-//  - 흐린 빛: 중심 발광 → 가장자리 소멸 radialGradient + feTurbulence 변위(구름결 가장자리) + blur.
-//    → 선명한 외곽선이 없다. 밝은 중심만 있고 테두리는 구름에 먹힌다(§1 침묵하는 앰비언트와 결).
+//  - 머리: 뭉게구름 실루엣(원 클러스터) + 난류 변위·블러로 가장자리가 구름결로 흩어진다.
+//  - 심지: 구름 중심의 작고 밝은 핵. 말할 때 glow 부스트로 이 심지가 도드라진다.
+//  - 꼬리: 머리 왼쪽으로 흐르는 테이퍼 광류 2가닥(linearGradient로 소멸). 진행 방향에 따라
+//    facing 플립이 꼬리를 항상 진행 반대쪽으로 흘린다.
 //  - 배회: getStrip()이 준 4타일 영역 안에서 x를 느리게 좌우 왕복(전 타일 순회) + 세로 bob + 호흡.
-//    이동 방향에 따라 좌우로 뒤집혀(facing) 살아있는 느낌. 자막·해설은 붙이지 않는다(§1).
+//    자막·해설은 붙이지 않는다(§1).
 //
 // 시선(가시성 요구): 첫 실행의 선택 화면(어두운 베일) 위에서도 보이도록 z-index를 베일 위에 둔다.
 // pointer-events:none 이라 카드 클릭을 막지 않는다.
 
 const SVG_NS = 'http://www.w3.org/2000/svg'
 
-// Boo 실루엣: viewBox 220×210, 중심 x=110. 세로로 길쭉하지 않고 통통·동글동글(귀여움은 비율에서).
-// 돔 상단(y≈36) + 얕고 부드러운 밑단 굽이(4굽이, 너무 너덜하지 않게) + 양옆 작은 앞팔 nub.
-// 변위·블러가 외곽을 구름처럼 먹으므로 형태는 근사면 충분하다.
-const BODY_PATH = [
-  'M 30,132',
-  'C 30,74 62,36 110,36', // 왼쪽 볼 → 정수리 (넓은 통통 돔)
-  'C 158,36 190,74 190,132', // 정수리 → 오른쪽 볼
-  'L 190,150',
-  'q -20,15 -40,0', // 밑단 굽이 4개(얕게 = 동글동글한 자락)
-  'q -20,-15 -40,0',
-  'q -20,15 -40,0',
-  'q -20,-15 -40,0',
-  'L 30,132',
-  'Z'
-].join(' ')
+// viewBox 340×180. 머리(구름 뭉치) 중심 ≈ (252, 96), 꼬리는 x=0 방향(왼쪽)으로 흐른다.
+// facing=+1(오른쪽 이동)일 때 scale(+1)이라 꼬리가 왼쪽 = 진행 반대. 변위·블러가 외곽을
+// 구름처럼 먹으므로 형태는 근사면 충분하다.
 
-// 오버레이 마크업. 필터/그라디언트는 defs에, 몸체는 group에.
+// 오버레이 마크업. 필터/그라디언트는 defs에.
 // zg-cloud: 난류 변위로 가장자리를 구름결로 흩고 살짝 블러 → "구름에 가려진" 외곽.
-// zg-soft : 넓은 헤일로용 강한 블러.
+// zg-soft : 넓은 헤일로·심지 번짐용 강한 블러.
+// zg-tail : 꼬리 전용 — 결이 길게 늘어지도록 가로로 성긴 난류 + 블러.
 function ghostSVG() {
   return `
-<svg viewBox="0 0 220 210" xmlns="${SVG_NS}" style="width:100%;height:100%;overflow:visible">
+<svg viewBox="0 0 340 180" xmlns="${SVG_NS}" style="width:100%;height:100%;overflow:visible">
   <defs>
-    <radialGradient id="zg-core" cx="50%" cy="42%" r="62%">
+    <radialGradient id="zg-core" cx="50%" cy="50%" r="60%">
       <stop offset="0%"  stop-color="#fffdf7" stop-opacity="0.95"/>
       <stop offset="34%" stop-color="#fff6ea" stop-opacity="0.62"/>
       <stop offset="70%" stop-color="#ffe9cf" stop-opacity="0.20"/>
       <stop offset="100%" stop-color="#ffe9cf" stop-opacity="0"/>
     </radialGradient>
-    <radialGradient id="zg-halo" cx="50%" cy="46%" r="58%">
+    <radialGradient id="zg-wick" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"  stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="45%" stop-color="#fffaf0" stop-opacity="0.8"/>
+      <stop offset="100%" stop-color="#fff3e0" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="zg-halo" cx="50%" cy="50%" r="58%">
       <stop offset="0%"  stop-color="#fff3e0" stop-opacity="0.50"/>
       <stop offset="55%" stop-color="#fff3e0" stop-opacity="0.12"/>
       <stop offset="100%" stop-color="#fff3e0" stop-opacity="0"/>
     </radialGradient>
+    <linearGradient id="zg-trail" x1="1" y1="0" x2="0" y2="0">
+      <stop offset="0%"  stop-color="#fff6ea" stop-opacity="0.55"/>
+      <stop offset="45%" stop-color="#ffe9cf" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#ffe9cf" stop-opacity="0"/>
+    </linearGradient>
     <filter id="zg-cloud" x="-70%" y="-70%" width="240%" height="240%">
       <feTurbulence type="fractalNoise" baseFrequency="0.013 0.019" numOctaves="2" seed="7" result="n"/>
       <feDisplacementMap in="SourceGraphic" in2="n" scale="20"
         xChannelSelector="R" yChannelSelector="G" result="d"/>
-      <feGaussianBlur in="d" stdDeviation="5"/>
+      <feGaussianBlur in="d" stdDeviation="4"/>
     </filter>
     <filter id="zg-soft" x="-90%" y="-90%" width="280%" height="280%">
       <feGaussianBlur stdDeviation="13"/>
     </filter>
+    <filter id="zg-tail" x="-40%" y="-120%" width="180%" height="340%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.006 0.03" numOctaves="2" seed="11" result="n"/>
+      <feDisplacementMap in="SourceGraphic" in2="n" scale="26"
+        xChannelSelector="R" yChannelSelector="G" result="d"/>
+      <feGaussianBlur in="d" stdDeviation="6"/>
+    </filter>
   </defs>
 
-  <!-- 넓게 번지는 헤일로: 형태 없는 빛무리 (가로로 넓은 통통한 빛) -->
-  <ellipse cx="110" cy="112" rx="104" ry="94" fill="url(#zg-halo)" filter="url(#zg-soft)"/>
+  <!-- 머리를 감싸는 넓은 헤일로: 형태 없는 빛무리 -->
+  <ellipse cx="252" cy="96" rx="90" ry="82" fill="url(#zg-halo)" filter="url(#zg-soft)"/>
 
-  <!-- 작은 앞팔 nub(양옆 아래) + 몸체: 난류 변위로 외곽이 구름에 먹힌다 -->
-  <g filter="url(#zg-cloud)">
-    <ellipse cx="36"  cy="140" rx="14" ry="16" fill="url(#zg-core)"/>
-    <ellipse cx="184" cy="140" rx="14" ry="16" fill="url(#zg-core)"/>
-    <path d="${BODY_PATH}" fill="url(#zg-core)"/>
+  <!-- 꼬리: 머리에서 왼쪽으로 테이퍼되며 소멸하는 광류 2가닥 -->
+  <g filter="url(#zg-tail)">
+    <path d="M 252,78 C 190,70 110,78 18,90 C 110,92 190,100 252,108 Z" fill="url(#zg-trail)"/>
+    <path d="M 250,96 C 200,100 150,106 92,116 C 152,114 202,112 250,116 Z"
+      fill="url(#zg-trail)" opacity="0.7"/>
   </g>
 
-  <!-- 밝은 속심: '구름 뒤의 빛' 핵 -->
-  <ellipse cx="110" cy="92" rx="38" ry="38" fill="url(#zg-core)" filter="url(#zg-soft)"/>
+  <!-- 머리: 하얀 뭉게구름(원 클러스터) — 외곽이 난류에 먹혀 구름결이 된다 -->
+  <g filter="url(#zg-cloud)">
+    <circle cx="252" cy="82"  r="34" fill="url(#zg-core)"/>
+    <circle cx="224" cy="100" r="26" fill="url(#zg-core)"/>
+    <circle cx="280" cy="102" r="27" fill="url(#zg-core)"/>
+    <circle cx="252" cy="112" r="28" fill="url(#zg-core)"/>
+  </g>
+
+  <!-- 심지: 구름 안의 밝은 핵. '구름 뒤의 빛'이자 말할 때 밝아지는 중심 -->
+  <ellipse cx="252" cy="96" rx="30" ry="30" fill="url(#zg-core)" filter="url(#zg-soft)"/>
+  <circle cx="252" cy="96" r="15" fill="url(#zg-wick)" filter="url(#zg-soft)"/>
 </svg>`
 }
 
@@ -88,8 +103,8 @@ export function createGhost({ getStrip, zIndex = 31 } = {}) {
   })
 
   const el = document.createElement('div')
-  const GW = 280
-  const GH = (GW * 210) / 220 // 실루엣 viewBox 비율 유지(가로로 넓은 통통 비율)
+  const GW = 340
+  const GH = (GW * 180) / 340 // 유성별 viewBox 비율 유지(꼬리 포함 가로로 긴 비율)
   Object.assign(el.style, {
     position: 'absolute',
     left: '0',

@@ -262,21 +262,35 @@ export function reelSceneForAge(age, seedString) {
 }
 
 /**
- * reel 사진 프롬프트 — 가로형(4:3) 일반 사진. 파노라마·부감 지시 없음. 인물이 프레임 정중앙에서
+ * reel 사진 프롬프트 — 일반 사진(파노라마·부감 지시 없음). 인물이 프레임 정중앙에서
  * 그 순간의 행동을 능동적으로 수행하고, 시대 배경(과거 연대의 한국)을 입힌다. 복장·헤어는
  * 장면·시대를 따르게 한다(얼굴 정체성 유지는 face-anchor 접두어가 담당 — 여기서는 장면만).
  * §1: 장소·빛·사물·행동만 서술, 감정·의미 서술어 없음.
+ * orientation은 생성 aspectRatio(config.reelPhotos)에서 유도돼 들어온다 — 프롬프트 문구와
+ * 실제 출력 비율이 어긋나면 모델이 구도를 비틀어 채우므로 반드시 함께 움직여야 한다.
  * @param {{gender?:string, descriptors?:string[]}} profile
  * @param {{age:number, year:number, scene:string}} item
+ * @param {{orientation?:'portrait'|'landscape'}} [opts]  기본 portrait(3:4 세로 — 1차 플로우 확정)
  */
-export function composeReelPhotoPrompt(profile, item) {
+export function composeReelPhotoPrompt(profile, item, { orientation = 'portrait' } = {}) {
   const who = `a ${item.age}-year-old ${subjectNoun(item.age, profile?.gender)}`
   const era = `${Math.floor(item.year / 10) * 10}s Korea`
   const extra = (profile?.descriptors || []).join(', ')
+  const frame =
+    orientation === 'landscape'
+      ? 'A landscape-orientation candid snapshot photograph (wider than tall)'
+      : 'A portrait-orientation candid snapshot photograph (taller than wide)'
+  // 인물 크기 제어: "face clearly visible and in sharp focus"가 클로즈업을 유도해 얼굴이 세로
+  // 40~50%를 차지했다(실측 2026-07-27). 완곡한 표현은 무시되므로(위 2026-07-13 실측과 동일)
+  // 거리(미터)·전신·환경 우위를 단정적으로 선언하고, 얼굴 지시는 "작지만 알아볼 수 있게"로 완화한다.
   return (
-    `A landscape-orientation candid snapshot photograph (wider than tall) of ONE single person: ${who} in this moment — ${item.scene}.` +
-    ` The person is at the exact CENTER of the frame, their face clearly visible and in sharp focus,` +
-    ` actively doing what this moment is about (not posing for the camera).` +
+    `${frame} of ONE single person: ${who} in this moment — ${item.scene}.` +
+    ` A wide shot taken from several meters away — NOT a close-up and NOT a headshot:` +
+    ` the person's entire body is visible from head to toe, occupying only a small part of the frame,` +
+    ` while the surrounding place fills most of the picture.` +
+    ` The person is at the exact CENTER of the frame,` +
+    ` actively doing what this moment is about (not posing for the camera);` +
+    ` their face, small at this distance, is still unobstructed and recognizable.` +
     ` The setting, clothing and hairstyle authentically reflect ${era} — everyday period-accurate details of that time and place.` +
     ` Anyone else present is only a background bystander.` +
     (extra ? ` ${extra}.` : '') +

@@ -1,6 +1,6 @@
 // reel 전용 사진 생성 — 파노라마(영상 생성용)와 분리된 두 번째 백그라운드 생성 플로우.
 //
-// reel(주마등 회전 국면)은 이제 가로형(4:3) 일반 사진 12장을 필름스트립처럼 이어 돌린다.
+// reel(주마등 회전 국면)은 이제 세로형(3:4) 일반 사진 12장을 필름스트립처럼 이어 돌린다.
 // 나이는 기억이 시작되는 3살부터 현재 나이까지 균등 12개(사용자마다 다름 — 어린 사용자는
 // 나이 중복 허용, 장면은 다르게). 모든 나이가 과거(≤현재)라 미래를 단정하지 않는다(§1).
 //
@@ -123,7 +123,7 @@ export async function generateReelPhotos({
   gclient,
   model,
   imageSize = '2K',
-  aspectRatio = '4:3', // 가로형(가로가 더 긴) 스냅사진 — config.reelPhotos.aspectRatio로 override
+  aspectRatio = '3:4', // 세로형(세로가 더 긴) 스냅사진 — config.reelPhotos.aspectRatio로 override
   concurrency = 3,
   faceRef = null,
   stageRefFor = null,
@@ -178,6 +178,11 @@ export async function generateReelPhotos({
       () => false
     )
 
+  // 프롬프트 orientation 문구는 실제 생성 비율(aspectRatio)에서 유도한다 — 둘이 어긋나면
+  // 모델이 구도를 비틀어 채우므로 config 한 곳(reelPhotos.aspectRatio)만 바꾸면 함께 움직인다.
+  const [arW, arH] = String(aspectRatio).split(':').map(Number)
+  const orientation = arW > arH ? 'landscape' : 'portrait'
+
   let okCount = 0
   let failedCount = 0
   let cancelled = false
@@ -209,7 +214,7 @@ export async function generateReelPhotos({
       prefix = ageAnchorPrefix(item)
       kind = 'anchor'
     }
-    const basePrompt = composeReelPhotoPrompt(profile, item)
+    const basePrompt = composeReelPhotoPrompt(profile, item, { orientation })
 
     const t0 = Date.now()
     let ok = false

@@ -49,9 +49,20 @@ export async function resolveGeminiApiKey({ apiKey, apiKeyPath } = {}) {
 // Gemini 이미지 생성이 허용하는 aspectRatio 목록(2026-07 실측, 그 외는 HTTP 400).
 // 파노라마용 초광각 4:1·8:1 포함. 넓은 seamfix 파노라마는 여기서 비율을 고른다.
 const GEMINI_ASPECTS = [
-  ['1:8', 1 / 8], ['1:4', 1 / 4], ['9:16', 9 / 16], ['2:3', 2 / 3], ['3:4', 3 / 4], ['4:5', 4 / 5],
+  ['1:8', 1 / 8],
+  ['1:4', 1 / 4],
+  ['9:16', 9 / 16],
+  ['2:3', 2 / 3],
+  ['3:4', 3 / 4],
+  ['4:5', 4 / 5],
   ['1:1', 1],
-  ['5:4', 5 / 4], ['4:3', 4 / 3], ['3:2', 3 / 2], ['16:9', 16 / 9], ['21:9', 21 / 9], ['4:1', 4], ['8:1', 8]
+  ['5:4', 5 / 4],
+  ['4:3', 4 / 3],
+  ['3:2', 3 / 2],
+  ['16:9', 16 / 9],
+  ['21:9', 21 / 9],
+  ['4:1', 4],
+  ['8:1', 8]
 ]
 
 /**
@@ -85,7 +96,13 @@ function imagePart(buffer) {
 }
 
 export class GeminiClient {
-  constructor({ apiKey, model = 'gemini-3-pro-image', textModel = 'gemini-2.5-flash', timeoutMs = 300000, host = API_HOST } = {}) {
+  constructor({
+    apiKey,
+    model = 'gemini-3-pro-image',
+    textModel = 'gemini-2.5-flash',
+    timeoutMs = 300000,
+    host = API_HOST
+  } = {}) {
     if (!apiKey) throw new Error('GeminiClient: apiKey가 필요하다 (resolveGeminiApiKey 참조)')
     this.apiKey = apiKey
     this.model = model
@@ -150,7 +167,14 @@ export class GeminiClient {
    * @param {string}   p.model        호출별 모델 오버라이드 (예: 포트레이트는 pro, 장면은 flash)
    * @returns {Promise<Buffer>} 생성된 이미지 (PNG/JPEG 바이너리)
    */
-  async generateImage({ prompt, references = [], aspectRatio = '16:9', imageSize = '2K', model = this.model, signal }) {
+  async generateImage({
+    prompt,
+    references = [],
+    aspectRatio = '16:9',
+    imageSize = '2K',
+    model = this.model,
+    signal
+  }) {
     const body = {
       contents: [{ parts: [{ text: prompt }, ...references.map(imagePart)] }],
       generationConfig: {
@@ -163,12 +187,19 @@ export class GeminiClient {
     // 결정적이므로 재시도하지 않는다.
     let lastErr = null
     for (let attempt = 0; attempt < 2; attempt++) {
-      const out = await this.#post(`/v1beta/models/${model}:generateContent`, body, 'generateContent', signal)
+      const out = await this.#post(
+        `/v1beta/models/${model}:generateContent`,
+        body,
+        'generateContent',
+        signal
+      )
 
       const candidate = out.candidates?.[0]
       if (!candidate) {
         const block = out.promptFeedback?.blockReason
-        throw new Error(`Gemini 응답에 candidate 없음${block ? ` (차단: ${block})` : ''}: ${JSON.stringify(out).slice(0, 500)}`)
+        throw new Error(
+          `Gemini 응답에 candidate 없음${block ? ` (차단: ${block})` : ''}: ${JSON.stringify(out).slice(0, 500)}`
+        )
       }
       for (const part of candidate.content?.parts || []) {
         const inline = part.inlineData || part.inline_data
@@ -188,9 +219,16 @@ export class GeminiClient {
    */
   async describeImage({ image, prompt }) {
     const body = { contents: [{ parts: [{ text: prompt }, imagePart(image)] }] }
-    const out = await this.#post(`/v1beta/models/${this.textModel}:generateContent`, body, 'describeImage')
+    const out = await this.#post(
+      `/v1beta/models/${this.textModel}:generateContent`,
+      body,
+      'describeImage'
+    )
     const texts = (out.candidates?.[0]?.content?.parts || []).map((p) => p.text).filter(Boolean)
-    if (texts.length === 0) throw new Error(`Gemini describeImage 응답에 텍스트 없음: ${JSON.stringify(out).slice(0, 500)}`)
+    if (texts.length === 0)
+      throw new Error(
+        `Gemini describeImage 응답에 텍스트 없음: ${JSON.stringify(out).slice(0, 500)}`
+      )
     return texts.join('\n')
   }
 
@@ -199,14 +237,27 @@ export class GeminiClient {
    * @param {object} p
    * @param {string} p.prompt
    * @param {string} [p.model]  기본 this.textModel
+   * @param {number} [p.thinkingBudget]  2.5 계열 thinking 토큰 상한. 0=끄기(저지연 대화용).
+   *   미지정이면 모델 기본(생성 파이프라인 등 품질 우선 호출은 그대로 둔다).
    * @param {AbortSignal} [p.signal]
    * @returns {Promise<string>}
    */
-  async generateText({ prompt, model = this.textModel, signal }) {
+  async generateText({ prompt, model = this.textModel, thinkingBudget, signal }) {
     const body = { contents: [{ parts: [{ text: prompt }] }] }
-    const out = await this.#post(`/v1beta/models/${model}:generateContent`, body, 'generateText', signal)
+    if (thinkingBudget !== undefined) {
+      body.generationConfig = { thinkingConfig: { thinkingBudget } }
+    }
+    const out = await this.#post(
+      `/v1beta/models/${model}:generateContent`,
+      body,
+      'generateText',
+      signal
+    )
     const texts = (out.candidates?.[0]?.content?.parts || []).map((p) => p.text).filter(Boolean)
-    if (texts.length === 0) throw new Error(`Gemini generateText 응답에 텍스트 없음: ${JSON.stringify(out).slice(0, 500)}`)
+    if (texts.length === 0)
+      throw new Error(
+        `Gemini generateText 응답에 텍스트 없음: ${JSON.stringify(out).slice(0, 500)}`
+      )
     return texts.join('\n')
   }
 }

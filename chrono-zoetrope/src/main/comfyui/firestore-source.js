@@ -757,6 +757,19 @@ export async function ensurePersonaMediaFromFirebase(profile, dir, { onProgress 
   return result
 }
 
+/**
+ * 프로필 문서 1건 조회 — 'profiles/{personaId}' (personaId = '이름_생년월일6', 라이브러리 폴더명과 동일).
+ * 유령 과거 회귀 대화의 회고 발화 재료(인생그래프 세션 first/second/third의 단계별 { x, text })를
+ * 런타임 서버가 읽을 때 쓴다. 문서 없음·조회 실패면 null(호출측 best-effort 폴백).
+ * @param {string} personaId
+ * @returns {Promise<object|null>}
+ */
+export async function fetchProfileDoc(personaId) {
+  if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  const snap = await db.collection('profiles').doc(personaId).get()
+  return snap.exists ? { id: snap.id, ...snap.data() } : null
+}
+
 /** 생성 대기 프로필 조회. 기본은 status=='submitted'. includeErrors면 'error'도 재시도 대상에 포함. */
 export async function fetchPendingProfiles({ limit = 5, includeErrors = false } = {}) {
   const statuses = includeErrors ? ['submitted', 'error'] : ['submitted']

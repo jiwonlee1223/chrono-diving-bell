@@ -22,6 +22,7 @@ import fs from 'node:fs/promises'
 import { createReadStream, existsSync } from 'node:fs'
 import { watch } from 'node:fs'
 import path from 'node:path'
+import { Readable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 
 import { Channels } from '../src/shared/channels.js'
@@ -29,15 +30,25 @@ import { State } from '../src/shared/states.js'
 import { loadMontageLibrary } from '../src/main/library-loader.js'
 import { ZoetropeStateMachine } from '../src/main/state-machine.js'
 import { VideoRegenerator } from '../src/main/comfyui/video-cache.js'
-import { readSession, writeSession, clearSession, SESSION_FILE } from '../src/main/session-pointer.js'
+import {
+  readSession,
+  writeSession,
+  clearSession,
+  SESSION_FILE
+} from '../src/main/session-pointer.js'
 import { readCalibration, writeCalibration } from '../src/main/calibration.js'
 import {
   initFirebase,
   ensurePersonaMediaFromFirebase,
+  ensureLocalClipsFromFirebase,
   fetchManifestByPersonaId,
+  fetchProfileDoc,
   fetchRuntimeSession,
   listenRuntimeSession
 } from '../src/main/comfyui/firestore-source.js'
+import { GeminiClient, resolveGeminiApiKey } from '../src/main/comfyui/gemini-client.js'
+import { ensurePingpongClip, pingpongPathFor } from '../src/main/comfyui/pingpong.js'
+import { LIFE_STAGES } from '../src/main/comfyui/life-graph-plan.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -200,6 +211,9 @@ async function loadPersona(personaId) {
       projectorCount: 1 // 웹앱: 단일 페이지가 4타일을 담당 → 1회 ready에 VIDEO 배리어 커밋.
     })
     console.log(`[server] 라이브러리: ${library.personaId} (${library.images.length}장)`)
+    // 과거 회귀 대화(1차 플로우) 재료를 백그라운드로 준비 — ghost 국면(릴 종료 뒤)보다 먼저
+    // 회고 문장·pingpong 클립이 캐시되도록. 실패해도 세션 발급 시 폴백으로 동작한다.
+    prepareGhostPastAssets(library.personaId)
     return true
   } catch (err) {
     console.error('[server] 라이브러리 로드 실패:', err.message)
@@ -384,6 +398,7 @@ function startReelPhase() {
 
 function enterGhostPhase() {
   clearDemoTimers()
+  resetGhostConversation() // 새 만남 — 브리지 대화 기록 초기화
   demo = { phase: 'ghost', startedAt: Date.now() }
   broadcast(Channels.REEL_DEMO, demoPayload())
   console.log('[server] 데모: 유령 idle (1인칭 진입 대기)')
@@ -392,6 +407,7 @@ function enterGhostPhase() {
 // 세션 나가기(admin 전용 중단) — 데모를 idle로 리셋하고 런타임을 대기 앰비언트로 되돌린다.
 function leaveSession() {
   clearDemoTimers()
+  resetGhostConversation()
   pendingPersonaId = undefined // 예약돼 있던 교체도 취소.
   demo = { phase: 'idle', startedAt: Date.now() }
   broadcast(Channels.REEL_DEMO, demoPayload())
@@ -455,25 +471,283 @@ function futureCatalog() {
   return { currentAge, futureStages }
 }
 
-// ── 유령 음성 대화 세션 (ghost.voice) ────────────────────────────────
-// reel 종료 후 'ghost' 국면에서만 브라우저가 호출한다. API 키는 서버에만 두고
-// ElevenLabs Conversational AI 서명 URL을 발급해 넘긴다. §1 경계·첫 질문·언어·보이스는
-// ghost-persona.md + montage.json(ghost.voice)에서 읽어 오버라이드로 함께 내려준다.
-// 미설정(agentId·키 없음)·발급 실패면 { enabled:false } — 브라우저는 조용히 유령만 띄운다(§1 침묵).
-async function ghostSessionPayload() {
-  const vcfg = montageConfig.ghost?.voice
-  if (!vcfg || vcfg.enabled === false || !vcfg.agentId) return { enabled: false }
+// ── 과거 회귀 대화(1차 플로우) 재료 ───────────────────────────────────
+// currentAge 계산은 futureCatalog와 동일: 임의 장면의 (year - age) = 출생연도.
+function currentAgeOfLibrary() {
+  const imgs = library?.images || []
+  const ref = imgs.find((im) => Number.isFinite(im.year) && Number.isFinite(im.age))
+  if (!ref) return null
+  return new Date().getFullYear() - (ref.year - ref.age)
+}
 
-  // API 키(gitignore된 secrets/) — 서버만 읽는다.
-  let apiKey = ''
+// 과거 순간 카탈로그 — 관람객이 "언제로 돌아가고 싶어"에 답하면 대화 두뇌가 이 목록에서 장면을
+// 골라 client tool(show_past_moment)로 부른다. 현재 나이 이하 장면 + 영상 캐시가 있는 것만.
+// url은 pingpong 변환본(<id>.pp.mp4)이 준비돼 있으면 그걸, 아니면 원본(plain loop 폴백).
+function pastCatalog() {
+  const imgs = library?.images || []
+  const currentAge = currentAgeOfLibrary()
+  if (currentAge === null || !regenerator) return { currentAge: null, moments: [] }
+  const moments = []
+  for (const im of imgs) {
+    if (!(im.age <= currentAge)) continue
+    const vp = regenerator.cachedPath(im.id)
+    if (!vp) continue
+    const pp = pingpongPathFor(vp)
+    moments.push({
+      id: im.id,
+      age: im.age,
+      year: im.year,
+      scene: im.scene || '',
+      url: toMediaUrl(existsSync(pp) ? pp : vp)
+    })
+  }
+  moments.sort((a, b) => a.age - b.age || a.id.localeCompare(b.id, undefined, { numeric: true }))
+  return { currentAge, moments }
+}
+
+// 과거 장면 클립을 준비한다: (1) Firebase 정본(generatedVideos)에서 로컬에 없는 과거 클립을
+// read-through로 확보 → (2) pingpong 변환(정방향→역방향 이어붙임 — loop 경계 점프 제거)을
+// 백그라운드로 순차 실행(CPU 독점 방지). ffmpeg 없음·다운로드 실패는 조용히 폴백
+// (원본 loop / 그 장면 제외). 참가자 교체 시 남은 배치는 폐기.
+async function preparePingpongClips() {
+  const lib = library
+  const currentAge = currentAgeOfLibrary()
+  if (currentAge === null || !regenerator) return
+  // Firebase 정본에서 과거 장면 클립 확보 — 전시 명세상 영상은 Firebase에 저장돼 있고 로컬은 캐시다.
+  if (firebaseReady) {
+    try {
+      const manifest = JSON.parse(await fs.readFile(path.join(lib.dir, 'manifest.json'), 'utf8'))
+      const missingIds = lib.images
+        .filter((im) => im.age <= currentAge && !regenerator.cachedPath(im.id))
+        .map((im) => im.id)
+      if (missingIds.length) {
+        const { missing } = await ensureLocalClipsFromFirebase(manifest.profile, lib.dir, {
+          ids: missingIds
+        })
+        if (library !== lib) return
+        const got = missingIds.length - missing.length
+        if (got) console.log(`[server] Firebase→로컬 과거 클립 ${got}개 확보`)
+        if (missing.length)
+          console.warn(
+            `[server] Firebase에 없는 과거 클립 ${missing.length}개: ${missing.join(', ')}`
+          )
+      }
+    } catch (e) {
+      console.warn(`[server] 과거 클립 확보 실패(로컬 캐시만 사용): ${e.message}`)
+    }
+  }
+  let made = 0
+  for (const im of lib.images) {
+    if (library !== lib) return // 참가자 교체 — 이 배치는 폐기
+    if (!(im.age <= currentAge)) continue
+    const vp = regenerator.cachedPath(im.id)
+    if (!vp || existsSync(pingpongPathFor(vp))) continue
+    try {
+      await ensurePingpongClip(vp)
+      made++
+    } catch (e) {
+      console.warn(`[server] pingpong 변환 실패(원본 loop 폴백): ${im.id} — ${e.message}`)
+      if (/실행 불가/.test(String(e.message))) return // ffmpeg 자체가 없다 — 나머지도 전부 실패한다
+    }
+  }
+  if (made) console.log(`[server] pingpong 클립 ${made}개 준비 완료`)
+}
+
+// 회고 firstMessage — "너는 N년의 삶을 …" (플로우 2번 발화, Firebase 응답 기반).
+// §1 긴장 완화(CLAUDE.md §12에 따라 명시): "정말 ○○하게 살았구나"는 시스템이 삶을 성격규정할
+// 위험이 있다. 그래서 사건·형용사 재료를 관람객이 cdb-crafter에 직접 쓴 문장으로만 제한한다 —
+// 시스템의 평가가 아니라 본인 말의 반향. Gemini·Firestore가 없으면 고정 폴백 문장.
+const RECAP_TAIL =
+  '그렇다면 혹시, 언제로 돌아가고 싶어? 너가 돌아가고 싶은 순간이 있다면 말해줘. 내가 데려다줄게.'
+const recapPromises = new Map() // personaId → Promise<string> (세션 재발급 대비 캐시)
+
+function recapFallback() {
+  const age = currentAgeOfLibrary()
+  const head = Number.isFinite(age)
+    ? `너는 ${age}년의 삶을 여기까지 살아왔구나.`
+    : '너는 너의 삶을 여기까지 살아왔구나.'
+  return `${head} ${RECAP_TAIL}`
+}
+
+let geminiText = null // 회고 생성용 GeminiClient(지연 초기화)
+async function getGeminiText() {
+  if (geminiText) return geminiText
+  const g = comfyuiConfig.gemini || {}
+  const apiKey = await resolveGeminiApiKey({
+    apiKey: g.apiKey,
+    apiKeyPath: g.apiKeyPath ? path.resolve(root, g.apiKeyPath) : undefined
+  })
+  geminiText = new GeminiClient({ apiKey, textModel: g.textModel, timeoutMs: 60000 })
+  return geminiText
+}
+
+// 관람객이 인생그래프에 직접 쓴 과거~현재 단계 문장들을 모은다(미래 future-* 단계는 회고에서 제외
+// — 회고는 살아온 삶만 되짚는다). 과거~현재 점은 세션이 바뀌어도 같은 값이 다시 담기므로
+// first→third 순으로 처음 만난 텍스트를 쓴다.
+function collectPastStageTexts(profileDoc) {
+  const out = []
+  for (const stage of LIFE_STAGES) {
+    let text = null
+    for (const key of ['first', 'second', 'third']) {
+      const t = profileDoc?.[key]?.[stage.id]?.text?.trim()
+      if (t) {
+        text = t
+        break
+      }
+    }
+    if (text) out.push({ label: `${stage.label}(${stage.sublabel})`, text })
+  }
+  return out
+}
+
+async function composeRecapFirstMessage(personaId) {
+  const age = currentAgeOfLibrary()
+  let entries = []
+  if (firebaseReady && personaId) {
+    try {
+      entries = collectPastStageTexts(await fetchProfileDoc(personaId))
+    } catch (e) {
+      console.warn(`[server] 회고 재료(프로필 문서) 조회 실패: ${e.message}`)
+    }
+  }
+  if (!entries.length) return recapFallback()
+  const material = entries.map((e) => `- ${e.label}: "${e.text}"`).join('\n')
+  const prompt =
+    `아래는 한 사람이 자기 삶의 각 시기를 스스로 짧게 적은 글이다. 이 사람에게 건넬 한국어 반말 회고 인사 한 단락을 만들어라.\n\n` +
+    `형식: "너는 ${Number.isFinite(age) ? age : 'N'}년의 삶을 정말 ○○하게 살았구나. ○○도 했고, ○○도 했고…"처럼 시작해, ` +
+    `이 사람이 실제로 적은 사건·표현을 두세 개 짧게 되짚는다. 마지막은 반드시 다음 문장으로 끝낸다(토씨 그대로): "${RECAP_TAIL}"\n\n` +
+    `제약(반드시 지킬 것):\n` +
+    `- 사건·형용사·표현은 전부 아래 글에 이미 있는 것에서만 가져온다. 이 사람의 삶이 어땠는지 새로 평가·해석·요약하지 않는다(본인이 쓴 말의 반향만).\n` +
+    `- 충고·교훈·위로의 결론을 붙이지 않는다.\n` +
+    `- 낮고 따뜻한 입말로 3~5문장. 목록·격식체 금지. 답은 그 단락 하나만(다른 설명 없이).\n\n` +
+    material
+  try {
+    const gclient = await getGeminiText()
+    const raw = String(await gclient.generateText({ prompt })).trim()
+    return raw.length >= 20 ? raw : recapFallback()
+  } catch (e) {
+    console.warn(`[server] 회고 생성 실패(폴백 사용): ${e.message}`)
+    return recapFallback()
+  }
+}
+
+function recapFor(personaId) {
+  if (!recapPromises.has(personaId)) {
+    recapPromises.set(
+      personaId,
+      composeRecapFirstMessage(personaId).catch(() => recapFallback())
+    )
+  }
+  return recapPromises.get(personaId)
+}
+
+// loadPersona 완료 직후 백그라운드 준비(과거 흐름일 때만). ghost 국면은 릴 종료 뒤라 시간 여유가 있다.
+// 회고 문장이 준비되면 그 오디오까지 미리 합성해 둔다(ttsCache) — 유령의 첫 마디가 지연 없이 나온다.
+function prepareGhostPastAssets(personaId) {
+  const vcfg = montageConfig.ghost?.voice || {}
+  if ((vcfg.flow ?? 'past') !== 'past') return
+  const recap = recapFor(personaId)
+  if ((vcfg.engine ?? 'bridge') !== 'convai') {
+    recap.then((t) => elevenTtsBuffer(t)).catch(() => {})
+  }
+  void preparePingpongClips()
+}
+
+// ── 유령 음성 대화 세션 (ghost.voice) ────────────────────────────────
+// reel 종료 후 'ghost' 국면에서만 브라우저가 호출한다. 두 엔진:
+//  bridge(기본) — 브라우저 STT → 서버 Gemini(/api/ghost/turn, 대답+영상 선택 JSON) → ElevenLabs
+//                 순수 TTS(/api/ghost/tts). ElevenLabs 대시보드(에이전트·client tool 등록) 불필요.
+//  convai       — ElevenLabs Conversational AI(두뇌·도구가 그쪽 서버 설정에 있음). 서명 URL 발급.
+// flow('past'=1차 과거 회귀 | 'future'=2차 미래 큐레이션)에 따라 페르소나·첫 발화·카탈로그가 갈린다.
+// 미설정·발급 실패면 { enabled:false } — 브라우저는 조용히 유령만 띄운다(§1 침묵).
+
+// ElevenLabs API 키(gitignore된 secrets/) — 서버만 읽는다(bridge=TTS, convai=서명 URL).
+async function readElevenKey() {
+  const vcfg = montageConfig.ghost?.voice || {}
   try {
     const keyPath = path.resolve(root, vcfg.apiKeyPath || './secrets/elevenlabs-api-key.txt')
-    apiKey = (await fs.readFile(keyPath, 'utf8')).trim()
+    return (await fs.readFile(keyPath, 'utf8')).trim()
   } catch {
+    return ''
+  }
+}
+
+// 흐름별 대화 컨텍스트(페르소나 + 첫 발화 + 카탈로그) 조립 — 세션 발급과 브리지 턴이 공유한다.
+//  past  : 회고(Firebase 응답 기반 생성, 폴백 有) + 과거 순간 카탈로그. 카탈로그 목록은 시스템
+//          프롬프트에 붙여 대화 두뇌가 관람객의 발화("고등학교 졸업식")를 장면과 직접 매칭하게 한다.
+//  future: 기존 2차 흐름 그대로(고정 firstMessage + 미래 나잇대 카탈로그).
+async function buildGhostContext() {
+  const vcfg = montageConfig.ghost?.voice || {}
+  const flow = vcfg.flow === 'future' ? 'future' : 'past'
+  const flowCfg = vcfg[flow] || {}
+
+  let systemPrompt = ''
+  const promptPath = flowCfg.systemPromptPath || vcfg.systemPromptPath
+  if (promptPath) {
+    try {
+      systemPrompt = (await fs.readFile(path.resolve(root, promptPath), 'utf8')).trim()
+    } catch {
+      console.warn('[server] 유령 음성: 페르소나 파일 없음 — 기본 프롬프트 없이 진행')
+    }
+  }
+
+  let firstMessage = flowCfg.firstMessage || vcfg.firstMessage
+  let past = null
+  let future = null
+  if (flow === 'past') {
+    past = pastCatalog()
+    firstMessage = await recapFor(library?.personaId ?? '(none)')
+    if (past.moments.length) {
+      const lines = past.moments.map((m) => `- id ${m.id} · ${m.age}세 · ${m.year}년 · ${m.scene}`)
+      systemPrompt +=
+        `\n\n## 돌아갈 수 있는 순간들 (장면 카탈로그)\n` +
+        `이 사람은 지금 ${past.currentAge}세다. 아래는 보여줄 수 있는 이 사람의 과거 장면 영상 목록이다. ` +
+        `이 사람이 돌아가고 싶다고 말한 순간과 가장 맞는 장면 하나를 골라 그 id로 show_past_moment를 불러라. ` +
+        `말한 사건이 목록에 사실상 그대로 있으면 exact=true, 정확히 없어서 비슷한 나이·시기의 장면으로 대신 데려가면 exact=false.\n` +
+        `중요: 이 사람이 돌아가고 싶은 순간·시기를 한 번이라도 말했다면(예: "고등학교 졸업식"), 목록에 똑같은 장면이 없어도 ` +
+        `다시 묻지 말고 대신 데려갈 장면을 exact=false로 골라 바로 보여준다. 되묻는 건 순간을 아직 전혀 말하지 않았을 때뿐이다.\n` +
+        `대신 데려갈 장면은 말한 순간의 나이를 추정해(예: 고등학교 졸업식≈18~19세) 그 나이와 가장 가까운 나이의 장면 중에서 고른다.\n` +
+        lines.join('\n')
+    }
+  } else {
+    future = futureCatalog()
+  }
+  return { vcfg, flow, systemPrompt, firstMessage, past, future }
+}
+
+async function ghostSessionPayload() {
+  const vcfg = montageConfig.ghost?.voice
+  if (!vcfg || vcfg.enabled === false) return { enabled: false }
+  const engine = vcfg.engine === 'convai' ? 'convai' : 'bridge'
+  const ctx = await buildGhostContext()
+
+  if (engine === 'bridge') {
+    // 브리지: 브라우저는 greeting을 TTS로 말한 뒤 STT→/api/ghost/turn 루프를 돈다.
+    // ElevenLabs 키가 없어도 enabled 유지 — /api/ghost/tts가 503을 주면 브라우저 TTS로 폴백한다.
+    resetGhostConversation() // 세션 발급 = 새 만남 — 대화 기록 초기화
+    return {
+      enabled: true,
+      engine,
+      flow: ctx.flow,
+      greeting: ctx.firstMessage, // 첫 발화(과거=회고, 미래=고정 질문)
+      startDelayMs: vcfg.startDelayMs ?? 2600,
+      // 듣기 파라미터: endSilenceMs 동안 조용해야 발화가 끝난 것으로 본다(잠깐 멈춰도 안 끊김).
+      listen: {
+        endSilenceMs: vcfg.listen?.endSilenceMs ?? 2500,
+        maxUtteranceMs: vcfg.listen?.maxUtteranceMs ?? 45000
+      },
+      past: ctx.past, //   과거 순간 카탈로그(브라우저는 영상 URL 조회용으로만 씀 — 선택은 서버 Gemini)
+      future: ctx.future
+    }
+  }
+
+  // ── convai (기존 경로 보존) ──
+  if (!vcfg.agentId) return { enabled: false }
+  const apiKey = await readElevenKey()
+  if (!apiKey) {
     console.warn('[server] 유령 음성: API 키 파일 없음 — 음성 비활성(유령만)')
     return { enabled: false }
   }
-  if (!apiKey) return { enabled: false }
 
   // ElevenLabs 서명 URL 발급(WebSocket). 키는 헤더로만 나가고 브라우저엔 노출되지 않는다.
   let signedUrl
@@ -491,31 +765,142 @@ async function ghostSessionPayload() {
     return { enabled: false }
   }
 
-  // §1 경계 페르소나(프로즈 파일) — 대화 두뇌의 시스템 프롬프트로 오버라이드.
-  let systemPrompt = ''
-  if (vcfg.systemPromptPath) {
-    try {
-      systemPrompt = (await fs.readFile(path.resolve(root, vcfg.systemPromptPath), 'utf8')).trim()
-    } catch {
-      console.warn('[server] 유령 음성: 페르소나 파일 없음 — 에이전트 기본 프롬프트 사용')
-    }
-  }
-
   // 브라우저 SDK(startSession)에 넘길 오버라이드. 빈 값은 넣지 않는다(에이전트 대시보드 설정 존중).
   // 주의: 오버라이드는 ElevenLabs 에이전트 '보안 설정'에서 항목별로 허용해야 실제 반영된다.
   const overrides = { agent: {} }
-  if (systemPrompt) overrides.agent.prompt = { prompt: systemPrompt }
-  if (vcfg.firstMessage) overrides.agent.firstMessage = vcfg.firstMessage
+  if (ctx.systemPrompt) overrides.agent.prompt = { prompt: ctx.systemPrompt }
+  if (ctx.firstMessage) overrides.agent.firstMessage = ctx.firstMessage
   if (vcfg.language) overrides.agent.language = vcfg.language
   if (vcfg.voiceId) overrides.tts = { voiceId: vcfg.voiceId }
 
   return {
     enabled: true,
+    engine,
+    flow: ctx.flow, //       클라이언트(ghost-voice.js)가 이 값으로 client tool 구성을 고른다
     signedUrl,
     overrides,
     startDelayMs: vcfg.startDelayMs ?? 2600,
-    future: futureCatalog() // 미래 자기 모습 영상 카탈로그(대화 client tool이 사용)
+    past: ctx.past, //       과거 순간 카탈로그(flow='past'일 때 — show_past_moment가 사용)
+    future: ctx.future //    미래 자기 모습 카탈로그(flow='future'일 때 — show_future_self가 사용)
   }
+}
+
+// ── 유령 브리지 대화(engine 'bridge'): Gemini 두뇌 + ElevenLabs 순수 TTS ─────────
+// 대화 기록은 서버가 소유한다(1인용 설치 — 세션 하나). ghost 국면 진입·세션 발급·나가기 때 리셋.
+let ghostHistory = [] // [{ who:'유령'|'사람'|'상황', text }]
+function resetGhostConversation() {
+  ghostHistory = []
+}
+
+// Gemini 응답에서 { say, show } 파싱. 코드펜스·잡담 방어 — JSON을 못 찾으면 원문 전체를 say로.
+function parseGhostReply(raw) {
+  let text = String(raw ?? '')
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/```\s*$/, '')
+    .trim()
+  const tryParse = (s) => {
+    try {
+      const j = JSON.parse(s)
+      return {
+        say: typeof j.say === 'string' ? j.say.trim() : '',
+        show: j.show && j.show.id !== undefined ? j.show : null
+      }
+    } catch {
+      return null
+    }
+  }
+  const direct = tryParse(text)
+  if (direct) return direct
+  const m = /\{[\s\S]*\}/.exec(text) // 앞뒤에 말이 붙은 경우 첫 {…} 블록만
+  if (m) {
+    const sub = tryParse(m[0])
+    if (sub) return sub
+  }
+  return { say: text, show: null }
+}
+
+/**
+ * 브리지 대화 한 턴: 관람객 발화(kind='user') 또는 상황 알림(kind='event', 예: 영상이 떠오른 뒤)을
+ * 받아 Gemini가 유령의 다음 대사(say)와 띄울 장면(show)을 정한다. show.id는 카탈로그로 검증하고,
+ * 없으면 나이 근접 장면으로 폴백(exact=false) — convai 시절 client tool의 폴백 규칙과 동일.
+ * @returns {Promise<{ say:string, video:null|{id,age,year,scene,url,exact} }>}
+ */
+async function ghostBridgeTurn(userText, kind = 'user') {
+  const ctx = await buildGhostContext()
+  const moments = ctx.past?.moments || []
+  ghostHistory.push({ who: kind === 'event' ? '상황' : '사람', text: userText })
+  if (ghostHistory.length > 24) ghostHistory = ghostHistory.slice(-24)
+
+  const transcript = [{ who: '유령', text: ctx.firstMessage }, ...ghostHistory]
+    .map((t) => `${t.who}: ${t.text}`)
+    .join('\n')
+  const prompt =
+    ctx.systemPrompt +
+    `\n\n## 출력 형식 (반드시 지킬 것)\n` +
+    `JSON 객체 하나만 출력한다(다른 설명·코드펜스 없이): {"say":"...","show":{"id":"3-1","exact":true}}\n` +
+    `- say: 지금 음성으로 말할 한두 문장(입말). 도구·시스템 언급 등 메타발언 금지.\n` +
+    `- show: 장면 영상을 새로 띄울 때만 포함한다(위 카탈로그의 id). 띄우지 않으면 show 자체를 생략.\n` +
+    `- '상황:' 줄은 시스템 알림이다(관람객의 말이 아님) — 영상이 뜬 뒤 이어갈 대사를 만들 때 참고만 한다.\n` +
+    `- 규칙: 사람의 마지막 말이 돌아가고 싶은 순간·시기를 담고 있으면(조금이라도), 이번 응답에 반드시 show를 넣는다 — ` +
+    `카탈로그에 똑같은 장면이 없으면 그 시기의 나이와 가장 가까운 나이의 장면을 exact=false로. ` +
+    `"잘 못 들었어" 같은 되묻기는 순간을 전혀 말하지 않았을 때만 허용된다.\n` +
+    `\n## 지금까지의 대화\n${transcript}\n\n유령의 다음 응답 JSON:`
+
+  const gclient = await getGeminiText()
+  // thinkingBudget 0: 대화는 저지연이 생명 — flash의 사고 단계를 끈다(생성 파이프라인 호출은 그대로).
+  const raw = String(await gclient.generateText({ prompt, thinkingBudget: 0 }))
+  console.log(`[server] 유령 브리지 응답: ${raw.replace(/\s+/g, ' ').slice(0, 220)}`)
+  const parsed = parseGhostReply(raw)
+
+  let video = null
+  if (parsed.show && moments.length) {
+    const wantId = String(parsed.show.id)
+    let m = moments.find((x) => String(x.id) === wantId)
+    let exact = parsed.show.exact === true
+    if (!m) {
+      const n = parseInt(wantId, 10)
+      m = Number.isFinite(n)
+        ? moments.reduce((best, x) => (Math.abs(x.age - n) < Math.abs(best.age - n) ? x : best))
+        : moments[moments.length - 1]
+      exact = false
+    }
+    if (m) video = { id: m.id, age: m.age, year: m.year, scene: m.scene, url: m.url, exact }
+  }
+  if (parsed.say) ghostHistory.push({ who: '유령', text: parsed.say })
+  return { say: parsed.say, video }
+}
+
+// ElevenLabs 순수 TTS — 키는 서버에만. 실패는 throw(라우트가 503 → 브라우저 TTS 폴백).
+// fetch 응답 자체를 돌려주는 저수준 헬퍼 — 스트리밍 라우트가 body를 그대로 파이프한다.
+async function elevenTtsFetch(text) {
+  const vcfg = montageConfig.ghost?.voice || {}
+  const apiKey = await readElevenKey()
+  if (!apiKey) throw new Error('ElevenLabs API 키 없음')
+  const voiceId = vcfg.voiceId
+  if (!voiceId) throw new Error('voiceId 미설정')
+  const r = await fetch(
+    `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_128`,
+    {
+      method: 'POST',
+      headers: { 'xi-api-key': apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, model_id: vcfg.ttsModelId || 'eleven_flash_v2_5' })
+    }
+  )
+  if (!r.ok) throw new Error(`TTS ${r.status}: ${(await r.text()).slice(0, 200)}`)
+  return r
+}
+
+// 완성 버퍼가 필요한 곳(회고 예열·POST 라우트)용. 최근 합성분을 캐시해 같은 문장(특히 회고 첫 마디)은
+// ElevenLabs 왕복 없이 즉시 나간다.
+const ttsCache = new Map() // text → Buffer (삽입 순 — 오래된 것부터 밀어낸다)
+async function elevenTtsBuffer(text) {
+  const hit = ttsCache.get(text)
+  if (hit) return hit
+  const r = await elevenTtsFetch(text)
+  const buf = Buffer.from(await r.arrayBuffer())
+  ttsCache.set(text, buf)
+  if (ttsCache.size > 16) ttsCache.delete(ttsCache.keys().next().value)
+  return buf
 }
 
 // ── HTTP 헬퍼 (admin-server 패턴) ────────────────────────────────────
@@ -608,6 +993,66 @@ const server = http.createServer(async (req, res) => {
     // ---- 유령 음성 대화 세션 발급 — 'ghost' 국면에서 브라우저가 호출(서명 URL은 서버가 발급) ----
     if (req.method === 'GET' && url.pathname === '/api/ghost/session') {
       return sendJson(res, 200, await ghostSessionPayload())
+    }
+
+    // ---- 유령 브리지 대화 턴 — 브라우저 STT 인식 결과(kind='user') 또는 영상이 뜬 뒤의 상황
+    // 알림(kind='event')을 받아 Gemini의 다음 대사와 띄울 장면을 돌려준다(engine 'bridge' 전용). ----
+    if (req.method === 'POST' && url.pathname === '/api/ghost/turn') {
+      const body = await readBody(req)
+      const text = String(body?.text ?? '').trim()
+      if (!text) return sendJson(res, 400, { error: 'text 필요' })
+      try {
+        return sendJson(
+          res,
+          200,
+          await ghostBridgeTurn(text, body?.kind === 'event' ? 'event' : 'user')
+        )
+      } catch (err) {
+        console.warn(`[server] 유령 브리지 턴 실패: ${err.message}`)
+        return sendJson(res, 500, { error: err.message })
+      }
+    }
+
+    // ---- 유령 브리지 TTS 중계 — ElevenLabs 키는 서버에만. 실패 시 503(브라우저 TTS 폴백). ----
+    // GET(?text=…)이 기본: <audio src>가 첫 청크부터 점진 재생해 발화 시작 지연을 크게 줄인다.
+    // 캐시 적중(예열된 회고 첫 마디)은 버퍼로 즉시. POST는 완성 버퍼 응답(구형 경로 호환).
+    if (req.method === 'GET' && url.pathname === '/api/ghost/tts') {
+      const text = String(url.searchParams.get('text') ?? '').trim()
+      if (!text) return sendJson(res, 400, { error: 'text 필요' })
+      try {
+        const cached = ttsCache.get(text)
+        if (cached) {
+          res.writeHead(200, {
+            'Content-Type': 'audio/mpeg',
+            'Content-Length': cached.length,
+            'Access-Control-Allow-Origin': '*'
+          })
+          return res.end(cached)
+        }
+        const r = await elevenTtsFetch(text)
+        res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Access-Control-Allow-Origin': '*' })
+        return Readable.fromWeb(r.body).pipe(res)
+      } catch (err) {
+        console.warn(`[server] 유령 TTS 실패(브라우저 TTS 폴백): ${err.message}`)
+        return sendJson(res, 503, { error: err.message })
+      }
+    }
+    if (req.method === 'POST' && url.pathname === '/api/ghost/tts') {
+      const body = await readBody(req)
+      const text = String(body?.text ?? '').trim()
+      if (!text) return sendJson(res, 400, { error: 'text 필요' })
+      try {
+        const audio = await elevenTtsBuffer(text)
+        res.writeHead(200, {
+          'Content-Type': 'audio/mpeg',
+          'Content-Length': audio.length,
+          'Access-Control-Allow-Origin': '*'
+        })
+        return res.end(audio)
+      } catch (err) {
+        console.warn(`[server] 유령 TTS 실패(브라우저 TTS 폴백): ${err.message}`)
+        return sendJson(res, 503, { error: err.message })
+      }
     }
 
     // ---- SSE 상태 스트림 (main→renderer 방송 대체) ----
@@ -735,11 +1180,7 @@ if (firebaseReady) {
     const cloud = await fetchRuntimeSession()
     const local = await readSession(libraryRoot)
     if (cloud?.personaId) {
-      if (
-        !local ||
-        local.personaId !== cloud.personaId ||
-        local.selectedAt !== cloud.selectedAt
-      ) {
+      if (!local || local.personaId !== cloud.personaId || local.selectedAt !== cloud.selectedAt) {
         await writeSession(libraryRoot, cloud) // selectedAt 보존 — 감시 중복 판정과 일치
         console.log(`[server] 세션 정본 채택: ${cloud.name || cloud.personaId}`)
       }
@@ -807,11 +1248,7 @@ if (firebaseReady) {
         if (cloud === null) return
         const local = await readSession(libraryRoot)
         if (cloud.personaId) {
-          if (
-            local &&
-            local.personaId === cloud.personaId &&
-            local.selectedAt === cloud.selectedAt
-          )
+          if (local && local.personaId === cloud.personaId && local.selectedAt === cloud.selectedAt)
             return
           await writeSession(libraryRoot, cloud)
         } else if (local) {

@@ -141,7 +141,7 @@ async function main() {
   let videoTexture = null
   let videoSyncTimer = null
   let videoStartAtMs = 0
-  let futureVideoActive = false // 미래 자기 모습 영상 재생 중(ghost 대화 tool). frame()이 보면 영상 재료를 렌더.
+  let convoVideoActive = false // 유령 대화 영상(과거 회귀/미래) 재생 중(ghost 대화 tool). frame()이 보면 영상 재료를 렌더.
 
   function teardownVideo() {
     if (videoSyncTimer) clearInterval(videoSyncTimer)
@@ -237,7 +237,10 @@ async function main() {
 
   // ---- reel 배속 재생. 종료(→유령 idle)는 서버가 국면으로 방송하므로 여기선 재생만 한다. ----
   //  seekSec: 새로고침 재개 시 영상 위치(실경과 × 배속). flash: 시작 섬광(재개 땐 생략).
-  function playReelOnce(url, { seekSec = 0, playbackRate = REEL_PLAYBACK_RATE, flash = true } = {}) {
+  function playReelOnce(
+    url,
+    { seekSec = 0, playbackRate = REEL_PLAYBACK_RATE, flash = true } = {}
+  ) {
     teardownVideo()
     if (!url || !montageMaterial) return // reel 없거나 몽타주 재료 없으면 스킵.
     videoEl = document.createElement('video')
@@ -269,22 +272,34 @@ async function main() {
     videoEl.load()
   }
 
-  // 미래 자기 모습 영상 하나를 원본 속도로 loop 재생(ghost 대화 client tool이 호출). Promise 반환 —
+  // 유령 대화 영상 하나를 원본 속도로 loop 재생(ghost 대화 client tool이 호출). Promise 반환 —
   // loop라 얼지 않고 계속 살아 움직인다. 'ended'가 안 오므로, 첫 한 바퀴(대략 영상 길이) 뒤에 resolve해
   // 에이전트가 다음 대사로 넘어가게 하고, 영상은 다음 영상 재생/국면 전환(teardown) 전까지 계속 loop로 흐른다.
-  // futureVideoActive=true인 동안 frame()이 실린더에 영상을 그린다(국면 전환 시 applyDemo가 해제).
+  // convoVideoActive=true인 동안 frame()이 실린더에 영상을 그린다(국면 전환 시 applyDemo가 해제).
   // 안전장치: 로드/재생 실패나 canplaythrough 누락 시에도 상한 뒤 resolve해 대화가 멈추지 않게 한다.
-  function playFutureVideoLoop(url) {
+  //  fadeIn: 과거 회귀 연출("화면이 fade in된다") — 검정으로 떨어뜨린 뒤 videoMix 트윈으로 서서히
+  //  떠오른다. 미래 흐름(2차)은 기존대로 즉시 표시(fadeIn 미지정).
+  //  resolveAfterSec: 지정하면 재생 시작 후 그 시간 뒤에 resolve(대화가 빨리 이어짐 — 과거 회귀).
+  //  미지정이면 첫 한 바퀴(영상 길이) 뒤 resolve(기존 미래 흐름 동작 유지).
+  function playConversationVideo(
+    url,
+    { fadeIn = false, fadeInSec = 1.5, resolveAfterSec = 0 } = {}
+  ) {
     return new Promise((resolve) => {
       teardownVideo()
       if (!url || !montageMaterial) {
         resolve()
         return
       }
-      futureVideoActive = true
+      convoVideoActive = true
+      if (fadeIn) {
+        // 이전 텍스처(필름스트립·몽타주 잔상) 대신 검정 베이스에서 시작 — videoMix 0 = 검정.
+        setMontageImage(montageMaterial, null)
+        videoMix.v = videoMix.from = videoMix.to = 0
+      }
       const v = document.createElement('video')
       v.muted = true // 클립은 무음(-an). 자동재생 안전 위해 muted.
-      v.loop = true // 계속 loop — 얼지 않고 살아 움직인다. 다음 영상/국면 전환 때 teardown으로 교체·정지.
+      v.loop = true // 계속 loop — 얼지 않고 살아 움직인다(pingpong 변환본이면 경계 점프 없는 왕복).
       v.playsInline = true
       v.preload = 'auto'
       v.crossOrigin = 'anonymous'
@@ -305,11 +320,17 @@ async function main() {
           videoTexture = new THREE.VideoTexture(v)
           videoTexture.colorSpace = THREE.NoColorSpace
           setMontageVideo(montageMaterial, videoTexture)
-          videoMix.v = videoMix.from = videoMix.to = 1 // 영상 즉시 표시
+          if (fadeIn) {
+            tweenTo(videoMix, 1, fadeInSec) // 검정 → 영상 fade-in
+          } else {
+            videoMix.v = videoMix.from = videoMix.to = 1 // 영상 즉시 표시
+          }
           v.play().catch(() => {})
           clearTimeout(timer)
           const dur = isFinite(v.duration) && v.duration > 0 ? v.duration : 8
-          timer = setTimeout(finish, Math.min(dur * 1000 + 300, 18000)) // 첫 한 바퀴 뒤 에이전트 진행
+          const waitMs =
+            resolveAfterSec > 0 ? resolveAfterSec * 1000 : Math.min(dur * 1000 + 300, 18000)
+          timer = setTimeout(finish, waitMs) // 대화 재개 시점(영상은 계속 loop)
         },
         { once: true }
       )
@@ -473,7 +494,7 @@ async function main() {
   function applyDemo(payload, immediate = false) {
     const phase = payload?.phase ?? 'idle'
     const elapsedSec = Math.max(0, (payload?.elapsedMs ?? 0) / 1000)
-    futureVideoActive = false // 국면 전환 시 미래 영상 재생 해제(ghost 대화 tool이 다시 켠다)
+    convoVideoActive = false // 국면 전환 시 대화 영상 재생 해제(ghost 대화 tool이 다시 켠다)
     const dur = (s) => (immediate ? 0.001 : s)
     if (phase === 'spinup') {
       demoPhase = 'spinup'
@@ -501,7 +522,11 @@ async function main() {
         rotate = null
         stopFilmstrip()
         const rate = payload?.playbackRate ?? REEL_PLAYBACK_RATE
-        playReelOnce(payload?.url, { seekSec: elapsedSec * rate, playbackRate: rate, flash: !immediate })
+        playReelOnce(payload?.url, {
+          seekSec: elapsedSec * rate,
+          playbackRate: rate,
+          flash: !immediate
+        })
       }
     } else if (phase === 'ghost') {
       demoPhase = null
@@ -615,7 +640,8 @@ async function main() {
   ghostVoice = createGhostVoice({
     getSession: () => window.zoetrope.getGhostSession?.(),
     onSpeaking: (on) => ghost.setGlow?.(on ? 1 : 0),
-    playFutureVideo: (url) => playFutureVideoLoop(url) // 대화 tool이 미래 영상을 원본 속도로 loop 재생(첫 바퀴 뒤 resolve)
+    // 대화 tool이 영상을 원본 속도로 loop 재생(첫 바퀴 뒤 resolve). 과거 회귀는 fadeIn 옵션으로 떠오른다.
+    playVideo: (url, opts) => playConversationVideo(url, opts)
   })
 
   // 새로고침 재개: 서버가 준 현재 1차 흐름 국면으로 즉시 점프(진행 중인 reel은 위치까지 이어감).
@@ -650,7 +676,7 @@ async function main() {
     // 캘리브레이션 모드면 상태와 무관하게 몽타주(정적 기준 프레임)를 강제한다.
     const montageActive = calibrationMode
       ? !!montageMaterial
-      : futureVideoActive
+      : convoVideoActive
         ? !!montageMaterial
         : demoPhase === 'reel'
           ? !!montageMaterial
@@ -757,8 +783,8 @@ async function main() {
         }
         // 설치 캘리브레이션 오프셋 + 회전 위상 합성
         u.uYaw.value = (((cal.yaw + yaw) % 1) + 1) % 1
-      } else if (demoPhase === 'reel' || futureVideoActive) {
-        // reel 데모/미래 영상(ghost 대화): videoMix로 영상 표시.
+      } else if (demoPhase === 'reel' || convoVideoActive) {
+        // reel 데모/대화 영상(과거 회귀·미래): videoMix로 영상 표시(fade-in 트윈 포함).
         u.uBlur.value = 0
         u.uVideoMix.value = tweenUpdate(videoMix)
         u.uYaw.value = cal.yaw // 회전 override 복원
@@ -841,8 +867,7 @@ async function main() {
   // 표시해, 콘텐츠 재생을 기다리지 않고도 얼굴 위치를 실린더에 맞출 수 있게 한다. frame()이 이 플래그를 본다.
   let calibrationMode = false
   const calGuide = document.createElement('div')
-  calGuide.style.cssText =
-    'position:fixed;inset:0;pointer-events:none;display:none;z-index:30;'
+  calGuide.style.cssText = 'position:fixed;inset:0;pointer-events:none;display:none;z-index:30;'
   calGuide.innerHTML =
     '<div style="position:absolute;left:50%;top:0;bottom:0;width:1px;transform:translateX(-0.5px);background:rgba(0,255,180,.55)"></div>' +
     '<div style="position:absolute;top:50%;left:0;right:0;height:1px;transform:translateY(-0.5px);background:rgba(0,255,180,.35)"></div>' +
@@ -881,12 +906,16 @@ async function main() {
     } else if (e.key === 'q' || e.key === 'Q' || e.code === 'KeyQ') {
       // e.code = 물리 키 → 한글 IME(e.key='ㅂ')·레이아웃과 무관하게 잡힌다.
       e.preventDefault()
-      console.log(`[debug] Q(느리게) 눌림 · demoPhase=${demoPhase} · rotate=${rotate ? 'active' : 'null'}`)
+      console.log(
+        `[debug] Q(느리게) 눌림 · demoPhase=${demoPhase} · rotate=${rotate ? 'active' : 'null'}`
+      )
       nudgeRotateSpeed(1 / 1.25) // [debug] reel 회전 느리게
     } else if (e.key === 'w' || e.key === 'W' || e.code === 'KeyW') {
       // e.code = 물리 키 → 한글 IME(e.key='ㅈ')·레이아웃과 무관하게 잡힌다.
       e.preventDefault()
-      console.log(`[debug] W(빠르게) 눌림 · demoPhase=${demoPhase} · rotate=${rotate ? 'active' : 'null'}`)
+      console.log(
+        `[debug] W(빠르게) 눌림 · demoPhase=${demoPhase} · rotate=${rotate ? 'active' : 'null'}`
+      )
       nudgeRotateSpeed(1.25) // [debug] reel 회전 빠르게
     } else if (e.key === 'ArrowLeft') {
       e.preventDefault()
