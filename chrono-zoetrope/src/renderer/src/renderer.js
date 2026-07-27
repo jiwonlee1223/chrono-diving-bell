@@ -27,6 +27,7 @@ import { createPanoramaPreview } from './scene/panorama-preview.js'
 import { PostPass } from './scene/post-pass.js'
 import { createGhost } from './scene/ghost.js'
 import { createGhostVoice } from './scene/ghost-voice.js'
+import { createBgMusic } from './scene/bg-music.js'
 
 // 테스트 패턴·사진 색을 그린 그대로 통과시킨다(색 관리 이중변환 회피).
 THREE.ColorManagement.enabled = false
@@ -160,11 +161,17 @@ async function main() {
   // 유령 음성 대화 컨트롤러(아래 ghost 생성 후 주입). 'ghost' 국면에서만 말한다 — §1: 다른 국면·상태에선 stop.
   let ghostVoice = null
 
+  // 대화 배경음악(ghost 국면에서만). ghostVoice의 발화·청취 콜백이 음량을 덕킹한다(발화 3·청취 5·평소 10).
+  const bgMusic = createBgMusic({ src: '/resources/Where_Light_Ends.mp3' })
+
   // 상태 진입 연출. immediate = 부트스트랩 시 트윈 없이 그 국면으로 점프.
   function applyState(state, meta = {}, immediate = false) {
     appState = state
     // §1: 1인칭 진입·몽타주 재생(ZOETROPE/FREEZE/REGEN_WAIT/IMMERSION)에 들어가면 유령 목소리를 끈다.
-    if (MONTAGE_STATES.has(state)) ghostVoice?.stop()
+    if (MONTAGE_STATES.has(state)) {
+      ghostVoice?.stop()
+      bgMusic.stop()
+    }
     const dur = (sec) => (immediate ? 0.001 : sec)
     if (state === 'REGEN_WAIT') {
       tweenTo(blur, blurCfg.max, dur(blurCfg.inSec)) // 멈춘 순간이 흐려진다 — 기다림의 의례(§5.2)
@@ -545,6 +552,7 @@ async function main() {
       stopFilmstrip()
       ghost.hide()
       ghostVoice?.stop()
+      bgMusic.stop()
       teardownVideo()
       tweenTo(videoMix, 0, dur(0.2))
       tweenTo(blur, 0, dur(0.2))
@@ -555,6 +563,7 @@ async function main() {
       demoPhase = 'reel'
       ghost.hide()
       ghostVoice?.stop()
+      bgMusic.stop()
       if (payload?.mode === 'filmstrip') {
         rotate = null
         startFilmstrip(payload) // reel 전용 3:4 사진 스트립을 필름처럼 연속 스크롤
@@ -581,6 +590,7 @@ async function main() {
       tweenTo(threadSpeedMul, 1, dur(1.5))
       ghost.show() // 유령 등장 = 1인칭 진입 가능 신호.
       ghostVoice?.start() // 유령이 나타나면 말을 건다(show 램프 뒤 startDelayMs). §1 경계는 페르소나가 소유.
+      bgMusic.start() // 대화 배경음악 시작(crossfade loop). 발화/청취에 따라 음량이 덕킹된다.
     } else {
       // idle (admin 세션 나가기) — 앰비언트, 유령 숨김.
       demoPhase = null
@@ -588,6 +598,7 @@ async function main() {
       stopFilmstrip()
       ghost.hide()
       ghostVoice?.stop()
+      bgMusic.stop()
       teardownVideo()
       tweenTo(videoMix, 0, dur(0.6))
       tweenTo(blur, 0, dur(0.4))
@@ -682,7 +693,12 @@ async function main() {
   // 목소리 엔진·페르소나·§1 경계는 서버(/api/ghost/session)와 ghost-persona.md가 소유한다.
   ghostVoice = createGhostVoice({
     getSession: () => window.zoetrope.getGhostSession?.(),
-    onSpeaking: (on) => ghost.setGlow?.(on ? 1 : 0),
+    onSpeaking: (on) => {
+      ghost.setGlow?.(on ? 1 : 0)
+      bgMusic.setAgentSpeaking(on) // 유령 발화 중 배경음악 level 3.
+    },
+    onListening: (on) => bgMusic.setUserListening(on), // 사용자 청취 중 배경음악 level 5.
+    getPan: () => ghost.getPan?.() ?? 0, // 유령 위치 따라 목소리를 좌우로(입체감).
     // 대화 tool이 영상을 원본 속도로 loop 재생(첫 바퀴 뒤 resolve). 과거 회귀는 fadeIn 옵션으로 떠오른다.
     playVideo: (url, opts) => playConversationVideo(url, opts)
   })

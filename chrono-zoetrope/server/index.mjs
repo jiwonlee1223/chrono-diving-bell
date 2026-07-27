@@ -1057,7 +1057,11 @@ const MIME = {
   '.webp': 'image/webp',
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
-  '.mp4': 'video/mp4'
+  '.mp4': 'video/mp4',
+  '.mp3': 'audio/mpeg',
+  '.m4a': 'audio/mp4',
+  '.ogg': 'audio/ogg',
+  '.wav': 'audio/wav'
 }
 
 function sendJson(res, status, body) {
@@ -1121,6 +1125,20 @@ const server = http.createServer(async (req, res) => {
       const abs = path.normalize(path.join(libraryRoot, rel))
       if (!abs.startsWith(path.normalize(libraryRoot))) {
         return sendJson(res, 403, { error: 'forbidden' }) // 경로 탈출 차단
+      }
+      return serveFile(req, res, abs, MIME[path.extname(abs)] || 'application/octet-stream')
+    }
+
+    // ---- 정적 리소스: GET /resources/<파일> (배경음악·아이콘 등, CORS·Range) ----
+    if (req.method === 'GET' && parts[0] === 'resources') {
+      const resRoot = path.resolve(root, 'resources')
+      const rel = parts.slice(1).map(decodeURIComponent).join('/')
+      const abs = path.normalize(path.join(resRoot, rel))
+      if (!abs.startsWith(resRoot)) {
+        return sendJson(res, 403, { error: 'forbidden' }) // 경로 탈출 차단
+      }
+      if (!existsSync(abs) || !(await fs.stat(abs)).isFile()) {
+        return sendJson(res, 404, { error: 'not found' })
       }
       return serveFile(req, res, abs, MIME[path.extname(abs)] || 'application/octet-stream')
     }

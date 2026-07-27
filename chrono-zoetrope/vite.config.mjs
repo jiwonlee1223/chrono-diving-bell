@@ -20,7 +20,8 @@ export default defineConfig({
     proxy: {
       // 상태·미디어는 Node 런타임 서버가 소유 → dev에선 프록시로 같은 오리진처럼 붙인다.
       '/api': { target: 'http://localhost:8788', changeOrigin: true },
-      '/media': { target: 'http://localhost:8788', changeOrigin: true }
+      '/media': { target: 'http://localhost:8788', changeOrigin: true },
+      '/resources': { target: 'http://localhost:8788', changeOrigin: true }
     }
   }
 })

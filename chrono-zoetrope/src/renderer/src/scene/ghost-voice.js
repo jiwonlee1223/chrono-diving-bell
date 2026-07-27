@@ -18,16 +18,76 @@
 import { Conversation } from '@elevenlabs/client'
 
 // getSession: () => Promise<{ enabled, flow, signedUrl, overrides, startDelayMs, past?, future? } | { enabled:false }>
-// onSpeaking: (boolean) => void  — 유령이 말하는 동안 true (발광 부스트 등 시각 연동용).
+// onSpeaking: (boolean) => void  — 유령이 말하는 동안 true (발광 부스트·배경음악 덕킹 등 연동용).
+// onListening: (boolean) => void — 사용자 발화를 듣는 동안 true (배경음악 덕킹 등 연동용).
+// getPan: () => number — 유령의 현재 좌우 위치 -1(왼쪽)~+1(오른쪽). 목소리(TTS)를 이 위치에서
+//   들리게 스테레오 패닝한다(입체감). 없으면 중앙 고정.
 // playVideo: (url, opts?) => Promise — 대화 tool이 부르는 영상 재생. opts.fadeIn=true면 검정에서
 //   서서히 떠오른다(과거 회귀 연출). 첫 한 바퀴 뒤 resolve하고 영상은 loop로 계속 흐른다.
-export function createGhostVoice({ getSession, onSpeaking, playVideo } = {}) {
+export function createGhostVoice({ getSession, onSpeaking, onListening, getPan, playVideo } = {}) {
   let convo = null //     현재 Conversation 세션(없으면 null, convai 엔진 전용).
   let starting = false // start 진행 중(중복 시작 방지).
   let stopped = true //   stop 요청 상태 — 시작 지연 도중 취소를 감지한다.
   let startTimer = null // show 램프 뒤 말 걸기까지의 지연 타이머.
   let bridgeAudio = null //       bridge: 재생 중 <audio> (ElevenLabs TTS) — stop()이 끊는다.
   let bridgeRecognition = null // bridge: 진행 중 SpeechRecognition — stop()이 abort한다.
+
+  // ── 목소리 스테레오 패닝 — 유령 위치(getPan)를 따라 목소리를 왼쪽/오른쪽에서 들리게 한다(입체감). ──
+  // TTS <audio>를 Web Audio 그래프(MediaElementSource → StereoPanner → destination)로 흘려보내고,
+  // 재생 중 매 프레임 getPan()을 읽어 panner를 갱신한다. 후면투사 반전(§3.5) 설치에서 좌우가 뒤집혀
+  // 보이면 PAN_INVERT를 -1로(런타임 머신에서 검증). MAX_PAN<1 로 완전 하드패닝은 피해 중앙 존재감을 남긴다.
+  const PAN_INVERT = 1
+  const MAX_PAN = 0.85
+  let audioCtx = null //      목소리 패닝용 AudioContext(지연 생성).
+  const mediaSources = new WeakMap() // <audio> → MediaElementSource(요소당 한 번만 생성 가능).
+  let panRaf = 0 //           재생 중 pan 추종 rAF.
+
+  function ensureAudioCtx() {
+    if (!audioCtx) {
+      const AC = window.AudioContext || window.webkitAudioContext
+      if (!AC) return null
+      audioCtx = new AC()
+    }
+    if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {})
+    return audioCtx
+  }
+
+  // <audio>를 패너에 연결하고 재생이 끝날 때까지 유령 위치를 따라 pan을 갱신한다. 반환 = 정리 함수.
+  // Web Audio 불가·CORS 등으로 실패하면 조용히 그대로 둔다(<audio>가 기본 출력으로 재생 — 패닝만 없음).
+  function attachPanFollow(a) {
+    const ctx = ensureAudioCtx()
+    if (!ctx || typeof getPan !== 'function') return () => {}
+    let panner
+    try {
+      let src = mediaSources.get(a)
+      if (!src) {
+        src = ctx.createMediaElementSource(a)
+        mediaSources.set(a, src)
+      }
+      panner = ctx.createStereoPanner()
+      src.connect(panner)
+      panner.connect(ctx.destination)
+    } catch {
+      return () => {} // 이 요소는 이미 라우팅됐거나 패닝 불가 — 그냥 둔다.
+    }
+    const follow = () => {
+      const p = Math.max(-1, Math.min(1, (getPan() || 0) * PAN_INVERT)) * MAX_PAN
+      // 부드럽게 수렴(급격한 위치 점프에도 소리가 튀지 않게).
+      panner.pan.value += (p - panner.pan.value) * 0.15
+      panRaf = requestAnimationFrame(follow)
+    }
+    panner.pan.value = Math.max(-1, Math.min(1, (getPan() || 0) * PAN_INVERT)) * MAX_PAN
+    follow()
+    return () => {
+      cancelAnimationFrame(panRaf)
+      panRaf = 0
+      try {
+        panner.disconnect()
+      } catch {
+        /* 무시 */
+      }
+    }
+  }
 
   // ── bridge 엔진 (기본): 브라우저 STT → 서버 Gemini(/api/ghost/turn) → 서버 TTS(/api/ghost/tts) ──
   // ElevenLabs 대시보드(에이전트·도구 등록)가 필요 없다. 턴 단위 대화: 듣기 → 생각 → 말하기.
@@ -66,11 +126,14 @@ export function createGhostVoice({ getSession, onSpeaking, playVideo } = {}) {
     try {
       const ok = await new Promise((resolve) => {
         const a = new Audio(`/api/ghost/tts?text=${encodeURIComponent(text)}`)
+        a.crossOrigin = 'anonymous' // 동일 오리진이지만 MediaElementSource 라우팅 시 taint 방지.
         bridgeAudio = a
+        const detachPan = attachPanFollow(a) // 유령 위치 따라 목소리를 좌우로(입체감).
         let settled = false
         const done = (good) => {
           if (settled) return
           settled = true
+          detachPan()
           if (bridgeAudio === a) bridgeAudio = null
           resolve(good)
         }
@@ -98,10 +161,12 @@ export function createGhostVoice({ getSession, onSpeaking, playVideo } = {}) {
       let silenceTimer = null
       let overallTimer = null
       let rec = null
+      onListening?.(true) // 사용자 발화 듣기 시작 — 배경음악 덕킹(level 5).
 
       function finish() {
         if (done) return
         done = true
+        onListening?.(false) // 듣기 종료 — 배경음악 원래대로.
         clearTimeout(silenceTimer)
         clearTimeout(overallTimer)
         if (bridgeRecognition === rec) bridgeRecognition = null
@@ -348,7 +413,10 @@ export function createGhostVoice({ getSession, onSpeaking, playVideo } = {}) {
         // §1 경계·페르소나·첫 질문·언어·보이스는 서버가 만든 오버라이드에 담겨 있다.
         overrides: session.overrides,
         clientTools, // 미래 영상 재생 tool 구현(에이전트가 호출 → renderer가 재생)
-        onModeChange: ({ mode } = {}) => onSpeaking?.(mode === 'speaking'),
+        onModeChange: ({ mode } = {}) => {
+          onSpeaking?.(mode === 'speaking')
+          onListening?.(mode === 'listening')
+        },
         onStatusChange: () => {},
         onError: (message) => console.warn('[ghost-voice] 세션 오류:', message),
         onDisconnect: () => {
@@ -398,12 +466,17 @@ export function createGhostVoice({ getSession, onSpeaking, playVideo } = {}) {
       }
       bridgeAudio = null
     }
+    if (panRaf) {
+      cancelAnimationFrame(panRaf)
+      panRaf = 0
+    }
     try {
       speechSynthesis?.cancel()
     } catch {
       /* 무시 */
     }
     onSpeaking?.(false)
+    onListening?.(false)
     const c = convo
     convo = null
     if (c) {

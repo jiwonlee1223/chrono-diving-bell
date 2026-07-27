@@ -123,6 +123,7 @@ export function createGhost({ getStrip, zIndex = 31 } = {}) {
   let facing = 1 // +1: 오른쪽 향함, -1: 왼쪽. 이동 방향으로 부드럽게 수렴.
   let prevCx = null
   let raf = 0
+  let pan = 0 // 유령의 좌우 위치 -1(왼쪽)~+1(오른쪽) — 목소리 스테레오 패닝에 쓴다(매 프레임 갱신).
 
   // 가시성 램프 — 기본 숨김. show()/hide()로 ~2.5s 부드럽게 나타나고 사라진다.
   // (유령은 주마등이 끝난 뒤의 idle에서만 등장 = 1인칭 진입 가능 신호. spinup·reel 중엔 숨긴다.)
@@ -169,6 +170,7 @@ export function createGhost({ getStrip, zIndex = 31 } = {}) {
 
     const cx = strip.x + u * strip.w // 유령 중심(px). 가장자리 밖으로 살짝 넘겨(overhang) 화면을 넘나든다.
     const cy = strip.y + v * strip.h
+    pan = (u - 0.5) * 2 // 스트립 좌우 위치를 -1~+1로. 목소리를 이 위치에서 들리게 한다(입체감).
 
     // 진행 방향으로 facing 수렴 → 이동할 때 몸을 그쪽으로 튼다.
     if (prevCx !== null) {
@@ -210,6 +212,7 @@ export function createGhost({ getStrip, zIndex = 31 } = {}) {
     setGlow: (level) => {
       glowTarget = Math.max(0, Math.min(1, level || 0))
     }, // 음성 speaking 상태 → 발광 부스트(유령이 말하는 걸 시각으로).
+    getPan: () => pan, // 유령의 현재 좌우 위치 -1~+1 — 목소리(TTS) 스테레오 패닝용.
     dispose() {
       cancelAnimationFrame(raf)
       layer.remove()
