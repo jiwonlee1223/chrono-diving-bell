@@ -239,13 +239,18 @@ export class GeminiClient {
    * @param {string} [p.model]  기본 this.textModel
    * @param {number} [p.thinkingBudget]  2.5 계열 thinking 토큰 상한. 0=끄기(저지연 대화용).
    *   미지정이면 모델 기본(생성 파이프라인 등 품질 우선 호출은 그대로 둔다).
+   * @param {boolean} [p.responseJson]  true면 응답을 JSON으로 강제(responseMimeType).
    * @param {AbortSignal} [p.signal]
    * @returns {Promise<string>}
    */
-  async generateText({ prompt, model = this.textModel, thinkingBudget, signal }) {
+  async generateText({ prompt, model = this.textModel, thinkingBudget, responseJson, signal }) {
     const body = { contents: [{ parts: [{ text: prompt }] }] }
     if (thinkingBudget !== undefined) {
       body.generationConfig = { thinkingConfig: { thinkingBudget } }
+    }
+    // JSON을 기대하는 호출은 응답 MIME을 고정해 형식 이탈(설명 문장·코드펜스·키 누락)을 줄인다.
+    if (responseJson) {
+      body.generationConfig = { ...body.generationConfig, responseMimeType: 'application/json' }
     }
     const out = await this.#post(
       `/v1beta/models/${model}:generateContent`,

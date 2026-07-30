@@ -508,6 +508,25 @@
         opacity: 0.5;
         cursor: default;
       }
+      /* 큐 줄 삭제 — 되돌릴 수 없어 붉은 계열로 구분하고 확인 후 실행한다. */
+      .del-btn {
+        margin-left: 2px;
+        font-size: 11px;
+        font-weight: 600;
+        cursor: pointer;
+        padding: 2px 8px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 110, 110, 0.4);
+        background: transparent;
+        color: #ff8585;
+      }
+      .del-btn:hover {
+        background: rgba(255, 110, 110, 0.16);
+      }
+      .del-btn:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
       #queue-now button {
         margin-left: 6px;
       }
@@ -1276,6 +1295,41 @@
           }
         }
       }
+      // 큐에서 줄 삭제 — 인생그래프 세션 줄(id에 '#')이면 그 세션만, 아니면 프로필 문서째.
+      // 이미 만들어진 생성물은 지우지 않는다(제출 큐 정리 전용).
+      async function deleteQueueItem(id, name, btn) {
+        const isSession = id.includes('#')
+        if (
+          !confirm(
+            `${name || id}\n\n${
+              isSession
+                ? '이 제출 세션을 큐에서 삭제합니다 (같은 사람의 다른 세션은 남습니다).'
+                : '이 참가자의 제출 문서를 삭제합니다.'
+            }\n이미 생성된 이미지·영상은 그대로 남습니다. 되돌릴 수 없습니다. 진행할까요?`
+          )
+        )
+          return
+        if (btn) {
+          btn.disabled = true
+          btn.textContent = '삭제 중…'
+        }
+        try {
+          const r = await api('/api/queue/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id })
+          })
+          setStatus(r.deleted ? `삭제됨: ${name || id}` : `이미 없는 항목입니다: ${name || id}`)
+          pollQueue()
+        } catch (e) {
+          setStatus(`삭제 실패: ${e.message}`)
+          if (btn) {
+            btn.disabled = false
+            btn.textContent = '삭제'
+          }
+        }
+      }
+
       // 재렌더되는 버튼들 — 이벤트 위임
       document.addEventListener('click', (e) => {
         const t = e.target
@@ -1299,6 +1353,8 @@
         else if (t.classList.contains('retry-btn')) retryProfile(t.dataset.id, t)
         else if (t.classList.contains('resume-btn')) resumeProfile(t.dataset.id, t)
         else if (t.classList.contains('gen-btn')) startLifeGraph(t.dataset.id, t)
+        else if (t.classList.contains('del-btn'))
+          deleteQueueItem(t.dataset.id, t.dataset.name, t)
       })
 
       // 사이드바에서 persona 선택 (이벤트 위임)
@@ -1563,6 +1619,10 @@
                 // 인생그래프 세션은 자동 생성이 없다 — "대기" 상태에 이 버튼이 유일한 시작 지점.
                 (q.kind === 'lifegraph' && q.status === 'submitted' && !data.viewOnly
                   ? `<button class="gen-btn" data-id="${q.id}">생성</button>`
+                  : '') +
+                // 큐에서 지우기 — 생성 중인 줄은 먼저 중지해야 하므로 버튼을 붙이지 않는다.
+                (q.status !== 'generating' && !data.viewOnly
+                  ? `<button class="del-btn" data-id="${q.id}" data-name="${(q.name || q.id).replaceAll('"', '&quot;')}">삭제</button>`
                   : '') +
                 `</div>`
             )

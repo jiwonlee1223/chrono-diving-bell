@@ -302,6 +302,31 @@
   box-shadow: 0 0 0 1px var(--text), 0 0 8px 2px var(--text);
 }
 
+/* ---------- Upload progress ---------- */
+.upload-progress {
+  margin: 12px 0 4px;
+}
+
+.upload-progress-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--accent-soft);
+  overflow: hidden;
+}
+
+.upload-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.25s ease;
+}
+
+.upload-progress-label {
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 8px 0 0;
+}
+
 /* ---------- Hint & controls ---------- */
 .graph-hint {
   text-align: center;

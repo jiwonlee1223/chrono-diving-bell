@@ -157,13 +157,16 @@ function hashString(s) {
  * 나이별 폴백 장면 문구 — 인생그래프(cdb-crafter) 세션에서 그 단계에 사용자 글이 없을 때 쓴다.
  * AI가 없는 데이터로 새로 지어내는 대신, 여기 STAGES에 미리 써둔 감각 재료 풀에서
  * 결정론적으로 count개를 고른다(§1 — occupation 플로우와 동일한 원칙).
- * @param {number} age            STAGES에 있는 나이(3·7·14·18·25·32·45·55·68·82)여야 매치된다.
+ * life-graph 쪽 나이 격자(AGES)가 STAGES의 10개 나이보다 촘촘해서, 정확히 일치하는 나이가
+ * 없으면 가장 가까운 STAGES 나이의 재료 풀을 쓴다.
+ * @param {number} age            임의의 나이 — 가장 가까운 STAGES 나이로 매칭된다.
  * @param {string} seedString     결정론 시드(보통 `${name}|${birthDate}|${age}`).
  * @param {number} [count=3]
- * @returns {string[]}  0개(매칭 나이 없음) 또는 count개.
+ * @returns {string[]}  count개(STAGES가 비어 있을 때만 0개).
  */
 export function fallbackScenesForAge(age, seedString, count = 3) {
-  const stage = STAGES.find((s) => s.age === age)
+  let stage = STAGES[0]
+  for (const s of STAGES) if (Math.abs(s.age - age) < Math.abs(stage.age - age)) stage = s
   if (!stage) return []
   const rand = mulberry32(hashString(seedString))
   return pick(rand, stage.scenes, Math.min(count, stage.scenes.length)).map((s) =>

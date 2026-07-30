@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import heic2any from "heic2any";
 
-const MAX_DIMENSION = 1280;
-const JPEG_QUALITY = 0.82;
+// 업로드 용량과 화질의 맞교환 지점. 느린 회선(실측 5~20KB/s)에서 1280px·0.82는 장당
+// 300~400KB라 한 장에 20~80초가 걸렸다. 900px·0.72면 80~100KB 수준으로 떨어진다.
+// 이 사진이 생성 파이프라인 입력으로도 쓰인다면 화질이 결과물에 영향을 주므로,
+// 참여자 회선이 충분히 빠르다면 1280·0.82로 되돌려도 된다.
+const MAX_DIMENSION = 900;
+const JPEG_QUALITY = 0.72;
 
 // 아이폰이 기본으로 찍는 HEIC/HEIF는 브라우저(<img>/Image())가 대부분 못 읽는다 —
 // 캔버스에 그리기 전에 JPEG로 먼저 변환해야 한다. 파일 타입이 비표준이라 자주 비어있으니

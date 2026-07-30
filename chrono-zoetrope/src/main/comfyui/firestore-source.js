@@ -971,6 +971,46 @@ export function toGeneratorProfile(profile, photoPaths) {
   }
 }
 
+/**
+ * 프로필 문서 삭제 — 어드민 큐에서 잘못 들어온 제출(테스트·중복·오입력)을 명단에서 지운다.
+ * profiles 문서만 지우고 생성물(이미지·영상·manifest 컬렉션, 로컬 library/)은 건드리지 않는다.
+ * 이미 생성이 끝난 사람은 검토 목록에 그대로 남는다 — 지워지는 건 '제출 큐의 줄'이다.
+ * @returns {Promise<boolean>} false = 문서가 원래 없었음
+ */
+export async function deleteProfileDoc(personaId) {
+  const refDoc = db.collection('profiles').doc(personaId)
+  const snap = await refDoc.get()
+  if (!snap.exists) return false
+  await refDoc.delete()
+  return true
+}
+
+/**
+ * 인생그래프 세션 하나(first/second/third)만 문서에서 지운다. 문서에는 세션이 최대 3개 들어 있어
+ * 문서째 지우면 나머지 세션까지 날아간다 — 큐의 한 줄만 없앨 때는 이쪽을 쓴다.
+ * 세션 본문(`${key}`)과 부속 상태 필드(Status/SubmittedAt/GenerationStartedAt/Error)를 모두 제거해
+ * lifeGraphQueueRows()의 판정(SubmittedAt만 있어도 submitted)에 되살아나지 않게 한다.
+ * @returns {Promise<boolean>} false = 문서가 없거나 그 세션이 원래 비어 있었음
+ */
+export async function deleteLifeGraphSession(personaId, sessionKey) {
+  const refDoc = db.collection('profiles').doc(personaId)
+  const snap = await refDoc.get()
+  if (!snap.exists) return false
+  const data = snap.data()
+  const fields = [
+    sessionKey,
+    `${sessionKey}Status`,
+    `${sessionKey}SubmittedAt`,
+    `${sessionKey}GenerationStartedAt`,
+    `${sessionKey}Error`
+  ].filter((f) => data[f] !== undefined)
+  if (fields.length === 0) return false
+  const patch = { updatedAt: FieldValue.serverTimestamp() }
+  for (const f of fields) patch[f] = FieldValue.delete()
+  await refDoc.update(patch)
+  return true
+}
+
 /** 프로필 문서 부분 갱신 (status 외 필드 — 어드민 성별 수정의 역동기화 등). */
 export async function updateProfileFields(personaId, fields) {
   await db

@@ -336,7 +336,7 @@ export async function processLifeGraphSession(
         : null
 
     // 1.8) 1차 합성 — 세션의 7단계 text 전체를 한 번에 LLM에 넣어, 옛 occupation 플로우의
-    // STAGES와 같은 골격(나이 3·7·14·18·25·32·45·55·68·82마다 장면 후보 3개)으로 이 사람 고유의
+    // 3~90세를 15등분한 나이 격자(life-graph-plan.js AGE_TO_STAGE, 15개 나이마다 장면 후보 2개)로 이 사람 고유의
     // 장면 데이터를 만든다. 텍스트가 없는 단계는 life-graph-plan.js가 옛 STAGES 후보 풀로 폴백한다.
     const synthClient = new GeminiClient({
       apiKey: await resolveGeminiApiKey(config.gemini),

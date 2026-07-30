@@ -56,6 +56,10 @@ function App() {
   const [confirmSubmitOpen, setConfirmSubmitOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
+  // 저장은 됐지만 사진 일부가 업로드되지 못한 경우 저장완료 화면에서 알려준다.
+  const [failedImageStages, setFailedImageStages] = useState([]);
+  // 업로드 진행률 — 느린 회선에서 몇 분씩 걸리므로 멈춘 게 아님을 보여준다.
+  const [uploadProgress, setUploadProgress] = useState(null);
 
   // { zone: "main" | "future", stageId }
   const [modal, setModal] = useState(null);
@@ -73,6 +77,10 @@ function App() {
       document.documentElement.removeAttribute("data-theme");
     }
   }, [screen, focusZone]);
+
+  // login 이후에 항상 준비됨
+  const presentStage = stages?.[stages.length - 1];
+  const futureStages = stages ? computeFutureStages(stages) : [];
 
   // ---------- 로그인 (이름+생년월일로 기존 프로필을 찾아오거나 새로 시작) ----------
   async function handleOnboardingSubmit({ name, birthDate, age }) {
@@ -112,6 +120,7 @@ function App() {
     setModal(null);
     setConfirmSubmitOpen(false);
     setSubmitError("");
+    setFailedImageStages([]);
     setShowIntro(isMain);
     setScreen("draw");
   }
@@ -181,19 +190,30 @@ function App() {
   async function handleConfirmSubmit() {
     setSubmitting(true);
     setSubmitError("");
+    setUploadProgress(null);
     try {
+      let result;
       if (sessionFutureIndex === 0) {
-        await saveInitialProfile({ profile, stages, futureStages, points, futurePoints });
+        result = await saveInitialProfile({
+          profile,
+          stages,
+          futureStages,
+          points,
+          futurePoints,
+          onProgress: setUploadProgress,
+        });
       } else {
-        await saveFollowUpSession({
+        result = await saveFollowUpSession({
           personaId,
           sessionIndex: sessionFutureIndex,
           stages,
           futureStages,
           pastPresentPoints: points,
           futurePoints,
+          onProgress: setUploadProgress,
         });
       }
+      setFailedImageStages(result?.failedImageStages ?? []);
       setConfirmSubmitOpen(false);
       setScreen("saved");
     } catch (err) {
@@ -201,6 +221,7 @@ function App() {
       setSubmitError("저장 중 문제가 발생했어요. 다시 시도해주세요.");
     } finally {
       setSubmitting(false);
+      setUploadProgress(null);
     }
   }
 
@@ -218,6 +239,7 @@ function App() {
     setConfirmSubmitOpen(false);
     setSubmitting(false);
     setSubmitError("");
+    setFailedImageStages([]);
     setModal(null);
     setScreen("login");
   }
@@ -244,8 +266,6 @@ function App() {
   }
 
   // login 이후엔 profile/stages가 항상 준비돼 있다.
-  const presentStage = stages[stages.length - 1];
-  const futureStages = computeFutureStages(stages);
   const hasFuture = futureStages.length > 0;
   const maxSessions = hasFuture ? MAX_FUTURE_SESSIONS : 1;
 
@@ -267,6 +287,12 @@ function App() {
           <h1>{profile.name}님의 인생 그래프</h1>
         </header>
         <p className="graph-hint">저장이 완료됐어요. 소중한 이야기를 들려주셔서 감사합니다.</p>
+        {failedImageStages.length > 0 && (
+          <p className="graph-hint">
+            다만 네트워크 문제로 {failedImageStages.join(", ")}의 사진은 저장하지 못했어요.
+            그래프와 글은 모두 저장됐고, 사진은 나중에 다시 올릴 수 있어요.
+          </p>
+        )}
         <div className="graph-controls">
           <button type="button" className="control-btn control-btn-primary" onClick={handleRestartAll}>
             처음으로 돌아가기
@@ -390,6 +416,7 @@ function App() {
           onConfirm={handleConfirmSubmit}
           onCancel={() => setConfirmSubmitOpen(false)}
           submitting={submitting}
+          progress={uploadProgress}
           error={submitError}
         />
       )}

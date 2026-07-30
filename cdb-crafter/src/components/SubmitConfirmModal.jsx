@@ -11,6 +11,7 @@ export default function SubmitConfirmModal({
   onConfirm,
   onCancel,
   submitting,
+  progress,
   error,
 }) {
   // 미리보기는 어떤 갈래도 편집할 수 없도록 읽기 전용으로 보여준다.
@@ -60,6 +61,25 @@ export default function SubmitConfirmModal({
         </div>
 
         {error && <p className="onboarding-error">{error}</p>}
+
+        {submitting && progress?.total > 0 && (
+          <div className="upload-progress">
+            <div className="upload-progress-bar">
+              <div
+                className="upload-progress-fill"
+                style={{
+                  width: `${Math.round(
+                    ((progress.current - 1 + (progress.ratio ?? 0)) / progress.total) * 100,
+                  )}%`,
+                }}
+              />
+            </div>
+            <p className="upload-progress-label">
+              사진 {progress.current}/{progress.total}장 올리는 중 ({progress.stageLabel}) —{" "}
+              {Math.round((progress.ratio ?? 0) * 100)}%
+            </p>
+          </div>
+        )}
 
         <div className="graph-controls">
           <button type="button" className="control-btn" onClick={onCancel} disabled={submitting}>

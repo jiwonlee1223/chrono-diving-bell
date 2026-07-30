@@ -40,6 +40,9 @@ import {
   resetOrphanGenerating,
   resetOrphanLifeGraphGenerating,
   updateProfileFields,
+  setLifeGraphSessionStatus,
+  deleteProfileDoc,
+  deleteLifeGraphSession,
   uploadPersonaVideos,
   uploadPersonaPanoramaImage,
   uploadPersonaReelPhotos,
@@ -1322,12 +1325,60 @@ const server = http.createServer(async (req, res) => {
       if (!firebaseReady) return send(res, 400, { error: 'Firebase 미연결' })
       const { id } = await readBody(req)
       if (!id) return send(res, 400, { error: 'id 필요' })
-      await updateProfileFields(id, { status: 'submitted', error: null })
+      try {
+        // 인생그래프 세션(id = `${personaId}#${sessionKey}`)은 문서 하나에 세션이 최대 3개라
+        // 상태가 `${key}Status` 필드에 있다. id를 그대로 문서 ID로 넘기면 없는 문서를
+        // update하게 되어 실패한다 — 삭제 핸들러와 같은 방식으로 갈라준다.
+        if (id.includes('#')) {
+          const [rpid, rkey] = id.split('#')
+          if (!LIFE_GRAPH_SESSION_KEYS.includes(rkey))
+            return send(res, 400, { error: `알 수 없는 세션 키: ${rkey}` })
+          await setLifeGraphSessionStatus(rpid, rkey, 'submitted', { [`${rkey}Error`]: null })
+        } else {
+          await updateProfileFields(id, { status: 'submitted', error: null })
+        }
+      } catch (err) {
+        logAction(`↻ 재실행 실패: ${id} — ${err.message}`)
+        return send(res, 400, { error: `재실행 실패: ${err.message}` })
+      }
       genAttempts.delete(id)
       if (!autoOn) autoOn = true // 재실행하려면 자동생성이 켜져 있어야 한다
       logAction(`↻ 수동 재실행 요청: ${id} (submitted로 되돌림)`)
       maybeStartNext()
       return send(res, 200, { queued: true, id })
+    }
+
+    // POST /api/queue/delete { id } → 큐에서 이 줄을 지운다(잘못 들어온 제출·테스트·중복 정리).
+    //   id에 '#'이 있으면 인생그래프 세션 한 개만 문서에서 제거(같은 사람의 다른 세션은 유지),
+    //   없으면 profiles 문서 자체를 삭제한다.
+    // 생성 중인 항목은 거절한다 — 워커가 그 문서를 계속 업데이트하므로 먼저 중지해야 한다.
+    // 이미 만들어진 생성물(이미지·영상·manifest·로컬 library/)은 지우지 않는다: 이건 '큐 정리'다.
+    if (req.method === 'POST' && url.pathname === '/api/queue/delete') {
+      if (VIEW_ONLY) return send(res, 400, { error: '뷰어 모드에서는 삭제 불가' })
+      if (!firebaseReady) return send(res, 400, { error: 'Firebase 미연결' })
+      const { id } = await readBody(req)
+      if (!id) return send(res, 400, { error: 'id 필요' })
+      if (current === id || (id.includes('#') ? current === id.split('#')[0] : false))
+        return send(res, 400, { error: '생성 중인 항목입니다 — 먼저 중지한 뒤 삭제하세요' })
+      try {
+        let removed
+        if (id.includes('#')) {
+          const [dpid, dkey] = id.split('#')
+          if (!LIFE_GRAPH_SESSION_KEYS.includes(dkey))
+            return send(res, 400, { error: `알 수 없는 세션 키: ${dkey}` })
+          removed = await deleteLifeGraphSession(dpid, dkey)
+        } else {
+          removed = await deleteProfileDoc(id)
+        }
+        stoppedIds.delete(id)
+        genAttempts.delete(id)
+        logAction(
+          removed ? `🗑 큐에서 삭제: ${id}` : `🗑 삭제 요청했으나 이미 없음: ${id}`
+        )
+        return send(res, 200, { deleted: removed, id })
+      } catch (err) {
+        return send(res, 400, { error: err.message })
+      }
     }
 
     // POST /api/lifegraph/generate { id } → id는 "personaId#sessionKey"(큐 목록의 id와 동일).

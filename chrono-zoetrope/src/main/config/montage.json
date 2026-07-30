@@ -22,7 +22,7 @@
     "transition": "fade",
     "$birthToCurrentOnly": "true(기본)면 릴은 탄생~현재 나이 장면만으로 합성한다(장면 age가 현재 나이 이하). 현재 나이 이후(미래) 장면 영상은 릴에서 빼고 부끄부끄(유령) 인터랙션에서 찾아보게 남긴다. 클립 자체는 30장 전부 생성된다. false면 30장 전부로 합성(옛 동작).",
     "birthToCurrentOnly": true,
-    "$onePerStage": "true(기본)면 나잇대(단계)마다 딱 1장씩만 릴에 쓴다(단계별 첫 장면=sceneIndex 1). 30장(10단계×3)→10장, birthToCurrentOnly와 함께면 현재 나이까지의 단계 수만큼. 나머지 장면은 인터랙션용. false면 단계당 3장 전부.",
+    "$onePerStage": "true(기본)면 나잇대(단계)마다 딱 1장씩만 릴에 쓴다(단계별 첫 장면=sceneIndex 1). 30장(15나이×2)→15장, birthToCurrentOnly와 함께면 현재 나이까지의 나이 수만큼. 나머지 장면은 인터랙션용. false면 나이당 2장 전부.",
     "onePerStage": true
   },
   "demo": {
