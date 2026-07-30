@@ -2,10 +2,10 @@
 //
 // life-library.js/prompt-builder.js의 옛 파이프라인은 occupation + 고정 10단계 나이 템플릿을
 // 전제로 한다. cdb-crafter는 완전히 다른 재료를 준다 — 사용자가 실제로 그린 감정곡선의
-// 7개 생애주기 단계(보호기~정리기)마다 { x(감정 위치), text(직접 쓴 글), imageURL(사진, 과거~현재만) }.
+// 15개 나이 구간(0~3세부터 85~90세까지)마다 { x(감정 위치), text(직접 쓴 글), imageURL(사진, 과거~현재만) }.
 //
 // 2단계 파이프라인:
-//   1) 합성 — 세션의 7단계 text 전체를 한 번에 LLM에 넣어, 3~90세를 15등분한 나이 격자
+//   1) 합성 — 세션의 15단계 text 전체를 한 번에 LLM에 넣어, 3~90세를 15등분한 나이 격자
 //      (AGE_TO_STAGE, 15개 나이)마다 장면 후보 SCENES_PER_AGE(2)개로 "그 사람 고유"의 장면 데이터를
 //      만든다(buildSynthesisPrompt → synthesizeAgeScenes). 텍스트가 없는 단계는 합성 대상에서
 //      제외하고 prompt-builder.js의 fallbackScenesForAge()가 옛 STAGES 후보 풀로 채운다.
@@ -22,28 +22,46 @@
 //
 // LIFE_STAGES는 cdb-crafter/src/stageUtils.js의 LIFE_STAGES와 반드시 짝을 맞춰야 한다(별도
 // 리포지토리라 import 공유 불가) — 그쪽이 바뀌면 여기도 같이 고칠 것.
+// (2026-07-30: cdb-crafter가 7단계 생애주기 그룹에서 3/9/15/22/28/34/40/47/53/59/65/71/78/84/90세
+// 15구간으로 전환 — id가 `age-{maxAge}`로 바뀌어 AGE_TO_STAGE와 1:1로 맞춰 갱신함.)
 import { fallbackScenesForAge } from './prompt-builder.js'
 
 export const LIFE_STAGES = [
-  { id: 'protect', label: '보호기', sublabel: '0~7세' },
-  { id: 'growth', label: '성장기', sublabel: '8~19세' },
-  { id: 'independence', label: '독립기', sublabel: '20대 초중반' },
-  { id: 'settling', label: '정착기', sublabel: '20대 후반~30대' },
-  { id: 'responsibility', label: '책임기', sublabel: '30대~50대' },
-  { id: 'transition', label: '전환기', sublabel: '50대~60대' },
-  { id: 'settlement', label: '정리기', sublabel: '60대 이후' }
+  { id: 'age-3', label: '0~3세' },
+  { id: 'age-9', label: '4~9세' },
+  { id: 'age-15', label: '10~15세' },
+  { id: 'age-22', label: '16~22세' },
+  { id: 'age-28', label: '23~28세' },
+  { id: 'age-34', label: '29~34세' },
+  { id: 'age-40', label: '35~40세' },
+  { id: 'age-47', label: '41~47세' },
+  { id: 'age-53', label: '48~53세' },
+  { id: 'age-59', label: '54~59세' },
+  { id: 'age-65', label: '60~65세' },
+  { id: 'age-71', label: '66~71세' },
+  { id: 'age-78', label: '72~78세' },
+  { id: 'age-84', label: '79~84세' },
+  { id: 'age-90', label: '85~90세' }
 ]
 
-// 합성 프롬프트(영어)에서 쓰는 단계 라벨 — LIFE_STAGES의 label/sublabel은 cdb-crafter UI와 짝이 맞아야
+// 합성 프롬프트(영어)에서 쓰는 단계 라벨 — LIFE_STAGES의 label은 cdb-crafter UI와 짝이 맞아야
 // 해서 한국어로 둔다. 프롬프트에는 이쪽 영어 라벨만 쓴다.
 const STAGE_LABELS_EN = {
-  protect: 'early childhood (ages 0-7)',
-  growth: 'school years (ages 8-19)',
-  independence: 'becoming independent (early-to-mid twenties)',
-  settling: 'settling down (late twenties through thirties)',
-  responsibility: 'years of responsibility (thirties to fifties)',
-  transition: 'a time of transition (fifties to sixties)',
-  settlement: 'later life (sixties onward)'
+  'age-3': 'early infancy (ages 0-3)',
+  'age-9': 'early childhood (ages 4-9)',
+  'age-15': 'adolescence (ages 10-15)',
+  'age-22': 'young adulthood (ages 16-22)',
+  'age-28': 'early independence (ages 23-28)',
+  'age-34': 'settling into adult life (ages 29-34)',
+  'age-40': 'building a career and family (ages 35-40)',
+  'age-47': 'midlife responsibility (ages 41-47)',
+  'age-53': 'later midlife (ages 48-53)',
+  'age-59': 'approaching a life transition (ages 54-59)',
+  'age-65': 'a time of transition (ages 60-65)',
+  'age-71': 'early later life (ages 66-71)',
+  'age-78': 'later life (ages 72-78)',
+  'age-84': 'advanced age (ages 79-84)',
+  'age-90': 'very late life (ages 85-90)'
 }
 
 // 한 나이당 만드는 장면(=이미지) 수. 나이 격자를 촘촘하게 가져가는 대신 나이마다 2장만 만든다
@@ -51,25 +69,25 @@ const STAGE_LABELS_EN = {
 export const SCENES_PER_AGE = 2
 
 // 나이별 장면 생성 기준 — 3세부터 90세까지를 15등분한 나이 격자(× SCENES_PER_AGE = 30장).
-// 3 + i×(87/14), i=0..14 를 반올림한 값이다.
-// 각 나이는 정확히 하나의 LIFE_STAGE sublabel 범위 안에 들어간다(예: growth 8~19세 → 9·15세 둘 다 포함).
+// cdb-crafter가 이제 이 15개 나이를 정확히 15개 구간으로 나눠 받으므로 각 나이가 자기만의
+// LIFE_STAGE에 1:1로 대응한다(예전처럼 growth 하나에 9·15세가 같이 묶이지 않음).
 // prompt-builder.js STAGES의 10개 나이와 더는 일치하지 않는다 — 폴백은 가장 가까운 STAGES 나이로 매칭된다.
 export const AGE_TO_STAGE = {
-  3: 'protect',
-  9: 'growth',
-  15: 'growth',
-  22: 'independence',
-  28: 'settling',
-  34: 'settling',
-  40: 'responsibility',
-  47: 'responsibility',
-  53: 'transition',
-  59: 'transition',
-  65: 'settlement',
-  71: 'settlement',
-  78: 'settlement',
-  84: 'settlement',
-  90: 'settlement'
+  3: 'age-3',
+  9: 'age-9',
+  15: 'age-15',
+  22: 'age-22',
+  28: 'age-28',
+  34: 'age-34',
+  40: 'age-40',
+  47: 'age-47',
+  53: 'age-53',
+  59: 'age-59',
+  65: 'age-65',
+  71: 'age-71',
+  78: 'age-78',
+  84: 'age-84',
+  90: 'age-90'
 }
 export const AGES = Object.keys(AGE_TO_STAGE)
   .map(Number)
