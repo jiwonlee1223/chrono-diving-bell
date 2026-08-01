@@ -336,6 +336,12 @@
   min-height: 18px;
 }
 
+/* 단계별 저장이 실패했을 때 — 진행을 막지는 않으므로 경고 색만 얹는다. */
+.graph-hint.is-warning {
+  color: #b3543f;
+  margin-top: -8px;
+}
+
 .graph-controls {
   margin-top: auto;
   display: flex;
@@ -418,6 +424,157 @@
   padding: 4px;
 }
 
+/* ---------- 질문 입력칸 (시기별 모달 · 전환 · "지금, 죽는다면") ---------- */
+.question-list {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* 모달이 아니라 화면 본문으로 놓일 때는(=지금, 죽는다면) 아래 버튼과 붙지 않게 띄운다. */
+.app-shell > .question-list {
+  margin-bottom: 28px;
+}
+
+.question-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.question-prompt {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+/* 아직 덜 채웠을 때 무엇이 남았는지 알려주는 한 줄. */
+.question-note {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  margin: 0;
+  text-align: center;
+}
+
+/* ---------- 한 화면에 하나씩 (부고 → 질문) ---------- */
+.step-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  animation: step-fade 0.6s ease;
+}
+
+@keyframes step-fade {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.obituary-scene {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 0;
+}
+
+.typewriter {
+  margin: 0;
+  font-size: 16px;
+  line-height: 2.1;
+  text-align: center;
+  white-space: pre-line;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  cursor: pointer;
+}
+
+/* 부고가 불쑥 나타나지 않게, 연기 한 겹이 화면을 훑고 지나간 뒤에 글자가 시작된다. */
+.smoke-veil {
+  position: fixed;
+  inset: -25%;
+  z-index: 10;
+  pointer-events: none;
+  background:
+    radial-gradient(55% 45% at 30% 40%, rgba(255, 255, 255, 0.22), transparent 70%),
+    radial-gradient(45% 40% at 68% 58%, rgba(255, 255, 255, 0.16), transparent 70%),
+    radial-gradient(60% 55% at 50% 50%, rgba(255, 255, 255, 0.1), transparent 72%);
+  filter: blur(32px);
+  animation: smoke-pass 2.4s ease-in-out forwards;
+}
+
+@keyframes smoke-pass {
+  0% {
+    opacity: 0;
+    transform: translateX(-45%) scale(1.05);
+  }
+  30% {
+    opacity: 1;
+  }
+  65% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(45%) scale(1.3);
+  }
+}
+
+/* 부고를 다 읽은 뒤에야 나타나는 버튼 — 툭 튀어나오지 않게 같이 페이드인한다. */
+.graph-controls.is-revealed {
+  animation: step-fade 0.8s ease;
+}
+
+.typewriter-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 3px;
+  vertical-align: -0.15em;
+  background: var(--text);
+  animation: caret-blink 1s steps(2) infinite;
+}
+
+@keyframes caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.step-question {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 16px;
+  padding-bottom: 24px;
+}
+
+.step-question .modal-textarea {
+  min-height: 180px;
+}
+
+/* 상황을 까는 가정("~라면,")은 화면 제목 자리를 대신하므로 헤더 h1과 같은 크기로 둔다. */
+.question-lead {
+  margin-top: 8px;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.5;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.modal-image-placeholder {
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
 .modal-image-drop {
   display: flex;
   align-items: center;
@@ -450,6 +607,12 @@
   font-size: 15px;
   background: var(--bg);
   color: var(--text);
+}
+
+/* 입력칸이 하나뿐인 화면(전환 질문)용 — 질문과 조금 더 띄우고 높이를 넉넉하게 준다. */
+.modal-textarea.is-tall {
+  margin-top: 12px;
+  min-height: 260px;
 }
 
 .modal-textarea::placeholder {
@@ -486,83 +649,8 @@
   font-weight: 500;
 }
 
-/* ---------- Session menu (로그인 후 3항목 선택 화면) ---------- */
-.branch-picker-desc {
-  color: var(--text-muted);
-  font-size: 13px;
-  margin: 0;
-}
-
-/* ---------- Submit confirm modal ---------- */
-.submit-preview {
-  display: flex;
-  flex-direction: column;
-  height: 55svh;
-  max-height: 480px;
-}
-
-.branch-picker-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.branch-picker-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-  text-align: left;
-}
-
-.branch-picker-item:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.branch-picker-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.branch-picker-text {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.branch-picker-label {
-  font-size: 15px;
-  font-weight: 500;
-  color: var(--text);
-}
-
-.branch-picker-item.is-active {
-  background: var(--text);
-  border-color: var(--text);
-}
-
-.branch-picker-item.is-active .branch-picker-label {
-  color: var(--on-text);
-  font-weight: 600;
-}
-
-.branch-picker-item.is-done {
-  opacity: 0.7;
-}
-
-.branch-picker-item.is-locked {
+.modal-save:disabled {
   opacity: 0.35;
-}
-
-.branch-picker-check {
-  font-size: 13px;
-  color: var(--accent);
+  cursor: not-allowed;
 }
 

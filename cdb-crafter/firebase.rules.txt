@@ -10,9 +10,14 @@ cdb-crafter는 profile-collector와 같은 chrono-diving-bell 프로젝트·같�
   - cdb-crafter(인생그래프):  { name, birthDate, age, first|second|third, ...Status, ...SubmittedAt }
 그래서 create/update 규칙이 두 shape를 모두 받아들이도록 OR로 넓혔다.
 
-또 하나 결정적 차이: cdb-crafter는 세션 2·3을 이어서 그리려고 자기 프로필을 다시
+또 하나 결정적 차이: cdb-crafter는 다시 로그인해 이어서 그리려고 자기 프로필을 다시
 '읽는다'(loadProfile). profile-collector는 쓰기 전용이라 read를 완전히 닫아뒀지만
 (allow read: if false), 인생그래프 앱은 read가 필요하다. 아래 [읽기 결정] 참조.
+
+규칙은 그대로 두되 앱 쪽에서 지킨 약속이 하나 있다: 아래 create/update 조건이 모든 쓰기에서
+first/second/third 중 하나를 요구하므로, cdb-crafter는 로그인 시 문서를 만들 때 `first: {}`
+(빈 맵)를 함께 넣는다(saveLifeGraph.js ensureProfile). 그래야 아직 점을 하나도 안 찍은
+상태에서도 문서를 만들 수 있고, 이후 단계별 저장이 그 맵 안에 하나씩 얹힌다.
 
 
 ── Firestore 규칙 (콘솔 → Firestore Database → 규칙) ──────────────────

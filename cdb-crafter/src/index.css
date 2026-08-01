@@ -18,6 +18,7 @@
   -webkit-font-smoothing: antialiased;
 }
 
+/* "지금 죽는다면" 질의 단계에서만 켜진다 (App.jsx가 data-theme을 토글). */
 :root[data-theme="dark"] {
   --bg: #0a0a14;
   --surface: #14141f;

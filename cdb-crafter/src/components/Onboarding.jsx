@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { calculateAge } from "../stageUtils";
+import { calculateAge, parseBirthDate } from "../stageUtils";
 
-const TODAY = new Date().toISOString().slice(0, 10);
+const BIRTH_DATE_LENGTH = 8; // YYYYMMDD
 
 export default function Onboarding({ onSubmit }) {
   const [name, setName] = useState("");
-  const [birthDate, setBirthDate] = useState("");
+  // 화면에 보이는 값은 숫자 8자리 그대로 두고, 제출할 때만 "YYYY-MM-DD"로 옮긴다.
+  const [birthDigits, setBirthDigits] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -18,8 +19,14 @@ export default function Onboarding({ onSubmit }) {
       setError("성함을 입력해주세요.");
       return;
     }
+    if (birthDigits.length < BIRTH_DATE_LENGTH) {
+      setError("생년월일을 숫자 8자리로 입력해주세요. (예: 19650101)");
+      return;
+    }
+
+    const birthDate = parseBirthDate(birthDigits);
     if (!birthDate) {
-      setError("생년월일을 입력해주세요.");
+      setError("생년월일을 정확히 입력해주세요.");
       return;
     }
 
@@ -42,10 +49,10 @@ export default function Onboarding({ onSubmit }) {
     <div className="onboarding">
       <div className="onboarding-card">
         <h1>인생 그래프</h1>
+        {/* 미래 구간은 더 이상 그리지 않는다 — 지나온 시간만 그리고 다음 화면으로 넘어간다.
+            뒤에 이어질 것(3일·지금 죽는다면)은 여기서 미리 말하지 않는다(CLAUDE.md §1). */}
         <p className="onboarding-desc">
-          지금까지 걸어온 시간과, 앞으로의 걸어갈 미래를
-          <br />
-          그래프로 그려봅니다.
+          지금까지 걸어온 시간을 그래프로 그려봅니다.
           <br />
           시작하기 전에, 성함과 생년월일을 알려주세요.
         </p>
@@ -61,11 +68,15 @@ export default function Onboarding({ onSubmit }) {
             autoFocus
           />
           <input
-            type="date"
-            value={birthDate}
-            max={TODAY}
+            // type="number"가 아니라 text + inputMode: 숫자 키패드는 띄우되 증감 화살표와
+            // 앞자리 0 삭제 같은 number 입력의 부작용은 피한다.
+            type="text"
+            inputMode="numeric"
+            placeholder="생년월일 8자리 (예: 19650101)"
+            value={birthDigits}
+            maxLength={BIRTH_DATE_LENGTH}
             onChange={(e) => {
-              setBirthDate(e.target.value);
+              setBirthDigits(e.target.value.replace(/\D/g, "").slice(0, BIRTH_DATE_LENGTH));
               setError("");
             }}
           />

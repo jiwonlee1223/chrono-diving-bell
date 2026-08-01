@@ -1,62 +1,23 @@
 import { useEffect, useRef, useState } from "react";
-import heic2any from "heic2any";
+import { processImageFile } from "../imageUtils";
+import { stageQuestionFor } from "../questions";
 
-// 업로드 용량과 화질의 맞교환 지점. 느린 회선(실측 5~20KB/s)에서 1280px·0.82는 장당
-// 300~400KB라 한 장에 20~80초가 걸렸다. 900px·0.72면 80~100KB 수준으로 떨어진다.
-// 이 사진이 생성 파이프라인 입력으로도 쓰인다면 화질이 결과물에 영향을 주므로,
-// 참여자 회선이 충분히 빠르다면 1280·0.82로 되돌려도 된다.
-const MAX_DIMENSION = 900;
-const JPEG_QUALITY = 0.72;
-
-// 아이폰이 기본으로 찍는 HEIC/HEIF는 브라우저(<img>/Image())가 대부분 못 읽는다 —
-// 캔버스에 그리기 전에 JPEG로 먼저 변환해야 한다. 파일 타입이 비표준이라 자주 비어있으니
-// 확장자도 같이 본다.
-function isHeic(file) {
-  const type = (file.type || "").toLowerCase();
-  const name = (file.name || "").toLowerCase();
-  return type.includes("heic") || type.includes("heif") || name.endsWith(".heic") || name.endsWith(".heif");
-}
-
-async function toWebSafeFile(file) {
-  if (!isHeic(file)) return file;
-  const converted = await heic2any({ blob: file, toType: "image/jpeg", quality: 0.9 });
-  // 드물게 멀티 이미지 HEIC는 배열로 온다 — 첫 장만 쓴다.
-  return Array.isArray(converted) ? converted[0] : converted;
-}
-
-// 휴대폰 원본 사진(수 MB)을 그대로 올리면 느린/불안정한 네트워크에서 업로드가 자주
-// 끊기므로, 브라우저에서 미리 리사이즈·압축해서 훨씬 가벼운 JPEG로 만든다.
-function compressImage(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const img = new Image();
-      img.onload = () => {
-        let { width, height } = img;
-        if (width > height && width > MAX_DIMENSION) {
-          height = Math.round((height * MAX_DIMENSION) / width);
-          width = MAX_DIMENSION;
-        } else if (height > MAX_DIMENSION) {
-          width = Math.round((width * MAX_DIMENSION) / height);
-          height = MAX_DIMENSION;
-        }
-        const canvas = document.createElement("canvas");
-        canvas.width = width;
-        canvas.height = height;
-        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
-        resolve(canvas.toDataURL("image/jpeg", JPEG_QUALITY));
-      };
-      img.onerror = reject;
-      img.src = reader.result;
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
-
-export default function PointModal({ stageLabel, point, allowImage = true, onSave, onClose }) {
+// 시기별 입력칸 — 그 구간에 배정된 질문 하나와 사진 한 장을 받는다.
+// 사진은 모든 시기에서 받는다: 2차 파이프라인이 그 시기 장면을 만들 때 "그 순간의 실제 사진"을
+// 레퍼런스로 싣기 때문에(profile-worker.js collectStagePhotoURLs) 시기마다 한 장씩 있어야 한다.
+export default function PointModal({
+  stageId,
+  stageLabel,
+  point,
+  requirePhoto = false,
+  onSave,
+  onClose,
+}) {
+  // image는 이번에 고른 사진(data: URL), imageURL은 지난번 제출 때 올려둔 사진 —
+  // 다시 로그인한 사람에게도 그때 올린 사진이 그대로 보여야 한다. 그대로 저장하면
+  // 업로드 없이 같은 URL이 다시 쓰인다(saveLifeGraph.js uploadImage).
   const [text, setText] = useState(point?.text ?? "");
-  const [image, setImage] = useState(point?.image ?? "");
+  const [image, setImage] = useState(point?.image ?? point?.imageURL ?? "");
   // textarea에서 글을 드래그로 선택하다가 커서가 배경(backdrop) 위로 나가서 놓이면, 그 click의
   // target이 backdrop이 되어 버려 모달이 닫혀버린다. mousedown이 실제로 backdrop 자체에서
   // 시작했을 때만 닫히게 해서 이 오작동을 막는다.
@@ -64,25 +25,18 @@ export default function PointModal({ stageLabel, point, allowImage = true, onSav
 
   useEffect(() => {
     setText(point?.text ?? "");
-    setImage(point?.image ?? "");
+    setImage(point?.image ?? point?.imageURL ?? "");
   }, [point]);
 
   async function handleImageChange(e) {
     const file = e.target.files?.[0];
     if (!file) return;
-    try {
-      setImage(await compressImage(await toWebSafeFile(file)));
-    } catch {
-      // 압축이 실패하면 원본이라도 쓴다.
-      const reader = new FileReader();
-      reader.onload = () => setImage(reader.result);
-      reader.readAsDataURL(file);
-    }
+    setImage(await processImageFile(file));
   }
 
-  function handleSave() {
-    onSave({ text, image });
-  }
+  const question = stageQuestionFor(stageId);
+  // 글은 항상 있어야 하고, 사진은 "현재"에서만 필수다.
+  const canSave = Boolean(text.trim()) && (!requirePhoto || Boolean(image));
 
   return (
     <div
@@ -102,27 +56,43 @@ export default function PointModal({ stageLabel, point, allowImage = true, onSav
           </button>
         </div>
 
-        {allowImage && (
-          <label className="modal-image-drop">
-            {image ? (
-              <img src={image} alt="첨부 이미지" />
-            ) : (
-              <span className="modal-image-placeholder">사진 추가</span>
-            )}
-            <input type="file" accept="image/*" onChange={handleImageChange} hidden />
-          </label>
+        <label className="modal-image-drop">
+          {image ? (
+            <img src={image} alt="첨부 이미지" />
+          ) : (
+            <span className="modal-image-placeholder">
+              {requirePhoto ? "지금의 사진 추가" : "이 시기의 사진 추가"}
+            </span>
+          )}
+          <input type="file" accept="image/*" onChange={handleImageChange} hidden />
+        </label>
+
+        <label className="question-field">
+          <span className="question-prompt">{question}</span>
+          <textarea
+            className="modal-textarea"
+            placeholder="떠오르는 대로 적어봅니다."
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            rows={4}
+          />
+        </label>
+
+        {!canSave && (
+          <p className="question-note">
+            {requirePhoto
+              ? "지금의 사진과 이야기를 모두 채워주세요."
+              : "이야기를 적어야 저장할 수 있어요."}
+          </p>
         )}
 
-        <textarea
-          className="modal-textarea"
-          placeholder="이 시기에 대해 남기고 싶은 이야기를 적어주세요."
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          rows={4}
-        />
-
         <div className="modal-actions">
-          <button type="button" className="modal-save" onClick={handleSave}>
+          <button
+            type="button"
+            className="modal-save"
+            onClick={() => onSave({ text, image })}
+            disabled={!canSave}
+          >
             저장
           </button>
         </div>
