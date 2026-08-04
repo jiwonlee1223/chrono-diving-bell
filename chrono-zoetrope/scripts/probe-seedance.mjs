@@ -49,7 +49,12 @@ const workflow = {
   },
   3: {
     class_type: 'SaveVideo',
-    inputs: { video: ['2', 0], filename_prefix: 'chrono-compare/seedance', format: 'mp4', codec: 'h264' }
+    inputs: {
+      video: ['2', 0],
+      filename_prefix: 'chrono-compare/seedance',
+      format: 'mp4',
+      codec: 'h264'
+    }
   }
 }
 
@@ -58,7 +63,11 @@ const t0 = Date.now()
 const res = await fetch(`${HOST}/prompt`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ prompt: workflow, client_id: 'seedance-probe', extra_data: { api_key_comfy_org: KEY } })
+  body: JSON.stringify({
+    prompt: workflow,
+    client_id: 'seedance-probe',
+    extra_data: { api_key_comfy_org: KEY }
+  })
 })
 const body = await res.json().catch(() => ({}))
 if (!res.ok || !body.prompt_id) {
@@ -72,7 +81,9 @@ console.log(`큐잉됨: ${promptId} — 생성 대기 (API 노드라 수십초~�
 let outputs = null
 for (let i = 0; i < 120; i++) {
   await new Promise((r) => setTimeout(r, 3000))
-  const h = await fetch(`${HOST}/history/${promptId}`).then((r) => r.json()).catch(() => ({}))
+  const h = await fetch(`${HOST}/history/${promptId}`)
+    .then((r) => r.json())
+    .catch(() => ({}))
   const entry = h[promptId]
   if (!entry) continue
   const st = entry.status || {}
@@ -98,11 +109,17 @@ for (const node of Object.values(outputs)) {
 }
 if (!vid) throw new Error(`영상 출력 없음: ${JSON.stringify(outputs).slice(0, 600)}`)
 
-const q = new URLSearchParams({ filename: vid.filename, subfolder: vid.subfolder || '', type: vid.type || 'output' })
+const q = new URLSearchParams({
+  filename: vid.filename,
+  subfolder: vid.subfolder || '',
+  type: vid.type || 'output'
+})
 const data = Buffer.from(await (await fetch(`${HOST}/view?${q}`)).arrayBuffer())
 const outDir = join(root, 'library/_probe/compare')
 await mkdir(outDir, { recursive: true })
 const outPath = join(outDir, `seedance.mp4`)
 await writeFile(outPath, data)
-console.log(`\n✓ Seedance 완료: ${outPath} (${(data.length / 1e6).toFixed(1)}MB, ${((Date.now() - t0) / 1000).toFixed(1)}s)`)
+console.log(
+  `\n[완료] Seedance 완료: ${outPath} (${(data.length / 1e6).toFixed(1)}MB, ${((Date.now() - t0) / 1000).toFixed(1)}s)`
+)
 client.close()

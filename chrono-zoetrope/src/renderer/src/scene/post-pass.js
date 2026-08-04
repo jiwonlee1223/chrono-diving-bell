@@ -39,7 +39,11 @@ const FRAG = /* glsl */ `
 `
 
 export class PostPass {
-  constructor({ backProjection = true, blendFraction = { left: 0, right: 0 }, verticalShift = 0 } = {}) {
+  constructor({
+    backProjection = true,
+    blendFraction = { left: 0, right: 0 },
+    verticalShift = 0
+  } = {}) {
     this.scene = new THREE.Scene()
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)
     this.material = new THREE.ShaderMaterial({

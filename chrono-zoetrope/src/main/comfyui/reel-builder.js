@@ -29,9 +29,12 @@ function run(cmd, args) {
 function ffprobeDuration(file) {
   return new Promise((resolve, reject) => {
     const p = spawn('ffprobe', [
-      '-v', 'error',
-      '-show_entries', 'format=duration',
-      '-of', 'default=noprint_wrappers=1:nokey=1',
+      '-v',
+      'error',
+      '-show_entries',
+      'format=duration',
+      '-of',
+      'default=noprint_wrappers=1:nokey=1',
       file
     ])
     let out = ''
@@ -130,12 +133,18 @@ export class ReelBuilder {
     const args = [
       '-y',
       ...inputs,
-      '-filter_complex', parts.join(';'),
-      '-map', `[${mapLabel}]`,
-      '-r', '16',
-      '-c:v', 'libx264',
-      '-pix_fmt', 'yuv420p',
-      '-movflags', '+faststart', // moov 앞으로 → 브라우저 점진 재생/시킹
+      '-filter_complex',
+      parts.join(';'),
+      '-map',
+      `[${mapLabel}]`,
+      '-r',
+      '16',
+      '-c:v',
+      'libx264',
+      '-pix_fmt',
+      'yuv420p',
+      '-movflags',
+      '+faststart', // moov 앞으로 → 브라우저 점진 재생/시킹
       '-an',
       outPath
     ]
@@ -162,14 +171,24 @@ export class ReelBuilder {
 
     const inputs = clips.flatMap((f) => ['-i', f])
     const setpts = speed > 1 ? `setpts=PTS/${speed.toFixed(4)},` : ''
-    const norm = clips.map((_, i) => `[${i}:v]${setpts}fps=24,format=yuv420p,setsar=1,settb=AVTB[v${i}]`)
+    const norm = clips.map(
+      (_, i) => `[${i}:v]${setpts}fps=24,format=yuv420p,setsar=1,settb=AVTB[v${i}]`
+    )
     const chain = clips.map((_, i) => `[v${i}]`).join('') + `concat=n=${clips.length}:v=1:a=0[out]`
     await run('ffmpeg', [
-      '-y', ...inputs,
-      '-filter_complex', [...norm, chain].join(';'),
-      '-map', '[out]',
-      '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
-      '-movflags', '+faststart', '-an',
+      '-y',
+      ...inputs,
+      '-filter_complex',
+      [...norm, chain].join(';'),
+      '-map',
+      '[out]',
+      '-c:v',
+      'libx264',
+      '-pix_fmt',
+      'yuv420p',
+      '-movflags',
+      '+faststart',
+      '-an',
       outPath
     ])
     const durationSec = await ffprobeDuration(outPath)

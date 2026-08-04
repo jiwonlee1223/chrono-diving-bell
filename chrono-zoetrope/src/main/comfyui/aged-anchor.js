@@ -18,7 +18,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { composeAgedPortraitPrompt } from './prompt-builder.js'
-import { ADULT_MIN_AGE } from './face-anchor.js'
 
 // persona 디렉토리 하위, 나이별 aged 포트레이트 캐시 폴더.
 export const AGED_DIR = '_aged'
@@ -78,7 +77,7 @@ export async function agedPortrait({
   })
   await fs.mkdir(path.dirname(absPath), { recursive: true })
   await fs.writeFile(absPath, data)
-  log(`  🧑 aged 포트레이트 생성: ${age}세 ${isPast ? '(과거·젊게)' : '(미래·늙게)'}`)
+  log(`  [얼굴] aged 포트레이트 생성: ${age}세 ${isPast ? '(과거·젊게)' : '(미래·늙게)'}`)
   return { buffer: data, path: relPath, cached: false }
 }
 
@@ -114,11 +113,12 @@ export async function prepareAgedAnchors({
   const byAge = new Map()
   if (!faceRef || !gclient) return byAge
 
-  // aging이 필요한 고유 성인 나이 집합(나이→isPast는 결정론적이라 첫 등장 값으로 충분).
+  // aging이 필요한 고유 나이 집합(나이→isPast는 결정론적이라 첫 등장 값으로 충분).
+  // 아동 나이도 시도한다(2026-08-03 얼굴 참조 최대화) — de-age 포트레이트가 IMAGE_SAFETY로
+  // 실패하면 아래 catch가 그 나이만 건너뛰고, selectSceneReference가 텍스트 폴백으로 처리한다.
   const ages = []
   const seen = new Set()
   for (const item of plan || []) {
-    if (item.age < ADULT_MIN_AGE) continue
     if (needsAged && !needsAged(item)) continue
     if (seen.has(item.age)) continue
     seen.add(item.age)
@@ -143,7 +143,7 @@ export async function prepareAgedAnchors({
       if (r) byAge.set(age, { buffer: r.buffer, path: r.path })
     } catch (e) {
       // 한 나이 실패가 전체를 막지 않게 — 그 나이는 맵에 없어 selectSceneReference가 구 aging 폴백('anchor')으로 처리.
-      log(`  ⚠ aged 포트레이트 실패(${age}세, aging 폴백으로): ${e.message}`)
+      log(`  [경고] aged 포트레이트 실패(${age}세, aging 폴백으로): ${e.message}`)
     }
   }
   return byAge
@@ -172,22 +172,27 @@ export async function ensureEntryAgedAnchor({
   model,
   imageSize,
   signal,
-  log = () => {}
+  log = () => {},
+  fallbackFaceBuf = null
 }) {
-  if (!entry || entry.age < ADULT_MIN_AGE) return false
+  if (!entry) return false
   if (entry.referenceKind === 'stage') return false // 실제 사진 장면 — aging 안 함
-  if (entry.referenceKind !== 'anchor' && entry.referenceKind !== 'aged') return false
+  // 'anchor'(구 단일패스)·'aged'(캐시 재확보)에 더해, 레퍼런스 없이 생성됐던 장면
+  // ('none'/기록 없음 — 주로 아동 나이)도 aged 포트레이트로 업그레이드한다(2026-08-03 얼굴 참조 최대화).
+  if (entry.referenceKind && !['anchor', 'aged', 'none'].includes(entry.referenceKind)) return false
 
   // 앵커 얼굴 바이트: 구 'anchor' entry는 referenceFile이 원본 얼굴을 가리킨다(덮어쓰기 전에 읽는다).
   // 'aged' entry는 이미 포트레이트를 가리키므로 캐시 히트를 노린다(원본 얼굴 불필요).
+  // 못 읽으면(다른 머신 hydrate·'none' entry) 호출부가 준 현재 얼굴(fallbackFaceBuf)로 폴백한다.
   let faceBuf = null
   if (entry.referenceKind === 'anchor' && entry.referenceFile) {
     try {
       faceBuf = await fs.readFile(path.join(personaDir, entry.referenceFile))
     } catch {
-      /* 원본 얼굴 없음(다른 머신 hydrate) → 캐시만 시도, 없으면 폴백 유지 */
+      /* 원본 얼굴 없음(다른 머신 hydrate) → fallbackFaceBuf → 캐시만 시도 */
     }
   }
+  if (!faceBuf) faceBuf = fallbackFaceBuf
 
   const r = await agedPortrait({
     gclient,

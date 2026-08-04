@@ -22,7 +22,7 @@ export function calibrationPath(libraryRoot) {
 
 /** 값을 안전 범위로 정규화. yaw는 [0,1) wrap, pitch는 [-0.5,0.5] clamp. */
 export function normalizeCalibration(cal = {}) {
-  const wrap = (x) => ((Number(x) || 0) % 1 + 1) % 1
+  const wrap = (x) => (((Number(x) || 0) % 1) + 1) % 1
   const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, Number(x) || 0))
   return { yaw: wrap(cal.yaw), pitch: clamp(cal.pitch, -0.5, 0.5) }
 }

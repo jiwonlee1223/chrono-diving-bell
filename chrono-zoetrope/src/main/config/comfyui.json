@@ -12,6 +12,15 @@
   "reelPhotos": { "count": 12, "startAge": 3, "aspectRatio": "3:4", "concurrency": 3 },
   "$lifeGraphSkipSeamfix": "[LEGACY — equirect엔 이음매 보정 단계가 없어 무의미] 과거 seamfix 시절 옵션. workflow='seamfix'일 때만 효과. 현행 equirect에선 무시됨.",
   "lifeGraphSkipSeamfix": true,
+  "$funeral": "장례식 워크플로우(funeral.js) — 한국식 장례식장을 고인(영정 뒤편) 시선의 4:1 파노라마로 Gemini 생성 후 Wan2.2로 영상화. enabled=false면 워커 자동 생성에서 제외(admin 수동 버튼은 항상 가능). model 미지정이면 gemini.sceneModel(flash — pro는 4:1 거부). video는 montage regen.wan.video와 같은 규격 계열(length 4k+1). layoutRefPath는 구도·깊이 레퍼런스로 함께 첨부할 실측 360 장례식장 사진(패키지 루트 기준 상대경로) — 파일이 없으면 글 지시만으로 생성하고, layoutRef=false면 아예 끈다.",
+  "funeral": {
+    "enabled": true,
+    "imageSize": "2K",
+    "layoutRefPath": "resources/funeral-layout-ref.png",
+    "video": { "width": 1920, "height": 480, "length": 81, "fps": 16, "steps": 4, "shift": 5.0 },
+    "timeoutMs": 240000,
+    "maxWaitMs": 3600000
+  },
   "outDir": "library",
   "timeoutMs": 300000,
   "sceneRetries": 1,
@@ -21,7 +30,8 @@
     "sceneModel": "gemini-3.1-flash-image",
     "textModel": "gemini-2.5-flash",
     "apiKeyPath": "./secrets/gemini-api-key.txt",
-    "imageSize": "2K"
+    "$imageSize": "4K 실험 중(2026-08-04) — 4:1 파노라마에서 인물 픽셀 4배로 인체 깨짐 완화 확인용. 비용·시간 증가가 크면 2K로 복귀.",
+    "imageSize": "4K"
   },
   "firebase": {
     "serviceAccountPath": "./secrets/serviceAccountKey.json",

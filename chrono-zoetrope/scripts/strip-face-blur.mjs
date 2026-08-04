@@ -13,7 +13,9 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const config = JSON.parse(await fs.readFile(path.join(root, 'src/main/config/comfyui.json'), 'utf-8'))
+const config = JSON.parse(
+  await fs.readFile(path.join(root, 'src/main/config/comfyui.json'), 'utf-8')
+)
 const LIBRARY = path.join(root, config.outDir || 'library')
 
 let args = process.argv.slice(2)
@@ -69,7 +71,8 @@ for (const pid of pids) {
     await fs.writeFile(mf, JSON.stringify(m, null, 2))
     filesChanged++
   }
-  if (changedHere) console.log(`[${pid}] ${m.profile?.name || '?'} — ${changedHere}장 프롬프트 정리`)
+  if (changedHere)
+    console.log(`[${pid}] ${m.profile?.name || '?'} — ${changedHere}장 프롬프트 정리`)
 }
 
 console.log(

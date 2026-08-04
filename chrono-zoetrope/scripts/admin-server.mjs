@@ -44,6 +44,8 @@ import {
   deleteProfileDoc,
   deleteLifeGraphSession,
   uploadPersonaVideos,
+  uploadPersonaFuneral,
+  downloadPhotos,
   uploadPersonaPanoramaImage,
   uploadPersonaReelPhotos,
   ensureLocalClipsFromFirebase,
@@ -52,21 +54,39 @@ import {
   upsertPersonaManifest,
   fetchPersonaManifest,
   listAllPersonasFromFirebase,
-  setRuntimeSession
+  setRuntimeSession,
+  fetchGhostTranscript
 } from '../src/main/comfyui/firestore-source.js'
 // ComfyUI 서버 output에서 직접 회수하던 복구는 CLI 전용(scripts/recover-comfy-videos.mjs)으로 남기고,
 // admin 버튼은 Firebase 정본 기준 '이어서 생성'(kind: 'resume')으로 대체했다.
-import { processProfile, processLifeGraphSession } from '../src/main/comfyui/profile-worker.js'
+import {
+  processProfile,
+  processLifeGraphSession,
+  processBranchedFuture
+} from '../src/main/comfyui/profile-worker.js'
 import { composeScenePromptFor, personaId } from '../src/main/comfyui/prompt-builder.js'
 import {
   buildReelPhotoPlan,
   generateReelPhotos,
-  REEL_DIR
+  normalizeReelVariant,
+  reelVariantLabel,
+  reelManifestKey,
+  reelDirFor
 } from '../src/main/comfyui/reel-photos.js'
-import { synthesizeAgeScenes } from '../src/main/comfyui/life-graph-plan.js'
+import {
+  synthesizeAgeScenes,
+  synthesizeBranchedScenes,
+  collectSessionPhotoURLs
+} from '../src/main/comfyui/life-graph-plan.js'
 import { prefixForEntry } from '../src/main/comfyui/face-anchor.js'
 import { ensureEntryAgedAnchor } from '../src/main/comfyui/aged-anchor.js'
 import { regenerateSeamfix } from '../src/main/comfyui/seamfix-legacy.js' // LEGACY: 기존 seamfix persona 재생성 전용
+import {
+  runFuneralWorkflow,
+  normalizeVariant,
+  funeralManifestKey,
+  funeralVariantLabel
+} from '../src/main/comfyui/funeral.js'
 import { readSession, writeSession, clearSession } from '../src/main/session-pointer.js'
 import { VideoRegenerator } from '../src/main/comfyui/video-cache.js'
 import { ReelBuilder } from '../src/main/comfyui/reel-builder.js'
@@ -192,13 +212,32 @@ function isGeneratingPersona(pid) {
 // 생성 때 기록해둔 장면별 레퍼런스(referenceFile — 그 순간 실제 사진 또는 현재 얼굴 앵커)를 다시
 // 읽어 재생성에 실는다. 파일이 없으면(구버전 manifest·다른 머신 hydrate로 _input 없음) null → 레퍼런스
 // 없이 생성(프롬프트 접두어와 어긋나지만 안전한 폴백). face-anchor.js 규칙과 짝을 이룬다.
-async function loadEntryReference(pid, entry) {
-  if (!entry.referenceFile) return null
-  try {
-    return await fs.readFile(path.join(LIBRARY, pid, entry.referenceFile))
-  } catch {
-    return null
+async function loadEntryReference(pid, entry, manifest = null) {
+  if (entry.referenceFile) {
+    try {
+      return await fs.readFile(path.join(LIBRARY, pid, entry.referenceFile))
+    } catch {
+      /* 기록된 레퍼런스 유실(다른 머신 hydrate 등) → 아래 현재 얼굴 폴백 */
+    }
   }
+  // 얼굴 참조 최대화(2026-08-03): 기록된 레퍼런스를 못 읽어도 무참조로 굴리지 않는다 — 프롬프트가
+  // "첨부 사진을 써라"인데 첨부가 없으면 모델이 얼굴을 발명한다(금발 외국인 실측). 원본 프로필
+  // 얼굴 사진(manifest.referenceImage.local)이라도 실어 정체성을 잇는다.
+  const localRef = manifest?.referenceImage?.local
+  if (localRef) {
+    try {
+      const buf = await fs.readFile(localRef)
+      logAction(
+        `${pid}  [경고] 장면 ${entry.id} 레퍼런스 유실(${entry.referenceFile || '기록 없음'}) — 원본 얼굴 사진으로 폴백`
+      )
+      return buf
+    } catch {
+      /* 원본도 없음 */
+    }
+  }
+  if (entry.referenceFile)
+    logAction(`${pid}  [경고] 장면 ${entry.id} 레퍼런스 유실 — 얼굴 참조 없이 재생성(딴사람 위험)`)
+  return null
 }
 
 async function regenerate(pid, id) {
@@ -224,16 +263,28 @@ async function regenerate(pid, id) {
         textModel: config.gemini?.textModel,
         timeoutMs: config.timeoutMs
       })
+      // 캐시(_aged/{age}.png)도 기록된 앵커 파일도 없을 때 쓸 현재 얼굴 폴백 — hydrate 머신·'none' entry 커버.
+      let fallbackFaceBuf = null
+      if (manifest.referenceImage?.local) {
+        try {
+          fallbackFaceBuf = await fs.readFile(manifest.referenceImage.local)
+        } catch {
+          /* 원본 얼굴 없음 — 캐시 히트만 노린다 */
+        }
+      }
       const upgraded = await ensureEntryAgedAnchor({
         gclient: agedGclient,
         personaDir: path.join(LIBRARY, pid),
         entry,
         profile: manifest.profile,
         model: config.gemini?.model,
-        imageSize: manifest.gemini?.imageSize || config.gemini?.imageSize,
-        log: logAction
+        // 현재 config 우선(2026-08-04) — 재생성은 워크플로우·프롬프트와 마찬가지로 항상 현행 설정을
+        // 따른다. manifest 기록값은 config에 imageSize가 없을 때의 폴백일 뿐(구 persona 2K 고착 방지).
+        imageSize: config.gemini?.imageSize || manifest.gemini?.imageSize,
+        log: logAction,
+        fallbackFaceBuf
       })
-      if (upgraded) logAction(`${pid}  🧑 aged 앵커 적용  장면 ${entry.id} (${entry.age}세)`)
+      if (upgraded) logAction(`${pid}  [얼굴] aged 앵커 적용  장면 ${entry.id} (${entry.age}세)`)
     } catch (e) {
       logAction(`aged 포트레이트 확보 실패(${entry.id}, 기존 방식으로 폴백): ${e.message}`)
     }
@@ -331,15 +382,17 @@ async function regenerateGemini(pid, manifest, entry) {
     timeoutMs: config.timeoutMs
   })
 
-  const refBuf = await loadEntryReference(pid, entry)
+  const refBuf = await loadEntryReference(pid, entry, manifest)
   const t0 = Date.now()
   const data = await gclient.generateImage({
     prompt: entry.prompt,
     references: refBuf ? [refBuf] : [],
     aspectRatio: nearestGeminiAspect(manifest.image.width, manifest.image.height),
-    imageSize: manifest.gemini?.imageSize || config.gemini?.imageSize || '2K',
+    // 현재 config 우선(2026-08-04) — 구 persona manifest에 2K가 기록돼 있어도 재생성은 현행 4K로.
+    imageSize: config.gemini?.imageSize || manifest.gemini?.imageSize || '2K',
     // flash(sceneModel) 고정 — pro는 4:1 파노라마를 거부한다. 생성(life-library)과 동일 모델.
-    model: manifest.gemini?.sceneModel || config.gemini?.sceneModel || undefined
+    // 현재 config 우선 — config에서 sceneModel을 올리면 구 persona 재생성도 새 모델을 쓴다.
+    model: config.gemini?.sceneModel || manifest.gemini?.sceneModel || undefined
   })
   await fs.writeFile(path.join(LIBRARY, pid, entry.file), data)
 
@@ -367,7 +420,7 @@ async function startRegenAll(pid) {
     total: ids.length,
     startedAt: Date.now()
   }
-  logAction(`▶ 전체 재생성 시작: ${regenJob.name} (${ids.length}장)`)
+  logAction(`[시작] 전체 재생성 시작: ${regenJob.name} (${ids.length}장)`)
   ;(async () => {
     let ok = 0
     let err = 0
@@ -378,7 +431,7 @@ async function startRegenAll(pid) {
         ok++
       } catch (e) {
         err++
-        logAction(`  ✗ 전체 재생성 장면 실패 ${id}: ${e.message}`)
+        logAction(`  [실패] 전체 재생성 장면 실패 ${id}: ${e.message}`)
       }
       regenJob.done = ok + err
     }
@@ -394,8 +447,8 @@ async function startRegenAll(pid) {
     }
     logAction(
       regenAbort
-        ? `⏹ 전체 재생성 중지: ${regenJob.name} (${ok + err}/${ids.length})`
-        : `✓ 전체 재생성 완료: ${regenJob.name} (성공 ${ok}, 실패 ${err})`
+        ? `[중지] 전체 재생성 중지: ${regenJob.name} (${ok + err}/${ids.length})`
+        : `[완료] 전체 재생성 완료: ${regenJob.name} (성공 ${ok}, 실패 ${err})`
     )
     regenJob = null
     regenAbort = false
@@ -410,17 +463,22 @@ async function startRegenAll(pid) {
 // 그 이전에 만들어진 페르소나는 이 대기열로 사후 생성한다. 여러 명을 연달아 눌러도 순차 실행
 // (동시 1잡 — 진행 표시·manifest 기록이 안 꼬인다). 한 잡 안에서는 generateReelPhotos가
 // Gemini API를 concurrency장씩 병렬 호출해 1인당 소요를 줄인다.
-// force=true면 기존 _reel/과 manifest.reelPhotos를 비우고 전부 새로(기본은 resume).
-let reelPhotoQueue = [] // 대기열 [{ pid, force }]
-let reelPhotoJob = null // { pid, name, done, total, startedAt }
+// force=true면 그 판의 폴더·manifest 배열을 비우고 전부 새로(기본은 resume).
+// 릴은 두 벌이다(variant): 'past'(3~현재, 1차 주마등) / 'future'(현재 다음 해~90세, 2차 미래 주마등).
+// 큐는 (pid, variant) 쌍으로 구분한다 — 한 사람의 두 릴은 별개 작업이라 나란히 대기할 수 있다.
+let reelPhotoQueue = [] // 대기열 [{ pid, variant, force }]
+let reelPhotoJob = null // { pid, name, variant, done, total, startedAt }
 let reelPhotoAbort = null // AbortController
-let reelPhotoLast = null // { pid, name, ok, err, cancelled?, error?, at }
+let reelPhotoLast = null // { pid, name, variant, ok, err, cancelled?, error?, at }
 
-// 대기열 등록 — 즉시 반환(유휴면 곧바로 시작). 같은 pid 중복 등록은 거부.
-function enqueueReelPhotos(pid, { force = false } = {}) {
-  if (reelPhotoJob?.pid === pid) throw new Error('이 페르소나의 릴 사진을 이미 생성 중입니다')
-  if (reelPhotoQueue.some((q) => q.pid === pid)) throw new Error('이미 대기열에 있습니다')
-  reelPhotoQueue.push({ pid, force })
+// 대기열 등록 — 즉시 반환(유휴면 곧바로 시작). 같은 (pid, variant) 중복 등록은 거부.
+function enqueueReelPhotos(pid, { force = false, variant = 'past' } = {}) {
+  const v = normalizeReelVariant(variant)
+  if (reelPhotoJob?.pid === pid && reelPhotoJob?.variant === v)
+    throw new Error(`이 페르소나의 ${reelVariantLabel(v)} 사진을 이미 생성 중입니다`)
+  if (reelPhotoQueue.some((q) => q.pid === pid && q.variant === v))
+    throw new Error('이미 대기열에 있습니다')
+  reelPhotoQueue.push({ pid, variant: v, force })
   pumpReelPhotos() // fire-and-forget — 에러는 pump 내부에서 reelPhotoLast로 기록
   return reelPhotoQueue.length // 등록 직후 대기 순번(0이면 바로 시작됨)
 }
@@ -430,20 +488,27 @@ function enqueueReelPhotos(pid, { force = false } = {}) {
 //  통과해 잡 상태·중지 컨트롤러가 서로 덮어써졌다 — "생성 중인데 표시가 사라지는" 증상의 원인.)
 async function pumpReelPhotos() {
   if (reelPhotoJob || reelPhotoQueue.length === 0) return
-  const { pid, force } = reelPhotoQueue.shift()
+  const { pid, force, variant } = reelPhotoQueue.shift()
   reelPhotoJob = {
     pid,
     name: pid, // 준비 후 실명으로 갱신
+    variant,
     done: 0,
     total: config.reelPhotos?.count ?? 12,
     startedAt: Date.now()
   }
   reelPhotoAbort = new AbortController()
   try {
-    await runReelPhotosJob(pid, { force })
+    await runReelPhotosJob(pid, { force, variant })
   } catch (e) {
-    reelPhotoLast = { pid, name: reelPhotoJob?.name || pid, error: e.message, at: Date.now() }
-    logAction(`✗ 릴 사진 생성 실패: ${e.message}`)
+    reelPhotoLast = {
+      pid,
+      name: reelPhotoJob?.name || pid,
+      variant,
+      error: e.message,
+      at: Date.now()
+    }
+    logAction(`[실패] ${reelVariantLabel(variant)} 사진 생성 실패: ${e.message}`)
   } finally {
     reelPhotoJob = null
     reelPhotoAbort = null
@@ -451,7 +516,9 @@ async function pumpReelPhotos() {
   }
 }
 
-async function runReelPhotosJob(pid, { force = false } = {}) {
+async function runReelPhotosJob(pid, { force = false, variant = 'past' } = {}) {
+  const vkind = normalizeReelVariant(variant)
+  const vlabel = reelVariantLabel(vkind)
   await ensurePersonaLocal(pid).catch(() => {})
   const manifest = await readManifest(pid)
   const profile = manifest.profile || {}
@@ -460,9 +527,12 @@ async function runReelPhotosJob(pid, { force = false } = {}) {
   const personaDir = path.join(LIBRARY, pid)
 
   if (force) {
-    await fs.rm(path.join(personaDir, REEL_DIR), { recursive: true, force: true }).catch(() => {})
-    if (manifest.reelPhotos) {
-      delete manifest.reelPhotos
+    const mKey = reelManifestKey(vkind)
+    await fs
+      .rm(path.join(personaDir, reelDirFor(vkind)), { recursive: true, force: true })
+      .catch(() => {})
+    if (manifest[mKey]) {
+      delete manifest[mKey]
       await writeManifest(pid, manifest)
     }
   }
@@ -487,7 +557,7 @@ async function runReelPhotosJob(pid, { force = false } = {}) {
       /* 다음 후보 */
     }
   }
-  if (!faceRef) logAction(`⚠ 릴 사진: 얼굴 앵커 사진 없음 — 텍스트-only로 생성 (${pid})`)
+  if (!faceRef) logAction(`[경고] 릴 사진: 얼굴 앵커 사진 없음 — 텍스트-only로 생성 (${pid})`)
 
   // life-graph(cdb-crafter) 페르소나면 가장 최근 제출 세션의 글로 나이별 장면을 재합성한다
   // (워커 자동 생성과 같은 재료). 실패·해당 없음이면 STAGES 폴백(§1 — 결정론 재료).
@@ -506,21 +576,50 @@ async function runReelPhotosJob(pid, { force = false } = {}) {
           textModel: config.gemini?.textModel,
           timeoutMs: config.timeoutMs
         })
-        ageScenes = await synthesizeAgeScenes(synthClient, doc, doc[key] || {})
+        if (vkind === 'branched') {
+          // 3차 릴은 대화 기록 기반 분기 장면이 재료다 — 1·2차 합성 결과를 쓰면 분기가 아니게 된다.
+          const transcript = await fetchGhostTranscript(doc)
+          if (!transcript?.turns?.length)
+            throw new Error('유령 대화 기록(ghostTranscripts) 없음 — 1·2차 체험 후 생성 가능')
+          ageScenes = await synthesizeBranchedScenes(
+            synthClient,
+            doc,
+            doc[key] || {},
+            transcript.turns
+          )
+        } else {
+          ageScenes = await synthesizeAgeScenes(synthClient, doc, doc[key] || {})
+        }
       } catch (e) {
-        logAction(`⚠ 릴 사진: 장면 합성 실패 — STAGES 폴백 (${e.message})`)
+        logAction(`[경고] 릴 사진: 장면 합성 실패 — STAGES 폴백 (${e.message})`)
       }
     }
   }
 
-  const plan = buildReelPhotoPlan(profile, { ...(config.reelPhotos || {}), ageScenes })
+  const plan = buildReelPhotoPlan(profile, {
+    ...(config.reelPhotos || {}),
+    variant: vkind,
+    ageScenes
+  })
   // 잡 자체는 pump가 이미 동기로 세워뒀다(경합 차단) — 여기서는 표시 정보만 채운다.
   if (reelPhotoJob) {
     reelPhotoJob.name = profile.name || pid
     reelPhotoJob.total = plan.length
   }
+  if (plan.length === 0) {
+    logAction(`[시작] ${vlabel} 사진: 만들 나이가 없습니다 — 건너뜀 (${profile.name || pid})`)
+    reelPhotoLast = {
+      pid,
+      name: profile.name || pid,
+      variant: vkind,
+      ok: 0,
+      err: 0,
+      at: Date.now()
+    }
+    return
+  }
   logAction(
-    `▶ 릴 사진 생성 시작: ${profile.name || pid} (${plan.length}장${force ? ', 전체 재생성' : ''})`
+    `[시작] ${vlabel} 사진 생성 시작: ${profile.name || pid} (${plan.length}장${force ? ', 전체 재생성' : ''})`
   )
   const gclient = new GeminiClient({
     apiKey: await resolveGeminiApiKey(config.gemini),
@@ -539,10 +638,11 @@ async function runReelPhotosJob(pid, { force = false } = {}) {
     concurrency: config.reelPhotos?.concurrency, // 잡 안 병렬 호출 수(미지정이면 기본 3)
     faceRef,
     retries: config.sceneRetries,
+    variant: vkind,
     signal: reelPhotoAbort.signal,
     log: logAction,
     onManifest: async (m) => {
-      if (reelPhotoJob) reelPhotoJob.done = (m.reelPhotos || []).length
+      if (reelPhotoJob) reelPhotoJob.done = (m[reelManifestKey(vkind)] || []).length
       if (firebaseReady) await upsertPersonaManifest(m)
     }
   })
@@ -552,16 +652,18 @@ async function runReelPhotosJob(pid, { force = false } = {}) {
         profile,
         personaId: pid,
         dir: personaDir,
-        reelPhotos: r.reelPhotos
+        reelPhotos: r.reelPhotos,
+        variant: vkind
       })
-      logAction(`☁ 릴 사진 ${up.count}장 Firebase 업로드 (${profile.name || pid})`)
+      logAction(`[Firebase] ${vlabel} 사진 ${up.count}장 업로드 (${profile.name || pid})`)
     } catch (e) {
-      logAction(`⚠ 릴 사진 Firebase 업로드 실패(무시): ${e.message}`)
+      logAction(`[경고] ${vlabel} 사진 Firebase 업로드 실패(무시): ${e.message}`)
     }
   }
   reelPhotoLast = {
     pid,
     name: profile.name || pid,
+    variant: vkind,
     ok: r.okCount,
     err: r.failedCount,
     cancelled: r.cancelled,
@@ -569,8 +671,181 @@ async function runReelPhotosJob(pid, { force = false } = {}) {
   }
   logAction(
     r.cancelled
-      ? `⏹ 릴 사진 생성 중지: ${reelPhotoLast.name} (${r.okCount}/${plan.length} — 재실행으로 이어짐)`
-      : `✓ 릴 사진 생성 완료: ${reelPhotoLast.name} (성공 ${r.okCount}, 실패 ${r.failedCount})`
+      ? `[중지] ${vlabel} 사진 생성 중지: ${reelPhotoLast.name} (${r.okCount}/${plan.length} — 재실행으로 이어짐)`
+      : `[완료] ${vlabel} 사진 생성 완료: ${reelPhotoLast.name} (성공 ${r.okCount}, 실패 ${r.failedCount})`
+  )
+}
+
+// ── 장례식(고인 시선 파노라마 + Wan 영상) 대기열 — 릴 사진 큐와 동일한 모델 ─────────
+// 승인 게이트 워크플로우: ① stage 'image' — Gemini 파노라마 생성(워커 자동 or admin 버튼)
+// → admin에 떠서 검토(review) → ② 연구자 승인(/funeral/approve) → ③ stage 'video' —
+// admin 버튼으로만 Wan2.2 영상화 → ④ 완료 후 "Firebase 저장" 버튼(/funeral/upload).
+// 각 생성은 manifest.funeral.history에 rev별로 남아 사용자별 과정을 트래킹한다.
+// force=true(image)면 새 rev로 처음부터(재생성·승인 리셋), 기본은 진행 중이던 rev를 이어서.
+// 장례식은 두 벌(variant)이다: 'present'(지금의 죽음) / 'future'(90세의 죽음). 큐·잡·결과는
+// (pid, variant) 쌍으로 구분한다 — 같은 사람의 두 장례식은 서로 다른 작업이라 동시에 대기열에 설 수 있다.
+let funeralQueue = [] // [{ pid, variant, force, stage }]
+let funeralJob = null // { pid, name, variant, stage, phase: 'image'|'video', startedAt }
+let funeralAbort = null // AbortController
+let funeralLast = null // { pid, name, variant, ok, rev, stage, cancelled?, error?, at }
+
+function enqueueFuneral(pid, { force = false, stage = 'image', variant = 'present' } = {}) {
+  const v = normalizeVariant(variant)
+  if (funeralJob?.pid === pid && funeralJob?.variant === v)
+    throw new Error(`이 페르소나의 ${funeralVariantLabel(v)} 생성이 이미 진행 중입니다`)
+  if (funeralQueue.some((q) => q.pid === pid && q.variant === v))
+    throw new Error('이미 대기열에 있습니다')
+  funeralQueue.push({ pid, variant: v, force, stage })
+  pumpFuneral() // fire-and-forget — 에러는 pump 내부에서 funeralLast로 기록
+  return funeralQueue.length
+}
+
+// 동시 1잡 — reelPhoto 펌프와 같은 이유로 잡을 첫 await 전에 동기로 세운다(동시 클릭 경합 차단).
+async function pumpFuneral() {
+  if (funeralJob || funeralQueue.length === 0) return
+  const { pid, force, stage, variant } = funeralQueue.shift()
+  funeralJob = { pid, name: pid, variant, stage, phase: stage, startedAt: Date.now() }
+  funeralAbort = new AbortController()
+  try {
+    await runFuneralJob(pid, { force, stage, variant })
+  } catch (e) {
+    funeralLast = {
+      pid,
+      name: funeralJob?.name || pid,
+      ok: false,
+      variant,
+      stage,
+      error: e.message,
+      at: Date.now()
+    }
+    logAction(`[실패] ${funeralVariantLabel(variant)} 생성 실패: ${e.message}`)
+  } finally {
+    funeralJob = null
+    funeralAbort = null
+    pumpFuneral()
+  }
+}
+
+async function runFuneralJob(pid, { force = false, stage = 'image', variant = 'present' } = {}) {
+  const vkind = normalizeVariant(variant)
+  const vlabel = funeralVariantLabel(vkind)
+  await ensurePersonaLocal(pid).catch(() => {})
+  const manifest = await readManifest(pid)
+  const profile = manifest.profile || {}
+  const personaDir = path.join(LIBRARY, pid)
+  if (funeralJob) funeralJob.name = profile.name || pid
+  logAction(
+    `[시작] ${vlabel} ${stage === 'video' ? '영상화' : '이미지 생성'} 시작: ${profile.name || pid}${force ? (stage === 'video' ? ' (영상만 재생성)' : ' (새 rev 재생성)') : ''}`
+  )
+
+  // 얼굴 앵커(영정의 주인 문맥용) — 릴 사진 잡과 같은 후보 순서로 시도, 없으면 텍스트-only.
+  let faceRef = null
+  const candidates = []
+  try {
+    const inputDir = path.join(personaDir, '_input')
+    for (const f of (await fs.readdir(inputDir)).sort()) candidates.push(path.join(inputDir, f))
+  } catch {
+    /* _input 없음 */
+  }
+  if (manifest.referenceImage?.local) candidates.push(manifest.referenceImage.local)
+  for (const c of candidates) {
+    try {
+      faceRef = await fs.readFile(c)
+      break
+    } catch {
+      /* 다음 후보 */
+    }
+  }
+
+  // 개인화 재료 — Firestore 구독 스냅샷에서 이 페르소나의 문서(본인 입력 세션 텍스트·occupation)를
+  // 찾아 넘긴다. 없으면(구독 밖·미연결) 캐스트 합성 없이 범용 프롬프트로 생성된다.
+  const doc = profiles.find((p) => p.id === (profile.id || pid)) || null
+
+  // 로컬에 제출 사진이 없으면(다른 머신 hydrate — _input 없음) Firebase의 제출 사진을 내려받아
+  // 얼굴 앵커로 쓴다. 영정 얼굴은 반드시 사용자 제출 사진이어야 하므로(2026-07-30 확정) 이 폴백이
+  // 없으면 임의 얼굴로 생성된다. occupation 문서는 top-level photoURLs, 인생그래프 문서는 최근
+  // 세션의 점에 붙은 사진(collectSessionPhotoURLs — 최신 과거부터)을 쓴다.
+  //
+  // 얼굴 앵커는 두 판(variant) 모두 "현재와 가장 가까운 제출 사진" 하나다. 미래 장례식(90세)의
+  // 나이 변환은 여기서 다른 사진을 고르는 게 아니라 funeral.js의 ensureFuneralPortrait 안에서
+  // aged-anchor(_aged/90.png)를 거쳐 이뤄진다 — 파노라마 파이프라인이 쓰는 것과 같은 캐시라
+  // 90세 얼굴이 주마등 마지막 장면과 장례식 영정에서 일치한다.
+  if (!faceRef && doc && firebaseReady) {
+    try {
+      let photoURLs = Array.isArray(doc.photoURLs) && doc.photoURLs.length ? doc.photoURLs : null
+      if (!photoURLs) {
+        // 최근 제출 세션 우선 — 릴 사진 잡과 같은 SubmittedAt 내림차순.
+        const keys = ['first', 'second', 'third']
+          .filter((k) => doc[k])
+          .sort(
+            (a, b) =>
+              (toMillis(doc[`${b}SubmittedAt`]) || 0) - (toMillis(doc[`${a}SubmittedAt`]) || 0)
+          )
+        for (const k of keys) {
+          const urls = collectSessionPhotoURLs(doc[k] || {}, doc)
+          if (urls.length) {
+            photoURLs = urls
+            break
+          }
+        }
+      }
+      if (photoURLs?.length) {
+        const paths = await downloadPhotos(
+          { id: pid, photoURLs: [photoURLs[0]] },
+          path.join(personaDir, '_input')
+        )
+        faceRef = await fs.readFile(paths[0])
+        logAction(
+          `  [다운로드] 얼굴 앵커: Firebase 제출 사진 다운로드 (${path.basename(paths[0])})`
+        )
+      }
+    } catch (e) {
+      logAction(`  [경고] 얼굴 앵커 Firebase 다운로드 실패: ${e.message}`)
+    }
+  }
+
+  const gclient = new GeminiClient({
+    apiKey: await resolveGeminiApiKey(config.gemini),
+    model: config.gemini.model,
+    textModel: config.gemini.textModel,
+    timeoutMs: config.timeoutMs
+  })
+  const r = await runFuneralWorkflow({
+    personaDir,
+    gclient,
+    config,
+    stage,
+    variant: vkind,
+    doc,
+    faceRef,
+    force,
+    signal: funeralAbort.signal,
+    log: logAction,
+    onManifest: async (m) => {
+      if (firebaseReady) await upsertPersonaManifest(m).catch(() => {})
+    },
+    onProgress: (e) => {
+      if (funeralJob) funeralJob.phase = e.phase
+    }
+  })
+  funeralLast = {
+    pid,
+    name: profile.name || pid,
+    ok: r.ok,
+    rev: r.rev,
+    variant: vkind,
+    stage,
+    cancelled: r.cancelled,
+    error: r.error || null,
+    at: Date.now()
+  }
+  const what = stage === 'video' ? '영상화' : '이미지 생성'
+  logAction(
+    r.cancelled
+      ? `[중지] ${vlabel} ${what} 중지: ${funeralLast.name} (rev ${r.rev} — 재실행으로 이어짐)`
+      : r.ok
+        ? `[완료] ${vlabel} ${what} 완료: ${funeralLast.name} (rev ${r.rev})${stage === 'image' ? ' — 검토·승인 대기' : ' — Firebase 저장 가능'}`
+        : `[실패] ${vlabel} ${what} 실패: ${funeralLast.name} — ${r.error}`
   )
 }
 
@@ -719,7 +994,7 @@ async function pumpVideo() {
       // 영상 생성(둘 다 장면당 1개): seedance → 10초 루프 | wan → Wan I2V
       const total = scenes.length
       videoJob = { pid, kind, phase: 'clip', done: 0, total }
-      logAction(`▶ 영상 생성 시작 [${mode}]: ${manifest.profile?.name || pid} (${total}장)`)
+      logAction(`[시작] 영상 생성 시작 [${mode}]: ${manifest.profile?.name || pid} (${total}장)`)
       const clips = await builder.ensureClips(scenes, {
         onProgress: (e) => (videoJob = { pid, kind, ...e }),
         shouldCancel: () => videoCancel
@@ -728,7 +1003,7 @@ async function pumpVideo() {
       manifest.clips = { mode, done, total, builtAt: new Date().toISOString() }
       await writeManifest(pid, manifest)
       videoLast = { pid, kind, ok: true, at: Date.now() }
-      logAction(`✓ 영상 생성 완료: ${pid} — ${done}/${total}`)
+      logAction(`[완료] 영상 생성 완료: ${pid} — ${done}/${total}`)
       // Firebase 'generatedVideos' 컬렉션에 클립 업로드 (이미지와 동일 형식). 실패해도 잡은 성공 유지.
       if (firebaseReady && config.firebase?.uploadGenerated !== false) {
         try {
@@ -741,7 +1016,7 @@ async function pumpVideo() {
           })
           logAction(`  ↑ Firebase 영상 업로드: ${up.count}개 → 'generatedVideos'/${up.key}`)
         } catch (e) {
-          logAction(`  ⚠ Firebase 영상 업로드 실패(로컬 보존됨): ${e.message}`)
+          logAction(`  [경고] Firebase 영상 업로드 실패(로컬 보존됨): ${e.message}`)
           videoLast = { ...(videoLast || {}), firebaseWarn: `클립 업로드 실패: ${e.message}` }
         }
       }
@@ -751,7 +1026,7 @@ async function pumpVideo() {
       // 부족한 장면만 새로 생성한 뒤 다시 업로드한다. (진행 상황의 정본은 Firebase 클립 문서다.)
       const total = scenes.length
       videoJob = { pid, kind, phase: 'fetch', done: 0, total }
-      logAction(`▶ 이어서 생성 시작 [${mode}]: ${manifest.profile?.name || pid} (${total}장)`)
+      logAction(`[시작] 이어서 생성 시작 [${mode}]: ${manifest.profile?.name || pid} (${total}장)`)
       // 1) Firebase 정본에서 이미 생성된 클립을 로컬 캐시(videos/<id>.mp4)로 하이드레이트.
       //    없는 장면은 missing 으로 남고, 아래 ensureClips 가 그 장면만 생성한다.
       let fetched = 0
@@ -764,7 +1039,7 @@ async function pumpVideo() {
           fetched = paths.size
           logAction(`  ↓ Firebase에서 회수: ${fetched}/${total}장 (나머지만 생성)`)
         } catch (e) {
-          logAction(`  ⚠ Firebase 클립 조회 실패(로컬 캐시만으로 이어감): ${e.message}`)
+          logAction(`  [경고] Firebase 클립 조회 실패(로컬 캐시만으로 이어감): ${e.message}`)
         }
       }
       // 2) 캐시 적중은 건너뛰고 부족한 장면만 생성.
@@ -782,7 +1057,9 @@ async function pumpVideo() {
       }
       await writeManifest(pid, manifest)
       videoLast = { pid, kind, ok: true, at: Date.now() }
-      logAction(`✓ 이어서 생성 완료: ${pid} — ${done}/${total} (Firebase 회수 ${fetched} + 신규 ${done - fetched})`)
+      logAction(
+        `[완료] 이어서 생성 완료: ${pid} — ${done}/${total} (Firebase 회수 ${fetched} + 신규 ${done - fetched})`
+      )
       if (firebaseReady && config.firebase?.uploadGenerated !== false && done > 0) {
         try {
           const up = await uploadPersonaVideos({
@@ -794,7 +1071,7 @@ async function pumpVideo() {
           })
           logAction(`  ↑ Firebase 영상 업로드: ${up.count}개 → 'generatedVideos'/${up.key}`)
         } catch (e) {
-          logAction(`  ⚠ Firebase 영상 업로드 실패(로컬 보존됨): ${e.message}`)
+          logAction(`  [경고] Firebase 영상 업로드 실패(로컬 보존됨): ${e.message}`)
           videoLast = { ...(videoLast || {}), firebaseWarn: `클립 업로드 실패: ${e.message}` }
         }
       }
@@ -825,9 +1102,12 @@ async function pumpVideo() {
         })
         logAction(`  나잇대별 1장: ${reelScenes.length}/${before}장`)
       }
+      // 1차 플로우 주마등은 역순 — 현 시점부터 탄생까지 거슬러 올라간다(2026-07-30).
+      // 선별(탄생~현재·나잇대별 1장)은 순방향 규칙 그대로, 합성 순서만 뒤집는다.
+      reelScenes = reelScenes.slice().reverse()
       if (reelScenes.length === 0) throw new Error('릴에 넣을 장면이 없습니다')
       videoJob = { pid, kind, phase: 'concat', done: 0, total: reelScenes.length }
-      logAction(`▶ 릴 합성 시작 [${mode}]: ${manifest.profile?.name || pid}`)
+      logAction(`[시작] 릴 합성 시작 [${mode}]: ${manifest.profile?.name || pid}`)
       const outPath = path.join(personaDir, 'reel.mp4')
       // 클립 소스 = Firebase 정본(로컬 캐시 우선, 없으면 Storage에서 받아 채움). Firebase 미연결·문서없음이면 로컬 폴백.
       let clipPaths = reelScenes.map((s) => regenerator.cachedPath(s.id))
@@ -842,10 +1122,12 @@ async function pumpVideo() {
             }
           )
           if (missing.length)
-            logAction(`  ⚠ Firebase 문서에 없는 클립 ${missing.length}개: ${missing.join(', ')}`)
+            logAction(
+              `  [경고] Firebase 문서에 없는 클립 ${missing.length}개: ${missing.join(', ')}`
+            )
           clipPaths = reelScenes.map((s) => paths.get(s.id) || regenerator.cachedPath(s.id))
         } catch (e) {
-          logAction(`  ⚠ Firebase 클립 조회 실패 — 로컬 캐시로 합성: ${e.message}`)
+          logAction(`  [경고] Firebase 클립 조회 실패 — 로컬 캐시로 합성: ${e.message}`)
         }
       }
       const meta = sd
@@ -866,7 +1148,7 @@ async function pumpVideo() {
       }
       await writeManifest(pid, manifest)
       videoLast = { pid, kind, ok: true, durationSec: meta.durationSec, at: Date.now() }
-      logAction(`✓ 릴 완료: ${pid} — ${meta.durationSec.toFixed(1)}s (${meta.clipCount}개)`)
+      logAction(`[완료] 릴 완료: ${pid} — ${meta.durationSec.toFixed(1)}s (${meta.clipCount}개)`)
       if (firebaseReady && config.firebase?.uploadGenerated !== false) {
         try {
           const up = await uploadPersonaVideos({
@@ -879,7 +1161,7 @@ async function pumpVideo() {
           })
           logAction(`  ↑ Firebase 릴 업로드 → 'generatedVideos'/${up.key}`)
         } catch (e) {
-          logAction(`  ⚠ Firebase 릴 업로드 실패(로컬 보존됨): ${e.message}`)
+          logAction(`  [경고] Firebase 릴 업로드 실패(로컬 보존됨): ${e.message}`)
           videoLast = { ...(videoLast || {}), firebaseWarn: `릴 업로드 실패: ${e.message}` }
         }
       }
@@ -897,8 +1179,8 @@ async function pumpVideo() {
     }
     logAction(
       cancelled
-        ? `⏸ 영상 ${videoCancelKind === 'pause' ? '일시정지' : '중단'}됨: ${kind} ${pid} (만든 클립은 캐시에 남아 재개 가능)`
-        : `✗ 영상 실패: ${kind} ${pid} — ${err.message}`
+        ? `[일시정지] 영상 ${videoCancelKind === 'pause' ? '일시정지' : '중단'}됨: ${kind} ${pid} (만든 클립은 캐시에 남아 재개 가능)`
+        : `[실패] 영상 실패: ${kind} ${pid} — ${err.message}`
     )
   } finally {
     regenerator?.close?.()
@@ -1005,10 +1287,10 @@ async function maybeStartNext() {
     const n = (genAttempts.get(current) || 0) + 1
     genAttempts.set(current, n)
     logAction(
-      `↻ 실패분 자동 재시도 (${n}/${MAX_GEN_RETRIES}): ${currentInfo.name || '?'} (${current})`
+      `[재실행] 실패분 자동 재시도 (${n}/${MAX_GEN_RETRIES}): ${currentInfo.name || '?'} (${current})`
     )
   } else {
-    logAction(`▶ 자동 생성 시작: ${currentInfo.name || '?'} (${current})`)
+    logAction(`[시작] 자동 생성 시작: ${currentInfo.name || '?'} (${current})`)
   }
 
   currentAbort = new AbortController() // 중지 버튼이 이걸 abort 한다
@@ -1036,10 +1318,10 @@ async function maybeStartNext() {
   }
   logAction(
     res.cancelled
-      ? `⏸ 생성 중지됨: ${current}`
+      ? `[일시정지] 생성 중지됨: ${current}`
       : res.ok
-        ? `✓ 자동 생성 완료: ${current}`
-        : `✗ 자동 생성 실패: ${current} — ${res.error || '(claim 실패)'}`
+        ? `[완료] 자동 생성 완료: ${current}`
+        : `[실패] 자동 생성 실패: ${current} — ${res.error || '(claim 실패)'}`
   )
   if (res.ok) genAttempts.delete(current) // 성공하면 재시도 카운트 리셋
   // 영상 생성은 자동 트리거하지 않는다 — 이미지 완료 후 연구자가 admin에서 "영상 생성" 버튼으로 시작한다.
@@ -1077,7 +1359,9 @@ function startLifeGraphSession(pid, sessionKey) {
     startedAt: Date.now()
   }
   p[`${sessionKey}Status`] = 'generating' // 로컬 낙관적 갱신 — 다음 스냅샷 전까지 재클릭 방지
-  logAction(`▶ 인생그래프 생성 시작(수동): ${currentInfo.name || '?'} (${pid} · ${sessionKey})`)
+  logAction(
+    `[시작] 인생그래프 생성 시작(수동): ${currentInfo.name || '?'} (${pid} · ${sessionKey})`
+  )
 
   currentAbort = new AbortController()
   ;(async () => {
@@ -1103,14 +1387,72 @@ function startLifeGraphSession(pid, sessionKey) {
     }
     logAction(
       res.cancelled
-        ? `⏸ 인생그래프 생성 중지됨: ${pid}`
+        ? `[일시정지] 인생그래프 생성 중지됨: ${pid}`
         : res.ok
-          ? `✓ 인생그래프 생성 완료: ${pid}`
-          : `✗ 인생그래프 생성 실패: ${pid} — ${res.error || '(claim 실패)'}`
+          ? `[완료] 인생그래프 생성 완료: ${pid}`
+          : `[실패] 인생그래프 생성 실패: ${pid} — ${res.error || '(claim 실패)'}`
     )
     current = null
     currentInfo = null
     currentCancelKind = 'pause' // 다음 취소 요청 대비 기본값 복원
+  })()
+}
+
+// 3차 플로우(분기 미래) 생성 — 유령 대화 기록(ghostTranscripts)을 재료로 alt 파노라마·분기 릴·
+// 분기 장례식을 덧생성한다(processBranchedFuture). 인생그래프 세션과 같은 current 잠금을 공유하고
+// 수동으로만 시작한다(POST /api/personas/{pid}/branched). 1·2차 라이브러리와 대화 기록이 전제다.
+function startBranchedFuture(pid) {
+  if (!firebaseReady) throw new Error('Firebase 미연결')
+  if (current) throw new Error('다른 생성이 진행 중입니다 — 끝난 뒤 다시 시도하세요')
+  const p = profiles.find((x) => x.id === pid)
+  if (!p) throw new Error(`프로필 없음: ${pid}`)
+  if (p.branchedStatus === 'generating') throw new Error(`이미 처리 중입니다: ${pid} (분기 미래)`)
+
+  current = `${pid}#branched` // 첫 await 전에 동기적으로 잠가 중복 클릭을 막는다
+  stoppedIds.delete(current)
+  currentInfo = {
+    pid,
+    personaId: pid,
+    name: p.name || null,
+    done: 0,
+    total: 0,
+    startedAt: Date.now()
+  }
+  p.branchedStatus = 'generating' // 로컬 낙관적 갱신
+  logAction(`[시작] 분기 미래(3차) 생성 시작(수동): ${currentInfo.name || '?'} (${pid})`)
+
+  currentAbort = new AbortController()
+  ;(async () => {
+    const res = await processBranchedFuture(p, {
+      config,
+      outDir: LIBRARY,
+      signal: currentAbort.signal,
+      log: logAction,
+      onProgress: (e) => {
+        if (e.type === 'image-done') {
+          currentInfo.done = e.done
+          currentInfo.total = e.total
+        }
+      }
+    })
+    currentAbort = null
+    lastResult = {
+      pid,
+      ok: res.ok,
+      cancelled: res.cancelled || false,
+      error: res.error || null,
+      at: Date.now()
+    }
+    logAction(
+      res.cancelled
+        ? `[일시정지] 분기 미래 생성 중지됨: ${pid}`
+        : res.ok
+          ? `[완료] 분기 미래 생성 완료: ${pid}`
+          : `[실패] 분기 미래 생성 실패: ${pid} — ${res.error || '(알 수 없음)'}`
+    )
+    current = null
+    currentInfo = null
+    currentCancelKind = 'pause'
   })()
 }
 
@@ -1216,7 +1558,8 @@ const server = http.createServer(async (req, res) => {
         queue: queueView(),
         video: { building: videoBuilding, queue: videoQueue, job: videoJob, last: videoLast },
         regenAll: { job: regenJob, last: regenLast },
-        reelPhotos: { job: reelPhotoJob, queue: reelPhotoQueue, last: reelPhotoLast }
+        reelPhotos: { job: reelPhotoJob, queue: reelPhotoQueue, last: reelPhotoLast },
+        funeral: { job: funeralJob, queue: funeralQueue, last: funeralLast }
       })
     }
 
@@ -1244,7 +1587,7 @@ const server = http.createServer(async (req, res) => {
       currentCancelKind = kind === 'stop' ? 'stop' : 'pause'
       if (currentCancelKind === 'stop') stoppedIds.add(current) // 자동 재선택에서 제외
       logAction(
-        `${currentCancelKind === 'stop' ? '⏹ 중지' : '⏸ 일시정지'} 요청 → ${currentInfo?.name || current}`
+        `${currentCancelKind === 'stop' ? '[중지]' : '[일시정지]'} 요청 → ${currentInfo?.name || current}`
       )
       currentAbort.abort()
       return send(res, 200, { stopped: true, kind: currentCancelKind, pid: current })
@@ -1262,7 +1605,7 @@ const server = http.createServer(async (req, res) => {
       const { id } = await readBody(req)
       if (!id) return send(res, 400, { error: 'id 필요' })
       stoppedIds.delete(id)
-      logAction(`▶ 재개 요청: ${id} (중지 해제)`)
+      logAction(`[시작] 재개 요청: ${id} (중지 해제)`)
       if (id.includes('#')) {
         const [rpid, rkey] = id.split('#')
         try {
@@ -1286,7 +1629,7 @@ const server = http.createServer(async (req, res) => {
       videoCancelKind = kind === 'pause' ? 'pause' : 'stop'
       videoCancel = true
       logAction(
-        `⏸ 영상 ${videoCancelKind === 'pause' ? '일시정지' : '중단'} 요청 → ${videoBuilding.pid}`
+        `[일시정지] 영상 ${videoCancelKind === 'pause' ? '일시정지' : '중단'} 요청 → ${videoBuilding.pid}`
       )
       return send(res, 200, { stopped: true, pid: videoBuilding.pid })
     }
@@ -1304,17 +1647,34 @@ const server = http.createServer(async (req, res) => {
           note: clearedCount ? `대기열 ${clearedCount}건 비움` : '진행 중인 릴 사진 생성 없음'
         })
       logAction(
-        `⏹ 릴 사진 생성 중지 요청 → ${reelPhotoJob.name}${clearedCount ? ` (대기 ${clearedCount}건도 비움)` : ' (대기열은 이어서 진행)'}`
+        `[중지] 릴 사진 생성 중지 요청 → ${reelPhotoJob.name}${clearedCount ? ` (대기 ${clearedCount}건도 비움)` : ' (대기열은 이어서 진행)'}`
       )
       reelPhotoAbort?.abort()
       return send(res, 200, { stopped: true, pid: reelPhotoJob.pid, cleared: clearedCount })
+    }
+
+    // POST /api/funeral/stop → 진행 중인 장례식 생성 중지(진행분은 manifest에 남아 재실행 시 이어짐).
+    // 대기열까지 비우려면 { clearQueue: true }.
+    if (req.method === 'POST' && url.pathname === '/api/funeral/stop') {
+      const { clearQueue = false } = await readBody(req).catch(() => ({}))
+      const clearedCount = clearQueue ? funeralQueue.length : 0
+      if (clearQueue) funeralQueue = []
+      if (!funeralJob)
+        return send(res, 200, {
+          stopped: false,
+          cleared: clearedCount,
+          note: clearedCount ? `대기열 ${clearedCount}건 비움` : '진행 중인 장례식 생성 없음'
+        })
+      logAction(`[중지] 장례식 생성 중지 요청 → ${funeralJob.name}`)
+      funeralAbort?.abort()
+      return send(res, 200, { stopped: true, pid: funeralJob.pid, cleared: clearedCount })
     }
 
     // POST /api/regen-all/stop → 진행 중인 전체 재생성 중지(현재 장면까지 마치고 멈춤).
     if (req.method === 'POST' && url.pathname === '/api/regen-all/stop') {
       if (!regenJob) return send(res, 200, { stopped: false, note: '진행 중인 전체 재생성 없음' })
       regenAbort = true
-      logAction(`⏹ 전체 재생성 중지 요청 → ${regenJob.name}`)
+      logAction(`[중지] 전체 재생성 중지 요청 → ${regenJob.name}`)
       return send(res, 200, { stopped: true, pid: regenJob.pid })
     }
 
@@ -1338,12 +1698,12 @@ const server = http.createServer(async (req, res) => {
           await updateProfileFields(id, { status: 'submitted', error: null })
         }
       } catch (err) {
-        logAction(`↻ 재실행 실패: ${id} — ${err.message}`)
+        logAction(`[재실행] 재실행 실패: ${id} — ${err.message}`)
         return send(res, 400, { error: `재실행 실패: ${err.message}` })
       }
       genAttempts.delete(id)
       if (!autoOn) autoOn = true // 재실행하려면 자동생성이 켜져 있어야 한다
-      logAction(`↻ 수동 재실행 요청: ${id} (submitted로 되돌림)`)
+      logAction(`[재실행] 수동 재실행 요청: ${id} (submitted로 되돌림)`)
       maybeStartNext()
       return send(res, 200, { queued: true, id })
     }
@@ -1372,9 +1732,7 @@ const server = http.createServer(async (req, res) => {
         }
         stoppedIds.delete(id)
         genAttempts.delete(id)
-        logAction(
-          removed ? `🗑 큐에서 삭제: ${id}` : `🗑 삭제 요청했으나 이미 없음: ${id}`
-        )
+        logAction(removed ? `[삭제] 큐에서 삭제: ${id}` : `[삭제] 삭제 요청했으나 이미 없음: ${id}`)
         return send(res, 200, { deleted: removed, id })
       } catch (err) {
         return send(res, 400, { error: err.message })
@@ -1427,7 +1785,7 @@ const server = http.createServer(async (req, res) => {
       // 이 지정을 따라간다. selectedAt을 로컬과 동일하게 실어 중복 트리거를 막는다(best-effort).
       if (firebaseReady)
         await setRuntimeSession(sel).catch((e) => logAction(`세션 정본 미러 실패: ${e.message}`))
-      logAction(`◆ 세션 참가자 설정 → ${sel.name || pid}`)
+      logAction(`[세션] 세션 참가자 설정 → ${sel.name || pid}`)
       return send(res, 200, sel)
     }
 
@@ -1439,7 +1797,7 @@ const server = http.createServer(async (req, res) => {
         await setRuntimeSession({ personaId: null }).catch((e) =>
           logAction(`세션 정본 미러 실패: ${e.message}`)
         )
-      logAction('◇ 세션 나가기 — 선택 해제')
+      logAction('[세션] 세션 나가기 — 선택 해제')
       return send(res, 200, { personaId: null })
     }
 
@@ -1526,7 +1884,7 @@ const server = http.createServer(async (req, res) => {
           return send(res, 404, { error: `Firebase에 정본 manifest가 없다: ${pid}` })
         const result = await hydratePersona(entry.docKey)
         logAction(
-          `⬇ hydrate 완료: ${entry.name || pid} (이미지 ${result.images}, reel ${result.reel ? '○' : '×'})`
+          `[다운로드] hydrate: ${entry.name || pid} (이미지 ${result.images}, reel ${result.reel ? '○' : '×'})`
         )
         return send(res, 200, { ok: true, ...result })
       }
@@ -1620,10 +1978,10 @@ const server = http.createServer(async (req, res) => {
       // 재생성: { id } — 동기 처리(장당 ~15초)
       if (req.method === 'POST' && parts[3] === 'regen') {
         const { id } = await readBody(req)
-        logAction(`${pid}  ↻ 재생성 시작  장면 ${id}`)
+        logAction(`${pid}  [재실행] 재생성 시작  장면 ${id}`)
         const result = await regenerate(pid, id)
         logAction(
-          `${pid}  ↻ 재생성 완료  장면 ${id}  (${(result.entry.elapsedMs / 1000).toFixed(1)}s${result.entry.seed != null ? `, seed ${result.entry.seed}` : ''})`
+          `${pid}  [재실행] 재생성 완료  장면 ${id}  (${(result.entry.elapsedMs / 1000).toFixed(1)}s${result.entry.seed != null ? `, seed ${result.entry.seed}` : ''})`
         )
         return send(res, 200, result)
       }
@@ -1639,17 +1997,135 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, { started: true, pid })
       }
 
-      // 릴 사진(가로형 필름스트립) 생성/재생성 — 대기열 등록(여러 명 연달아 눌러도 순차 실행).
-      // 진행은 /api/queue의 reelPhotos로 폴링. body { force: true }면 기존 릴 사진을 비우고
-      // 전부 새로(기본은 빠진/실패 장만 채움).
+      // POST /api/personas/{pid}/branched → 3차 플로우(분기 미래) 생성 시작.
+      // 유령 대화 기록 기반으로 alt 파노라마 + 분기 릴 + 분기 장례식(이미지)을 덧생성한다.
+      // 인생그래프 세션과 같은 current 잠금 — 진행은 /api/queue 폴링으로 본다.
+      if (req.method === 'POST' && parts[3] === 'branched') {
+        if (VIEW_ONLY) return send(res, 400, { error: '뷰어 모드에서는 생성 불가' })
+        try {
+          startBranchedFuture(pid)
+        } catch (err) {
+          return send(res, 400, { error: err.message })
+        }
+        return send(res, 200, { started: true, pid })
+      }
+
+      // 릴 사진(3:4 필름스트립) 생성/재생성 — 대기열 등록(여러 명 연달아 눌러도 순차 실행).
+      // 진행은 /api/queue의 reelPhotos로 폴링. body { force: true }면 그 판의 릴을 비우고
+      // 전부 새로(기본은 빠진/실패 장만 채움). { variant: 'past'|'future' }로 어느 릴인지 고른다
+      // (없으면 past — 기존 클라이언트 호환).
       if (req.method === 'POST' && parts[3] === 'reel-photos') {
         if (VIEW_ONLY) return send(res, 400, { error: '뷰어 모드에서는 생성 불가' })
-        const { force = false } = await readBody(req)
+        const { force = false, variant = 'past' } = await readBody(req)
+        const v = normalizeReelVariant(variant)
         try {
-          const position = enqueueReelPhotos(pid, { force })
-          return send(res, 200, { queued: true, pid, force, position })
+          const position = enqueueReelPhotos(pid, { force, variant: v })
+          return send(res, 200, { queued: true, pid, force, variant: v, position })
         } catch (e) {
           return send(res, 400, { error: e.message })
+        }
+      }
+
+      // 장례식 워크플로우 — 승인 게이트 4단계. 진행은 /api/queue의 funeral로 폴링,
+      // 상태·히스토리는 manifest.funeral / manifest.funeralFuture(persona 조회에 포함)로 본다.
+      // 모든 엔드포인트는 body의 { variant: 'present'|'future' }로 어느 장례식인지 고른다
+      // (없으면 present — 기존 클라이언트 호환).
+
+      // ① POST /funeral { force, variant } → 이미지(파노라마) 생성 대기열 등록. force=새 rev 재생성(승인 리셋).
+      if (req.method === 'POST' && parts[3] === 'funeral' && parts.length === 4) {
+        if (VIEW_ONLY) return send(res, 400, { error: '뷰어 모드에서는 생성 불가' })
+        const { force = false, variant = 'present' } = await readBody(req)
+        const v = normalizeVariant(variant)
+        try {
+          const position = enqueueFuneral(pid, { force, stage: 'image', variant: v })
+          return send(res, 200, { queued: true, pid, force, variant: v, stage: 'image', position })
+        } catch (e) {
+          return send(res, 400, { error: e.message })
+        }
+      }
+
+      // ② POST /funeral/approve { variant } → 검토된 이미지를 승인. 이후에만 영상화 버튼이 동작한다.
+      if (req.method === 'POST' && parts[3] === 'funeral' && parts[4] === 'approve') {
+        if (VIEW_ONLY) return send(res, 400, { error: '뷰어 모드에서는 승인 불가' })
+        const { variant = 'present' } = await readBody(req).catch(() => ({}))
+        const vkey = funeralManifestKey(variant)
+        const manifest = await readManifest(pid)
+        const f = manifest[vkey]
+        if (!f?.image)
+          return send(res, 400, {
+            error: `승인할 ${funeralVariantLabel(variant)} 이미지가 없습니다`
+          })
+        f.approved = true
+        f.approvedAt = new Date().toISOString()
+        if (!f.video && f.status !== 'video') f.status = 'review' // 구버전 상태 정규화
+        await writeManifest(pid, manifest)
+        logAction(
+          `[완료] ${funeralVariantLabel(variant)} 이미지 승인: ${manifest.profile?.name || pid} (rev ${f.rev}) — 영상화 가능`
+        )
+        return send(res, 200, {
+          approved: true,
+          pid,
+          variant: normalizeVariant(variant),
+          rev: f.rev
+        })
+      }
+
+      // ③ POST /funeral/video { force } → 승인된 이미지를 Wan2.2로 영상화(대기열 등록).
+      // force=이미 영상이 있어도 같은 rev의 영상만 다시 생성(승인 유지, 이전 영상은 videoHistory로) —
+      // 모션 프롬프트·Wan 파라미터를 고쳐가며 영상만 반복 튜닝하는 용도.
+      if (req.method === 'POST' && parts[3] === 'funeral' && parts[4] === 'video') {
+        if (VIEW_ONLY) return send(res, 400, { error: '뷰어 모드에서는 생성 불가' })
+        const { force = false, variant = 'present' } = await readBody(req)
+        const v = normalizeVariant(variant)
+        const manifest = await readManifest(pid)
+        const f = manifest[funeralManifestKey(v)]
+        if (!f?.image)
+          return send(res, 400, {
+            error: `${funeralVariantLabel(v)} 이미지가 없습니다 — 먼저 생성하세요`
+          })
+        if (!f.approved)
+          return send(res, 400, { error: '이미지 승인이 필요합니다 — 먼저 승인하세요' })
+        try {
+          const position = enqueueFuneral(pid, { stage: 'video', force, variant: v })
+          return send(res, 200, { queued: true, pid, variant: v, stage: 'video', force, position })
+        } catch (e) {
+          return send(res, 400, { error: e.message })
+        }
+      }
+
+      // ④ POST /funeral/upload → 완료된 이미지+영상을 Firebase(Storage + 'generatedFunerals')에 저장.
+      // 자동 업로드 없음 — 이 버튼이 유일한 저장 지점이다. 결과는 manifest.funeral.firebase에 기록.
+      if (req.method === 'POST' && parts[3] === 'funeral' && parts[4] === 'upload') {
+        if (VIEW_ONLY) return send(res, 400, { error: '뷰어 모드에서는 저장 불가' })
+        if (!firebaseReady) return send(res, 400, { error: 'Firebase 미연결' })
+        const { variant = 'present' } = await readBody(req).catch(() => ({}))
+        const v = normalizeVariant(variant)
+        const manifest = await readManifest(pid)
+        const f = manifest[funeralManifestKey(v)]
+        if (!f?.image)
+          return send(res, 400, { error: `저장할 ${funeralVariantLabel(v)} 이미지가 없습니다` })
+        if (!f.video) return send(res, 400, { error: '영상화가 끝나야 저장할 수 있습니다' })
+        try {
+          const up = await uploadPersonaFuneral({
+            profile: manifest.profile,
+            personaId: manifest.personaId || pid,
+            dir: path.join(LIBRARY, pid),
+            funeral: f,
+            variant: v
+          })
+          f.firebase = {
+            uploadedAt: new Date().toISOString(),
+            rev: up.rev,
+            imageUrl: up.imageUrl,
+            videoUrl: up.videoUrl
+          }
+          await writeManifest(pid, manifest)
+          logAction(
+            `[Firebase] ${funeralVariantLabel(v)} 저장: ${manifest.profile?.name || pid} (rev ${up.rev}) → 'generatedFunerals'/${up.key}`
+          )
+          return send(res, 200, { uploaded: true, pid, variant: v, ...up })
+        } catch (e) {
+          return send(res, 500, { error: `Firebase 저장 실패: ${e.message}` })
         }
       }
 

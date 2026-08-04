@@ -126,6 +126,14 @@ export async function generateLifeLibrary(profile, opts = {}) {
   // reel 사진(reel-photos.js — 파노라마보다 먼저 생성됨)은 워크플로우 변경과 무관하게 carry-over —
   // 아래에서 manifest를 새로 구성해 통째로 덮어쓰므로, 여기서 안 옮기면 reelPhotos가 유실된다.
   const priorReelPhotos = prior?.reelPhotos || null
+  const priorReelPhotosFuture = prior?.reelPhotosFuture || null // 미래 릴도 같은 이유로 보존
+  const priorReelPhotosBranched = prior?.reelPhotosBranched || null // 3차(분기) 릴도 보존
+  // 장례식 기록도 같은 이유로 보존 — manifest를 새로 구성할 때 유실되면 admin 승인·rev 이력이 날아간다.
+  const priorFuneral = prior?.funeral || null
+  const priorFuneralFuture = prior?.funeralFuture || null
+  const priorFuneralBranched = prior?.funeralBranched || null
+  const priorClips = prior?.clips || null
+  const priorReel = prior?.reel || null
   if (prior?.workflow !== mode) prior = null
   const priorImages = new Map((prior?.images || []).map((i) => [i.id, i]))
   const fileExists = (f) =>
@@ -165,6 +173,13 @@ export async function generateLifeLibrary(profile, opts = {}) {
     // 사진 바이너리는 제외하고 경로만 기록
     profile: { ...profile, photos: profile.photos || [] },
     ...(priorReelPhotos ? { reelPhotos: priorReelPhotos } : {}), // reel 사진 플로우 기록 보존
+    ...(priorReelPhotosFuture ? { reelPhotosFuture: priorReelPhotosFuture } : {}),
+    ...(priorReelPhotosBranched ? { reelPhotosBranched: priorReelPhotosBranched } : {}),
+    ...(priorFuneral ? { funeral: priorFuneral } : {}), // 장례식 rev·승인 이력 보존
+    ...(priorFuneralFuture ? { funeralFuture: priorFuneralFuture } : {}),
+    ...(priorFuneralBranched ? { funeralBranched: priorFuneralBranched } : {}),
+    ...(priorClips ? { clips: priorClips } : {}),
+    ...(priorReel ? { reel: priorReel } : {}),
     images: []
   }
   const writeManifest = async () => {

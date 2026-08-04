@@ -12,18 +12,17 @@
 // 감지가 틀릴 수 있다 → manifest.gender에 근거 캡션과 함께 기록하고,
 // 어드민 페이지에서 수동 수정(POST /api/personas/{pid}/gender)할 수 있게 한다.
 
-import {
-  buildDeepDanbooruCaptionWorkflow,
-  buildFlorenceCaptionWorkflow
-} from './workflows.js'
+import { buildDeepDanbooruCaptionWorkflow, buildFlorenceCaptionWorkflow } from './workflows.js'
 
 /**
  * 캡션/태그 텍스트 → 'male' | 'female' | null. 양쪽 단어 수가 비기면 null(중립 프롬프트 유지).
  * \d* 접두는 danbooru 태그(1girl, 2boys)를 함께 잡기 위함.
  */
 export function parseGenderFromCaption(caption = '') {
-  const female = (caption.match(/\b\d*(woman|women|girl|girls|lady|female|she|her|hers)\b/gi) || []).length
-  const male = (caption.match(/\b\d*(man|men|boy|boys|guy|male|gentleman|he|him|his)\b/gi) || []).length
+  const female = (caption.match(/\b\d*(woman|women|girl|girls|lady|female|she|her|hers)\b/gi) || [])
+    .length
+  const male = (caption.match(/\b\d*(man|men|boy|boys|guy|male|gentleman|he|him|his)\b/gi) || [])
+    .length
   if (female > male) return 'female'
   if (male > female) return 'male'
   return null
@@ -40,7 +39,10 @@ export async function detectGender(client, referenceImage) {
   const attempts = [
     ['deepdanbooru', buildDeepDanbooruCaptionWorkflow({ referenceImage })],
     ['florence-caption', buildFlorenceCaptionWorkflow({ referenceImage, task: 'caption' })],
-    ['florence-detailed', buildFlorenceCaptionWorkflow({ referenceImage, task: 'detailed_caption' })]
+    [
+      'florence-detailed',
+      buildFlorenceCaptionWorkflow({ referenceImage, task: 'detailed_caption' })
+    ]
   ]
   let last = { caption: '', backend: null }
   let lastError = null

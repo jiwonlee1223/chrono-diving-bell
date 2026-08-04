@@ -20,7 +20,9 @@ import {
 import { buildScenePlan, composeGeminiScenePrompt } from '../src/main/comfyui/prompt-builder.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const config = JSON.parse(await fs.readFile(path.join(root, 'src/main/config/comfyui.json'), 'utf-8'))
+const config = JSON.parse(
+  await fs.readFile(path.join(root, 'src/main/config/comfyui.json'), 'utf-8')
+)
 const gemini = resolveGeminiConfig(config.gemini, root)
 
 // 실측 프로필 — 결정론적 플랜을 위해 고정. gender male 로 아동 얼굴 케이스를 확실히 만든다.
@@ -28,7 +30,10 @@ const profile = { name: '홍길동', birthDate: '1980-03-15', occupation: 'teach
 
 // 나이대별 대표 장면 1개씩: 아동 3·7·14(핵심 리스크) + 성인 32 + 미래 82.
 // CLI 인자로 나이 지정 가능: node scripts/probe-scene-safety.mjs 3 7
-const argAges = process.argv.slice(2).map(Number).filter((n) => Number.isFinite(n))
+const argAges = process.argv
+  .slice(2)
+  .map(Number)
+  .filter((n) => Number.isFinite(n))
 const TARGET_AGES = argAges.length ? argAges : [3, 7, 14, 32, 82]
 
 const outDir = path.join(root, 'library/_probe/scene-safety')
@@ -65,19 +70,19 @@ for (const age of TARGET_AGES) {
     const file = path.join(outDir, `age-${String(age).padStart(2, '0')}.png`)
     await fs.writeFile(file, data)
     const sec = ((Date.now() - t0) / 1000).toFixed(1)
-    console.log(`✓ OK (${sec}s, ${(data.length / 1024).toFixed(0)}KB)`)
+    console.log(`[완료] OK (${sec}s, ${(data.length / 1024).toFixed(0)}KB)`)
     results.push({ age, id: item.id, ok: true, file, scene: item.scene })
   } catch (err) {
     const msg = String(err.message || err)
     const safety = /IMAGE_SAFETY|SAFETY|blocked/i.test(msg)
-    console.log(`✗ ${safety ? 'IMAGE_SAFETY 차단' : '실패'} — ${msg}`)
+    console.log(`[실패] ${safety ? 'IMAGE_SAFETY 차단' : '실패'} — ${msg}`)
     results.push({ age, id: item.id, ok: false, safety, error: msg, scene: item.scene })
   }
 }
 
 console.log(`\n===== 요약 =====`)
 for (const r of results) {
-  const status = r.ok ? '✓ 생성됨' : r.safety ? '⚠ IMAGE_SAFETY 차단' : '✗ 실패'
+  const status = r.ok ? '[완료] 생성됨' : r.safety ? '[경고] IMAGE_SAFETY 차단' : '[실패] 실패'
   console.log(`  ${String(r.age).padStart(2)}살  ${status}`)
 }
 const blocked = results.filter((r) => !r.ok && r.safety)

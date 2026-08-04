@@ -52,7 +52,12 @@ const workflow = {
   },
   4: {
     class_type: 'SaveVideo',
-    inputs: { video: ['3', 0], filename_prefix: 'chrono-compare/seedance-flf', format: 'mp4', codec: 'h264' }
+    inputs: {
+      video: ['3', 0],
+      filename_prefix: 'chrono-compare/seedance-flf',
+      format: 'mp4',
+      codec: 'h264'
+    }
   }
 }
 
@@ -60,7 +65,11 @@ const t0 = Date.now()
 const res = await fetch(`${HOST}/prompt`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ prompt: workflow, client_id: 'seedance-flf', extra_data: { api_key_comfy_org: KEY } })
+  body: JSON.stringify({
+    prompt: workflow,
+    client_id: 'seedance-flf',
+    extra_data: { api_key_comfy_org: KEY }
+  })
 })
 const body = await res.json().catch(() => ({}))
 if (!res.ok || !body.prompt_id) {
@@ -72,14 +81,19 @@ console.log(`큐잉됨: ${body.prompt_id}`)
 let outputs = null
 for (let i = 0; i < 120; i++) {
   await new Promise((r) => setTimeout(r, 3000))
-  const h = await fetch(`${HOST}/history/${body.prompt_id}`).then((r) => r.json()).catch(() => ({}))
+  const h = await fetch(`${HOST}/history/${body.prompt_id}`)
+    .then((r) => r.json())
+    .catch(() => ({}))
   const e = h[body.prompt_id]
   if (!e) continue
   if ((e.status?.messages || []).some((m) => m[0] === 'execution_error')) {
     console.error('실행 에러:', JSON.stringify(e.status).slice(0, 1000))
     process.exit(1)
   }
-  if (e.outputs && Object.keys(e.outputs).length) { outputs = e.outputs; break }
+  if (e.outputs && Object.keys(e.outputs).length) {
+    outputs = e.outputs
+    break
+  }
   if (i % 5 === 0) process.stdout.write(`  …${((Date.now() - t0) / 1000).toFixed(0)}s\r`)
 }
 if (!outputs) throw new Error('타임아웃')
@@ -87,14 +101,21 @@ if (!outputs) throw new Error('타임아웃')
 let vid = null
 for (const node of Object.values(outputs))
   for (const arr of Object.values(node))
-    if (Array.isArray(arr)) for (const f of arr) if (f?.filename && /\.(mp4|webm|mov)$/i.test(f.filename)) vid = f
+    if (Array.isArray(arr))
+      for (const f of arr) if (f?.filename && /\.(mp4|webm|mov)$/i.test(f.filename)) vid = f
 if (!vid) throw new Error(`영상 없음: ${JSON.stringify(outputs).slice(0, 500)}`)
 
-const q = new URLSearchParams({ filename: vid.filename, subfolder: vid.subfolder || '', type: vid.type || 'output' })
+const q = new URLSearchParams({
+  filename: vid.filename,
+  subfolder: vid.subfolder || '',
+  type: vid.type || 'output'
+})
 const data = Buffer.from(await (await fetch(`${HOST}/view?${q}`)).arrayBuffer())
 const outDir = join(root, 'library/_probe/compare')
 await mkdir(outDir, { recursive: true })
 const outPath = join(outDir, 'seedance-flf.mp4')
 await writeFile(outPath, data)
-console.log(`\n✓ FLF 완료: ${outPath} (${(data.length / 1e6).toFixed(1)}MB, ${((Date.now() - t0) / 1000).toFixed(1)}s)`)
+console.log(
+  `\n[완료] FLF 완료: ${outPath} (${(data.length / 1e6).toFixed(1)}MB, ${((Date.now() - t0) / 1000).toFixed(1)}s)`
+)
 client.close()

@@ -29,18 +29,23 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--dry-run') args.dryRun = true
-    else if (a.startsWith('--')) args[a.slice(2).replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = argv[++i]
+    else if (a.startsWith('--'))
+      args[a.slice(2).replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = argv[++i]
   }
   return args
 }
 
 const args = parseArgs(process.argv.slice(2))
 if (!args.profile) {
-  console.error('사용법: node scripts/generate-life-library.mjs --profile <profile.json> [--limit N] [--dry-run] [--workflow auto|kontext|sdxl|gemini]')
+  console.error(
+    '사용법: node scripts/generate-life-library.mjs --profile <profile.json> [--limit N] [--dry-run] [--workflow auto|kontext|sdxl|gemini]'
+  )
   process.exit(1)
 }
 
-const config = JSON.parse(await fs.readFile(path.join(root, 'src/main/config/comfyui.json'), 'utf-8'))
+const config = JSON.parse(
+  await fs.readFile(path.join(root, 'src/main/config/comfyui.json'), 'utf-8')
+)
 const profilePath = path.resolve(args.profile)
 const profile = JSON.parse(await fs.readFile(profilePath, 'utf-8'))
 // 프로필 내 사진 경로는 프로필 파일 기준 상대 경로 허용
@@ -60,7 +65,9 @@ if (args.dryRun) {
         : mode === 'gemini'
           ? composeGeminiScenePrompt(profile, item)
           : composeKontextPrompt(profile, item)
-    console.log(`[${item.id}] age ${item.age} (${item.year}${item.isPast ? '' : ', 미래'})\n  ${prompt}\n`)
+    console.log(
+      `[${item.id}] age ${item.age} (${item.year}${item.isPast ? '' : ', 미래'})\n  ${prompt}\n`
+    )
   }
   process.exit(0)
 }
@@ -82,8 +89,11 @@ const result = await generateLifeLibrary(profile, {
     else if (e.type === 'upload') console.log(`레퍼런스 업로드 완료: ${e.file}`)
     else if (e.type === 'gender-start') console.log('성별 자동감지 중...')
     else if (e.type === 'gender-done')
-      console.log(`성별 자동감지: ${e.gender || '판별 불가'}${e.error ? ` (오류: ${e.error})` : ''}`)
-    else if (e.type === 'image-start') console.log(`[${e.item.id}] age ${e.item.age} 생성 중... (${e.done + 1}/${e.total})`)
+      console.log(
+        `성별 자동감지: ${e.gender || '판별 불가'}${e.error ? ` (오류: ${e.error})` : ''}`
+      )
+    else if (e.type === 'image-start')
+      console.log(`[${e.item.id}] age ${e.item.age} 생성 중... (${e.done + 1}/${e.total})`)
     else if (e.type === 'image-done') console.log(`[${e.item.id}] 저장: ${e.file}`)
   }
 })

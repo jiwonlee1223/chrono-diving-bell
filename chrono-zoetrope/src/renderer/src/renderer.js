@@ -28,6 +28,7 @@ import { PostPass } from './scene/post-pass.js'
 import { createGhost } from './scene/ghost.js'
 import { createGhostVoice } from './scene/ghost-voice.js'
 import { createBgMusic } from './scene/bg-music.js'
+import { createSfxLayer } from './scene/sfx-layer.js'
 
 // 테스트 패턴·사진 색을 그린 그대로 통과시킨다(색 관리 이중변환 회피).
 THREE.ColorManagement.enabled = false
@@ -164,6 +165,18 @@ async function main() {
   // 대화 배경음악(ghost 국면에서만). ghostVoice의 발화·청취 콜백이 음량을 덕킹한다(발화 3·청취 5·평소 10).
   const bgMusic = createBgMusic({ src: '/resources/Where_Light_Ends.mp3' })
 
+  // 앰비언스 효과음 레이어 — 대화 영상의 장면 맥락에 맞는 환경음을 BGM 위에 한 겹 더 깐다.
+  // 장면 텍스트는 playConversationVideo opts.scene으로 들어온다(ghost-voice의 tool·턴 응답이 전달).
+  const sfx = createSfxLayer()
+
+  // 장례식 국면의 앰비언스 — 조문객들의 낮은 웅성거림(resources/sfx/에 그대로 있는 파일명).
+  // 장면 텍스트 매칭이 아니라 국면 자체가 정하는 소리라 sfx.play()로 직접 지정한다.
+  const FUNERAL_SFX_SLUG = 'Crowd Talking'
+  const FUNERAL_SFX_GAIN = 0.2
+  // 장례식 장면을 머무는 시간(ms). Wan 클립 자체는 ~5초라 이 시간까지 loop로 돈다.
+  // 서버가 국면 payload로 실제 값을 내려주면 그걸 쓰고, 없으면 이 기본값.
+  const FUNERAL_SCENE_MS = 15000
+
   // 상태 진입 연출. immediate = 부트스트랩 시 트윈 없이 그 국면으로 점프.
   function applyState(state, meta = {}, immediate = false) {
     appState = state
@@ -171,6 +184,7 @@ async function main() {
     if (MONTAGE_STATES.has(state)) {
       ghostVoice?.stop()
       bgMusic.stop()
+      sfx.stop()
     }
     const dur = (sec) => (immediate ? 0.001 : sec)
     if (state === 'REGEN_WAIT') {
@@ -273,6 +287,62 @@ async function main() {
     }
   })()
 
+  // ---- TV 꺼짐 암전 ----
+  // 브라운관이 꺼질 때처럼: 화면이 세로로 확 접혀 가로 한 줄의 빛이 되고, 그 줄이 가운데 점으로
+  // 빨려들어 사라진 뒤 완전한 검정이 남는다. 장례식 영상과 주마등 사이의 전환 연출이다(2026-08-03).
+  // 캔버스 자체에 CSS 변환을 걸어 접고(그 뒤는 body의 검정), 접히는 순간의 잔광은 흰 줄 오버레이로 그린다.
+  // 끝나면 캔버스 변환을 원상복구하고 베일(검정)을 남겨둔다 — 다음 국면이 그 어둠 위에서 떠오른다.
+  const tvLine = (() => {
+    const el = document.createElement('div')
+    el.style.cssText =
+      'position:fixed;left:0;right:0;top:50%;height:3px;background:#fff;opacity:0;' +
+      'pointer-events:none;z-index:16;transform:translateY(-50%);box-shadow:0 0 24px 6px rgba(255,255,255,.8);'
+    document.body.appendChild(el)
+    return el
+  })()
+
+  async function tvOff({ totalMs = 1600 } = {}) {
+    const collapseMs = Math.max(120, totalMs * 0.35) // 세로로 접힘
+    const lineMs = Math.max(120, totalMs * 0.3) // 한 줄이 가운데 점으로 수축
+    const holdMs = Math.max(0, totalMs - collapseMs - lineMs) // 완전한 검정
+    const ease = 'cubic-bezier(.6,0,.9,.4)'
+    const anims = []
+    anims.push(
+      canvas.animate([{ transform: 'scaleY(1)' }, { transform: 'scaleY(0.004)' }], {
+        duration: collapseMs,
+        easing: ease,
+        fill: 'forwards'
+      })
+    )
+    anims.push(
+      tvLine.animate([{ opacity: 0 }, { opacity: 1 }], {
+        duration: collapseMs,
+        easing: 'ease-in',
+        fill: 'forwards'
+      })
+    )
+    await new Promise((r) => setTimeout(r, collapseMs))
+    // 접힌 줄이 가운데 점으로 빨려들어간다 — 캔버스는 이미 안 보이므로 줄만 줄인다.
+    anims.push(
+      tvLine.animate(
+        [
+          { transform: 'translateY(-50%) scaleX(1)', opacity: 1 },
+          { transform: 'translateY(-50%) scaleX(0)', opacity: 0 }
+        ],
+        { duration: lineMs, easing: 'ease-in', fill: 'forwards' }
+      )
+    )
+    await new Promise((r) => setTimeout(r, lineMs))
+    // 캔버스를 되돌리기 전에 베일을 먼저 덮는다 — 안 그러면 접혔던 마지막 장례식 프레임이
+    // 원상복구되는 순간 한 번 번쩍 되살아난다. 이 검정이 그대로 다음 국면의 배경이 된다.
+    await veil.cover(0.001)
+    await new Promise((r) => setTimeout(r, holdMs))
+    for (const a of anims) a.cancel()
+    canvas.style.transform = ''
+    tvLine.style.opacity = '0'
+    tvLine.style.transform = 'translateY(-50%)'
+  }
+
   // ---- reel 배속 재생. 종료(→유령 idle)는 서버가 국면으로 방송하므로 여기선 재생만 한다. ----
   //  seekSec: 새로고침 재개 시 영상 위치(실경과 × 배속). flash: 시작 섬광(재개 땐 생략).
   function playReelOnce(
@@ -310,6 +380,113 @@ async function main() {
     videoEl.load()
   }
 
+  // ---- 장례식 영상(주마등 앞) — 고인 시선의 장례식장 파노라마 클립을 등속 재생 ----
+  // 장면 길이는 sceneMs(기본 15초)로 잡는다. Wan 클립 자체는 ~5초라 그 길이에 닿을 때까지
+  // loop로 돌린다(향·촛불·조문객의 미세한 움직임뿐이라 이음매가 거의 보이지 않는다).
+  // 잘린 프레임에서 끊기지 않도록, 목표 시간에 가장 가까운 **정수 바퀴** 지점에서 끝낸다
+  // (5.06초 클립이면 3바퀴 = 15.2초). 그 지점에서 TV가 꺼지듯 암전시키고 서버에 알린다
+  // → 서버가 주마등(역순) 국면을 방송한다.
+  // 로드 실패·재생 실패로 canplaythrough가 영영 안 오는 경우를 대비해 상한 타이머를 함께 건다
+  // (서버에도 폴백이 있지만, 여기서 끝내야 TV 암전 연출까지 정상적으로 들어간다).
+  //  convo: ghost 대화 중(2차 플로우 미래 진입)에 트는 경우 — 'ghost' 국면에는 demoPhase가 없으므로
+  //   convoVideoActive를 켜야 실린더에 그려진다. 끝나면 Promise가 resolve된다(대화가 이어짐).
+  function playFuneralOnce(
+    url,
+    { seekSec = 0, blackoutMs = 1600, sceneMs = FUNERAL_SCENE_MS, convo = false } = {}
+  ) {
+    let settled = false
+    let resolveDone
+    const done = new Promise((r) => (resolveDone = r))
+    const finish = async () => {
+      if (settled) return done
+      settled = true
+      await tvOff({ totalMs: blackoutMs })
+      teardownVideo()
+      if (convo) convoVideoActive = false
+      else window.zoetrope.sendFuneralDone?.()
+      resolveDone()
+      return done
+    }
+    teardownVideo()
+    if (convo) convoVideoActive = true
+    if (!url || !montageMaterial) return finish()
+    videoEl = document.createElement('video')
+    videoEl.muted = true
+    videoEl.loop = true // 클립(~5초)이 짧아 sceneMs에 닿을 때까지 돈다
+    videoEl.playsInline = true
+    videoEl.preload = 'auto'
+    videoEl.crossOrigin = 'anonymous'
+    videoEl.src = url
+    videoEl.playbackRate = 1 // 장례식은 배속하지 않는다 — 느린 애도의 결이 연출의 전부다
+    const el = videoEl
+    let guard = setTimeout(finish, sceneMs + 15000) // 로드 자체가 안 되는 경우의 상한
+    el.addEventListener(
+      'canplaythrough',
+      () => {
+        videoTexture = new THREE.VideoTexture(el)
+        videoTexture.colorSpace = THREE.NoColorSpace
+        setMontageVideo(montageMaterial, videoTexture)
+        videoMix.v = videoMix.from = videoMix.to = 1
+        const durSec = isFinite(el.duration) && el.duration > 0 ? el.duration : 0
+        // 목표 시간에 가장 가까운 정수 바퀴로 장면 길이를 확정한다 — 이음매에서 끝나므로
+        // 마지막 바퀴가 중간에 잘리지 않는다. 길이를 못 읽으면 sceneMs를 그대로 쓴다.
+        const cycles = durSec ? Math.max(1, Math.round(sceneMs / 1000 / durSec)) : 0
+        const totalMs = cycles ? cycles * durSec * 1000 : sceneMs
+        // 새로고침 재개 — 이미 지난 만큼은 건너뛰고 남은 시간만 튼다(등속이라 경과=재생 위치).
+        if (seekSec > 0 && durSec) el.currentTime = (seekSec % durSec) + 0
+        const remainMs = Math.max(500, totalMs - Math.max(0, seekSec) * 1000)
+        clearTimeout(guard)
+        guard = setTimeout(finish, remainMs)
+        el.play().catch(finish)
+      },
+      { once: true }
+    )
+    el.addEventListener('error', finish, { once: true })
+    el.load()
+    return done
+  }
+
+  // 2차 플로우(미래) 진입 연출 — 1장(과거)이 닫히고 미래로 넘어가는 그 자리에서, 90세에 맞는
+  // 자신의 장례식을 먼저 본다. 1차가 "장례식 → 암전 → 주마등(역순)"이듯, 2차도 "장례식 →
+  // 암전 → 미래의 순간들"로 열린다 — 죽음이 먼저고 그 다음이 삶이라는 같은 문법이다.
+  // ghost-voice가 chapterTurned 시점에 부르고, 끝나면(암전까지) resolve되어 전환 발화가 이어진다.
+  async function playFutureFuneralIntro(url, { blackoutMs = 1600, sceneMs } = {}) {
+    if (!url) return
+    sfx.play(FUNERAL_SFX_SLUG, { gain: FUNERAL_SFX_GAIN }) // 조문객 웅성거림 — 1차 장례식과 같은 결
+    await veil.cover(0.6) // 유령 idle이 어둠으로 저문다
+    const done = playFuneralOnce(url, { blackoutMs, sceneMs, convo: true })
+    veil.uncover(0.9) // 장례식장이 떠오른다
+    await done
+    sfx.stop()
+  }
+
+  // 2차 플로우의 미래 주마등 — 90세 장례식이 암전으로 닫힌 그 자리에서 미래 릴이 흐른다.
+  // 1차 주마등이 현재→탄생으로 되감기는 것과 반대로, 이건 현재 다음 해→90세로 풀려나간다
+  // (순서는 서버가 재생목록을 그 방향으로 넘겨 정한다). 스트립이 정확히 1사이클 돌면 resolve되고,
+  // 그 다음에 유령이 전환 발화를 시작한다. 사진이 없거나 로드에 실패하면 즉시 resolve — 대화가 멈추지 않는다.
+  function playFutureReelIntro(payload) {
+    return new Promise((resolve) => {
+      if (!payload?.photos?.length || !montageMaterial) return resolve()
+      let settled = false
+      const finish = async () => {
+        if (settled) return
+        settled = true
+        await veil.cover(0.6) // 미래가 어둠으로 저문다 — 그 어둠 위에서 유령이 말을 건다
+        stopFilmstrip()
+        convoVideoActive = false
+        resolve()
+      }
+      teardownVideo()
+      rotate = null
+      convoVideoActive = true // 'ghost' 국면엔 demoPhase가 없다 — 이걸 켜야 실린더에 그려진다
+      startFilmstrip(payload, finish)
+      veil.uncover(0.9)
+      // 안전장치: 스트립 1사이클이 어떤 이유로든 안 끝나도 대화가 영영 멈추지 않게 상한을 둔다.
+      const capSec = (payload.secPerTurn || 24) * (payload.photos.length + 2)
+      setTimeout(finish, capSec * 1000)
+    })
+  }
+
   // 유령 대화 영상 하나를 원본 속도로 loop 재생(ghost 대화 client tool이 호출). Promise 반환 —
   // loop라 얼지 않고 계속 살아 움직인다. 'ended'가 안 오므로, 첫 한 바퀴(대략 영상 길이) 뒤에 resolve해
   // 에이전트가 다음 대사로 넘어가게 하고, 영상은 다음 영상 재생/국면 전환(teardown) 전까지 계속 loop로 흐른다.
@@ -319,10 +496,12 @@ async function main() {
   //  영상이 준비되면 베일을 걷어(uncover) 그 순간이 떠오른다. 미래 흐름(2차)은 기존대로 즉시 표시.
   //  resolveAfterSec: 지정하면 재생 시작 후 그 시간 뒤에 resolve(대화가 빨리 이어짐 — 과거 회귀).
   //  미지정이면 첫 한 바퀴(영상 길이) 뒤 resolve(기존 미래 흐름 동작 유지).
+  //  scene: 장면 설명 텍스트 — 맥락에 맞는 앰비언스 효과음(sfx-layer)을 BGM 위에 깐다. 매칭 없으면 무음.
   async function playConversationVideo(
     url,
-    { fadeIn = false, fadeInSec = 1.5, resolveAfterSec = 0 } = {}
+    { fadeIn = false, fadeInSec = 1.5, resolveAfterSec = 0, scene = '' } = {}
   ) {
+    sfx.playForScene(scene) // 영상과 함께 페이드 인(매칭 없으면 이전 앰비언스만 걷는다)
     if (fadeIn) await veil.cover(0.6) // 이전 화면(릴·직전 장면)이 어둠으로 저문다
     return new Promise((resolve) => {
       teardownVideo()
@@ -377,6 +556,19 @@ async function main() {
     })
   }
 
+  // 대화 영상을 걷고 유령 idle 앰비언트(실타래 + 유령)로 되돌린다 — 1장(과거)→2장(미래) 전환 발화
+  // ("이제 넌, 미래로 갈 거야…") 시점에 ghost-voice가 부른다. 'ghost' 국면 자체는 유지되므로
+  // 유령·음성·배경음악은 그대로 두고 영상 재료만 베일 뒤에서 치운다.
+  async function clearConversationVideo({ fadeSec = 0.6 } = {}) {
+    sfx.stop() // 장면이 걷히면 앰비언스도 함께 저문다
+    await veil.cover(fadeSec) // 직전 장면이 어둠으로 저문다
+    teardownVideo()
+    convoVideoActive = false
+    if (montageMaterial) setMontageImage(montageMaterial, null)
+    videoMix.v = videoMix.from = videoMix.to = 0 // 앰비언트(실타래) 베이스로 복귀
+    veil.uncover(0.9) // 유령 뜬 idle이 떠오른다
+  }
+
   // reel 회전 모드 — Gemini 파노라마 이미지들을 천천히 회전시키며 순회(한 바퀴=secPerTurn초, 바퀴마다
   // 다음 이미지로 크로스페이드). uYaw 합성(설치 캘리브레이션 + 회전)은 frame()이 한다(cal이 그때
   // 정의돼 있어 TDZ 회피). 크로스페이드는 uTexVideo 슬롯을 다음 이미지로 재사용해 uVideoMix로 섞는다.
@@ -406,10 +598,19 @@ async function main() {
   // 스트립이 정확히 1사이클(모든 사진이 한 번씩 지나감) 돌면 reel-done을 서버에 1회 보낸다.
   let filmstrip = null // { secPerTurn, startMs, stripScale, texture, doneSent, lastTickMs } | null
   const baseMapping = montageMaterial?.uniforms.uMapping.value ?? 2
+  // reel 축소 배율(montage.json demo.reelScale) — 릴이 실린더 세로를 꽉 채우지 않게 중앙 기준 축소.
+  const reelScale = Math.min(1, Math.max(0.2, montage?.config?.reelScale ?? 1))
+  function setReelScale(on) {
+    if (montageMaterial) montageMaterial.uniforms.uReelScale.value = on ? reelScale : 1
+  }
   function setStripMapping(on) {
     if (montageMaterial) montageMaterial.uniforms.uMapping.value = on ? 3 : baseMapping
   }
+  // 필름 롤 연출(montage.json demo.filmLook, 기본 on) — 스트립 합성(퍼포레이션)과 셰이더 질감을 함께 켠다.
+  const filmLook = montage?.config?.filmLook !== false
   function stopFilmstrip() {
+    setReelScale(false) // rotate=null 경로들도 stopFilmstrip을 거치므로 여기서 함께 원복
+    if (montageMaterial) montageMaterial.uniforms.uFilmLook.value = 0
     if (!filmstrip) return
     filmstrip.texture?.dispose()
     filmstrip = null
@@ -419,7 +620,13 @@ async function main() {
   // 사진들을 순서대로 이어 붙인 스트립 캔버스 합성. 각 프레임은 그 사진의 실제 비율 그대로
   // (생성 설정이 4:3 가로형이든 과거 3:4든 자동 적응 — 크롭 없음), 프레임 사이·양 끝에
   // 검정 거터(필름 프레임 간격) — 스트립 좌우 끝이 거터라 wrap 이음매가 검정 안에 떨어져 안 보인다.
-  function buildFilmstripTexture(photos, gutterFrac, onDone) {
+  //  padEndAspect: 마지막 프레임 뒤에 붙일 검정 꼬리의 종횡비(w/H). 1차 주마등(탄생으로 끝)에서
+  //  실린더 한 바퀴만큼 붙여, 탄생 장이 중앙에 멈춰 있는 동안 wrap으로 스트립 첫 장(현재)이
+  //  등 뒤에서 미리 보이는 걸 막는다.
+  //  filmLook: 옛날 필름 카메라 롤 연출 — 스트립 위아래에 퍼포레이션(스프로킷 구멍) 밴드를 두고
+  //  사진을 그 사이에 끼운다(35mm 네거티브 롤의 단면). 검정 꼬리(padEndAspect)에는 아무것도 안
+  //  그린다 — 탄생 이후 blank 구간은 빈 필름조차 아니라 완전한 어둠이다.
+  function buildFilmstripTexture(photos, gutterFrac, onDone, padEndAspect = 0, filmLook = false) {
     const H = 1024
     const imgs = new Array(photos.length).fill(null)
     let remaining = photos.length
@@ -428,22 +635,52 @@ async function main() {
       const loaded = imgs.filter(Boolean)
       if (!loaded.length) return onDone(null)
       const gutter = Math.round(H * (gutterFrac ?? 0.05))
-      const frameWs = loaded.map((im) => Math.round(H * (im.width / im.height)))
+      const band = filmLook ? Math.round(H * 0.13) : 0 // 퍼포레이션 밴드(위·아래 각각)
+      const innerH = H - band * 2 // 사진이 차지하는 세로
+      const frameWs = loaded.map((im) => Math.round(innerH * (im.width / im.height)))
       const cv = document.createElement('canvas')
-      cv.width = frameWs.reduce((a, w) => a + w + gutter, 0)
+      const photosW = frameWs.reduce((a, w) => a + w + gutter, 0)
+      cv.width = photosW + Math.round(H * padEndAspect)
       cv.height = H
       const ctx = cv.getContext('2d')
       ctx.fillStyle = '#000'
       ctx.fillRect(0, 0, cv.width, cv.height)
+      if (filmLook) {
+        // 필름 베이스 — 사진 구간만 아주 어두운 갈빛(현상된 네거티브의 바탕).
+        ctx.fillStyle = '#151007'
+        ctx.fillRect(0, 0, photosW, H)
+      }
       let x = 0
+      let lastCenter = 0
       loaded.forEach((im, i) => {
-        ctx.drawImage(im, 0, 0, im.width, im.height, x + gutter / 2, 0, frameWs[i], H)
+        ctx.drawImage(im, 0, 0, im.width, im.height, x + gutter / 2, band, frameWs[i], innerH)
+        if (filmLook) {
+          // 프레임 가장자리 — 희미한 따뜻한 윤곽선(인화지 프레임 경계).
+          ctx.strokeStyle = 'rgba(232, 214, 170, 0.14)'
+          ctx.lineWidth = 3
+          ctx.strokeRect(x + gutter / 2 + 1.5, band + 1.5, frameWs[i] - 3, innerH - 3)
+        }
+        lastCenter = x + gutter / 2 + frameWs[i] / 2
         x += frameWs[i] + gutter
       })
+      if (filmLook) {
+        // 퍼포레이션 — 위·아래 밴드 중앙에 일정한 피치로 도는 둥근 사각 구멍(영사광에 밝게 비침).
+        const holeH = Math.round(band * 0.5)
+        const holeW = Math.round(holeH * 1.35)
+        const pitch = holeW * 2
+        ctx.fillStyle = '#cfc6b2'
+        for (let hx = Math.round(pitch / 2); hx + holeW < photosW; hx += pitch) {
+          for (const cy of [band / 2, H - band / 2]) {
+            ctx.beginPath()
+            ctx.roundRect(hx, cy - holeH / 2, holeW, holeH, holeH * 0.3)
+            ctx.fill()
+          }
+        }
+      }
       const tex = new THREE.CanvasTexture(cv)
       tex.colorSpace = THREE.NoColorSpace
       tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping // wrap은 셰이더 fract가 담당(이음매는 거터 안)
-      onDone({ texture: tex, aspect: cv.width / cv.height })
+      onDone({ texture: tex, aspect: cv.width / cv.height, lastCenterFrac: lastCenter / cv.width })
     }
     photos.forEach((p, i) => {
       const im = new Image()
@@ -459,14 +696,22 @@ async function main() {
     })
   }
 
-  function startFilmstrip(payload) {
+  //  onDone: 스트립이 정확히 1사이클 돌면 부른다(2차 미래 릴 — 대화가 다음으로 넘어가는 신호).
+  //   미지정이면 기존 동작(서버에 reel-done 전송).
+  function startFilmstrip(payload, onDone = null) {
     const photos = payload?.photos || []
     stopFilmstrip()
-    if (!photos.length || !montageMaterial) return
+    if (!photos.length || !montageMaterial) {
+      onDone?.() // 사진이 없으면 즉시 다음 단계로(대화가 멈추지 않게)
+      return
+    }
     const secPerTurn = payload?.secPerTurn || 24
     const elapsedSec = Math.max(0, (payload?.elapsedMs ?? 0) / 1000)
     // 실린더 둘레 종횡비(2πR/H) — 스트립이 종횡비를 유지한 채 감기도록 uStripScale의 분자가 된다.
     const circumAspect = (2 * Math.PI * install.cylinder.radius) / install.cylinder.height
+    // 1차 주마등 끝 연출(서버 payload holdLastSec): 마지막 장(탄생)이 정면 중앙에 오면 정지 →
+    // holdLastSec초 머문 뒤 blank. 미래 릴 payload에는 이 필드가 없어 기존 동작 그대로다.
+    const holdLastSec = payload?.holdLastSec ?? 0
     const fs = {
       secPerTurn,
       startMs: performance.now() - elapsedSec * 1000, // 벽시계 기준 — 새로고침 재개 반영
@@ -474,30 +719,50 @@ async function main() {
       stripTurns: 1, // 스트립 1사이클에 필요한 실린더 바퀴 수(= stripAspect / circumAspect)
       texture: null,
       doneSent: false,
-      lastTickMs: 0
+      lastTickMs: 0,
+      holdLastSec,
+      lastCenterFrac: null, // 마지막 장 중심의 스트립 x 비율(0..1) — 정지 위상 계산용
+      blanked: false, // 탄생 정지 후 blank 처리 1회 플래그
+      onDone
     }
     filmstrip = fs
+    setReelScale(true)
     teardownVideo()
     setMontageImage(montageMaterial, null) // 스트립 준비 전까지 이전 텍스처 대신 검정
-    buildFilmstripTexture(photos, payload?.gutterFrac, (result) => {
-      if (filmstrip !== fs) {
-        result?.texture?.dispose() // 이미 다른 국면으로 넘어감
-        return
-      }
-      if (!result) {
-        console.warn('[filmstrip] 사진 로드 전부 실패 — 검정 화면 유지')
-        return
-      }
-      fs.texture = result.texture
-      fs.stripScale = circumAspect / result.aspect
-      fs.stripTurns = result.aspect / circumAspect
-      setMontageImage(montageMaterial, result.texture)
-      montageMaterial.uniforms.uStripScale.value = fs.stripScale
-      setStripMapping(true)
-      montageMaterial.uniforms.uBlur.value = 0
-      montageMaterial.uniforms.uVideoMix.value = 0
-      montageMaterial.uniforms.uHasVideo.value = 0
-    })
+    buildFilmstripTexture(
+      photos,
+      payload?.gutterFrac,
+      (result) => {
+        if (filmstrip !== fs) {
+          result?.texture?.dispose() // 이미 다른 국면으로 넘어감
+          return
+        }
+        if (!result) {
+          console.warn('[filmstrip] 사진 로드 전부 실패 — 검정 화면 유지')
+          if (fs.onDone && !fs.doneSent) {
+            fs.doneSent = true
+            fs.onDone() // 대화가 검정 화면에 갇히지 않게 바로 다음 단계로
+          }
+          return
+        }
+        fs.texture = result.texture
+        fs.stripScale = circumAspect / result.aspect
+        // 셰이더가 uStripScale/reelScale로 샘플하므로, 1사이클에 필요한 바퀴 수도 같은 비로 줄어든다.
+        fs.stripTurns = (result.aspect / circumAspect) * reelScale
+        fs.lastCenterFrac = result.lastCenterFrac
+        setMontageImage(montageMaterial, result.texture)
+        montageMaterial.uniforms.uStripScale.value = fs.stripScale
+        setStripMapping(true)
+        montageMaterial.uniforms.uFilmLook.value = filmLook ? 1 : 0
+        montageMaterial.uniforms.uBlur.value = 0
+        montageMaterial.uniforms.uVideoMix.value = 0
+        montageMaterial.uniforms.uHasVideo.value = 0
+      },
+      // 검정 꼬리: 탄생 정지 중 wrap으로 첫 장(현재)이 다시 보이지 않게 실린더 한 바퀴(리일 축소
+      // 배율 반영)만큼 검정을 잇는다 — "탄생 이후엔 모든 릴이 다 돌 때까지 blank".
+      holdLastSec > 0 ? circumAspect / reelScale : 0,
+      filmLook
+    )
   }
 
   function startRotate(payload) {
@@ -519,6 +784,7 @@ async function main() {
       xfadeStartMs: 0,
       doneSent: false // reel 한 바퀴 완료 신호를 서버에 1회만 보내기 위한 플래그
     }
+    setReelScale(true)
     teardownVideo()
     if (montageMaterial) {
       montageMaterial.uniforms.uBlur.value = 0
@@ -545,6 +811,7 @@ async function main() {
     const phase = payload?.phase ?? 'idle'
     const elapsedSec = Math.max(0, (payload?.elapsedMs ?? 0) / 1000)
     convoVideoActive = false // 국면 전환 시 대화 영상 재생 해제(ghost 대화 tool이 다시 켠다)
+    sfx.stop() // 앰비언스는 대화 영상에만 속한다 — 국면이 바뀌면 함께 걷는다
     const dur = (s) => (immediate ? 0.001 : s)
     if (phase === 'spinup') {
       demoPhase = 'spinup'
@@ -559,11 +826,28 @@ async function main() {
       const total = (payload?.spinupMs ?? 10000) / 1000
       threadSpeedMul.v = 1 + (SPINUP_MAX - 1) * Math.min(1, elapsedSec / total) // 재개 시 진행률 반영
       tweenTo(threadSpeedMul, SPINUP_MAX, Math.max(0.3, total - elapsedSec))
+    } else if (phase === 'funeral') {
+      // 주마등에 앞서 자기 장례식을 본다 — 등속 1회 재생, 끝나면 TV가 꺼지듯 암전(playFuneralOnce).
+      demoPhase = 'funeral'
+      rotate = null
+      stopFilmstrip()
+      ghost.hide()
+      ghostVoice?.stop()
+      bgMusic.start() // 장례식부터 주마등까지 같은 배경음악이 끊기지 않고 이어진다
+      // 배경음악 위에 조문객들의 웅성거림을 한 겹 더 깐다 — 식장의 공기. 다른 앰비언스보다
+      // 더 낮게(0.2) 깔아, 소리의 정체가 드러나기보다 배경으로만 남게 한다.
+      sfx.play(FUNERAL_SFX_SLUG, { gain: FUNERAL_SFX_GAIN })
+      tweenTo(blur, 0, dur(0.2))
+      playFuneralOnce(payload?.url, {
+        seekSec: elapsedSec, // 새로고침 재개 — 등속이라 경과 시간이 곧 재생 위치
+        blackoutMs: payload?.blackoutMs ?? 1600,
+        sceneMs: payload?.sceneMs ?? FUNERAL_SCENE_MS
+      })
     } else if (phase === 'reel') {
       demoPhase = 'reel'
       ghost.hide()
       ghostVoice?.stop()
-      bgMusic.stop()
+      bgMusic.start() // 주마등(reel)에도 대화와 같은 배경음악을 깐다
       if (payload?.mode === 'filmstrip') {
         rotate = null
         startFilmstrip(payload) // reel 전용 3:4 사진 스트립을 필름처럼 연속 스크롤
@@ -700,7 +984,11 @@ async function main() {
     onListening: (on) => bgMusic.setUserListening(on), // 사용자 청취 중 배경음악 level 5.
     getPan: () => ghost.getPan?.() ?? 0, // 유령 위치 따라 목소리를 좌우로(입체감).
     // 대화 tool이 영상을 원본 속도로 loop 재생(첫 바퀴 뒤 resolve). 과거 회귀는 fadeIn 옵션으로 떠오른다.
-    playVideo: (url, opts) => playConversationVideo(url, opts)
+    playVideo: (url, opts) => playConversationVideo(url, opts),
+    clearVideo: (opts) => clearConversationVideo(opts), // 2장(미래) 전환 발화 때 유령 idle로 복귀
+    // 2장(미래) 진입: ① 90세 장례식 → 암전 → ② 미래 릴 1사이클 → (그 뒤 유령의 전환 발화)
+    playFutureFuneral: (url, opts) => playFutureFuneralIntro(url, opts),
+    playFutureReel: (payload) => playFutureReelIntro(payload)
   })
 
   // 새로고침 재개: 서버가 준 현재 1차 흐름 국면으로 즉시 점프(진행 중인 reel은 위치까지 이어감).
@@ -737,7 +1025,7 @@ async function main() {
       ? !!montageMaterial
       : convoVideoActive
         ? !!montageMaterial
-        : demoPhase === 'reel'
+        : demoPhase === 'reel' || demoPhase === 'funeral'
           ? !!montageMaterial
           : demoPhase === 'spinup'
             ? false
@@ -760,19 +1048,46 @@ async function main() {
         // 필름스트립: 스트립 텍스처를 연속 스크롤. 위상은 벽시계 기준(startMs), Q/W 배수 반영.
         u.uBlur.value = 0
         u.uVideoMix.value = 0
+        u.uTime.value = nowMs / 1000 // 필름 질감(그레인·플리커·위브) 시계
         const effSecPerTurn = filmstrip.secPerTurn / rotateSpeedMul
         const turns = (nowMs - filmstrip.startMs) / 1000 / effSecPerTurn
+        // 1차 주마등 끝 연출(holdLastSec): 마지막 장(탄생)의 중심이 정면(방위 0, vUv.x=0)에 오는
+        // 위상에서 스크롤을 멈추고, holdLastSec초 뒤 blank. 시계(turns)는 계속 흘러 reel-done
+        // 타이밍(스트립 1사이클)은 그대로다 — blank인 채 릴이 마저 돈다.
+        //  셰이더의 스트립 x = fract((u + cal.yaw + phase) / stripTurns) 이므로,
+        //  정면(u=0)에 lastCenterFrac이 오는 위상 = lastCenterFrac·stripTurns − cal.yaw (mod stripTurns).
+        let shownTurns = turns
+        if (filmstrip.holdLastSec > 0 && filmstrip.lastCenterFrac != null && filmstrip.stripTurns > 0) {
+          const st = filmstrip.stripTurns
+          const birthTurns = (((filmstrip.lastCenterFrac * st - cal.yaw) % st) + st) % st
+          if (turns >= birthTurns) {
+            shownTurns = birthTurns // 탄생 이미지 정면 중앙 정지
+            if (!filmstrip.blanked && turns >= birthTurns + filmstrip.holdLastSec / effSecPerTurn) {
+              filmstrip.blanked = true
+              setMontageImage(montageMaterial, null) // 이후엔 검정 — 서버 전환까지 아무 이미지도 안 보인다
+            }
+          }
+        }
         // uYaw는 스트립 주기(stripTurns 바퀴)로 wrap — 장시간 구동 시 float 정밀도 저하 방지.
-        const phaseTurns = filmstrip.stripTurns > 0 ? turns % filmstrip.stripTurns : turns
+        const phaseTurns = filmstrip.stripTurns > 0 ? shownTurns % filmstrip.stripTurns : shownTurns
         u.uYaw.value = cal.yaw + phaseTurns
         // 완료: 스트립 1사이클(모든 사진이 한 번씩 지나감) — 이후에도 서버 전환까지 계속 돈다.
         if (!filmstrip.doneSent && filmstrip.texture && turns >= filmstrip.stripTurns) {
           filmstrip.doneSent = true
-          window.zoetrope.sendReelDone?.()
+          // onDone이 있으면 이 스트립은 서버 국면이 아니라 대화 흐름이 주인이다(2차 미래 릴) —
+          // 서버에 reel-done을 보내면 엉뚱한 국면 전환이 일어나므로 로컬 콜백만 부른다.
+          if (filmstrip.onDone) filmstrip.onDone()
+          else window.zoetrope.sendReelDone?.()
         }
         // 도는 동안 ~3s마다 heartbeat → 서버 안전 폴백(deadman) 리셋(Q로 느려도 안 끊김).
         // 텍스처가 준비된 뒤에만 — 사진 로드가 전부 실패하면 heartbeat를 멈춰 deadman이 유령으로 넘긴다.
-        if (!filmstrip.doneSent && filmstrip.texture && nowMs - filmstrip.lastTickMs > 3000) {
+        // 대화가 주인인 스트립(onDone)은 heartbeat도 보내지 않는다 — 서버는 지금 reel 국면이 아니다.
+        if (
+          !filmstrip.onDone &&
+          !filmstrip.doneSent &&
+          filmstrip.texture &&
+          nowMs - filmstrip.lastTickMs > 3000
+        ) {
           filmstrip.lastTickMs = nowMs
           window.zoetrope.sendReelProgress?.()
         }
@@ -842,8 +1157,8 @@ async function main() {
         }
         // 설치 캘리브레이션 오프셋 + 회전 위상 합성
         u.uYaw.value = (((cal.yaw + yaw) % 1) + 1) % 1
-      } else if (demoPhase === 'reel' || convoVideoActive) {
-        // reel 데모/대화 영상(과거 회귀·미래): videoMix로 영상 표시(fade-in 트윈 포함).
+      } else if (demoPhase === 'reel' || demoPhase === 'funeral' || convoVideoActive) {
+        // reel 데모/장례식 영상/대화 영상(과거 회귀·미래): videoMix로 영상 표시(fade-in 트윈 포함).
         u.uBlur.value = 0
         u.uVideoMix.value = tweenUpdate(videoMix)
         u.uYaw.value = cal.yaw // 회전 override 복원
@@ -943,39 +1258,54 @@ async function main() {
   //  V     → 뷰 토글(파노라마 ↔ 실린더)
   //  Space → 재생/정지 (개발용)
   //  Q / W → [debug] reel 회전(surround) 속도 느리게 / 빠르게 (실효 secPerTurn 콘솔 출력)
+  //  A / S → [debug] 배경음악 음량 다운 / 업 (실효 gain 콘솔 출력)
+  //  Z / X → [debug] 효과음(앰비언스) 음량 다운 / 업 (실효 gain 콘솔 출력)
   window.addEventListener('keydown', (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return
     // [debug] 모든 키 수신 확인 — W 눌렀는데 이 로그가 없으면 포커스가 페이지가 아님(예: DevTools).
     // 끄기: 콘솔에서 window.__reelDebug = false
-    if (window.__reelDebug !== false) console.log('[debug] keydown:', e.key)
+    if (window.__reelDebug !== false) console.log('[debug] keydown:', e.key, `(code=${e.code})`)
     const yawStep = e.shiftKey ? 0.02 : 0.004 // 0.004 ≈ 1.4°, shift ≈ 7°
     const pitchStep = e.shiftKey ? 0.02 : 0.004
+    // 물리 키 매칭 — e.code(레이아웃 무관) 우선, 한글 IME가 code 없이 자모(e.key='ㅁ' 등)만
+    // 줄 때를 대비해 key 값(영문 대소문자 + 두벌식 자모)도 함께 본다.
+    const isKey = (code, ...keys) => e.code === code || keys.includes(e.key)
     if (e.key === 'Enter') {
       e.preventDefault()
       window.zoetrope.sendInput?.('stopEnter')
-    } else if (e.key === 'v' || e.key === 'V' || e.code === 'KeyV') {
+    } else if (isKey('KeyV', 'v', 'V', 'ㅍ')) {
       e.preventDefault()
       window.zoetrope.toggleView?.()
-    } else if (e.key === 'c' || e.key === 'C' || e.code === 'KeyC') {
+    } else if (isKey('KeyC', 'c', 'C', 'ㅊ')) {
       e.preventDefault()
       toggleCalibrationMode()
     } else if (e.key === ' ' || e.code === 'Space') {
       e.preventDefault()
       window.zoetrope.togglePlay?.()
-    } else if (e.key === 'q' || e.key === 'Q' || e.code === 'KeyQ') {
-      // e.code = 물리 키 → 한글 IME(e.key='ㅂ')·레이아웃과 무관하게 잡힌다.
+    } else if (isKey('KeyQ', 'q', 'Q', 'ㅂ', 'ㅃ')) {
       e.preventDefault()
       console.log(
         `[debug] Q(느리게) 눌림 · demoPhase=${demoPhase} · rotate=${rotate ? 'active' : 'null'}`
       )
       nudgeRotateSpeed(1 / 1.25) // [debug] reel 회전 느리게
-    } else if (e.key === 'w' || e.key === 'W' || e.code === 'KeyW') {
-      // e.code = 물리 키 → 한글 IME(e.key='ㅈ')·레이아웃과 무관하게 잡힌다.
+    } else if (isKey('KeyW', 'w', 'W', 'ㅈ', 'ㅉ')) {
       e.preventDefault()
       console.log(
         `[debug] W(빠르게) 눌림 · demoPhase=${demoPhase} · rotate=${rotate ? 'active' : 'null'}`
       )
       nudgeRotateSpeed(1.25) // [debug] reel 회전 빠르게
+    } else if (isKey('KeyA', 'a', 'A', 'ㅁ')) {
+      e.preventDefault()
+      bgMusic.nudgeVolume(1 / 1.25) // [debug] 배경음악 음량 다운
+    } else if (isKey('KeyS', 's', 'S', 'ㄴ')) {
+      e.preventDefault()
+      bgMusic.nudgeVolume(1.25) // [debug] 배경음악 음량 업
+    } else if (isKey('KeyZ', 'z', 'Z', 'ㅋ')) {
+      e.preventDefault()
+      sfx.nudgeVolume(1 / 1.25) // [debug] 효과음 음량 다운
+    } else if (isKey('KeyX', 'x', 'X', 'ㅌ')) {
+      e.preventDefault()
+      sfx.nudgeVolume(1.25) // [debug] 효과음 음량 업
     } else if (e.key === 'ArrowLeft') {
       e.preventDefault()
       nudgeCalibration(-yawStep, 0)

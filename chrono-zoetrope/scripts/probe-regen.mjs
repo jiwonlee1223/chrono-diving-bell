@@ -68,13 +68,13 @@ try {
   if (out) {
     const st = await fs.stat(out)
     console.log(
-      `\n✓ 영상 생성: ${path.relative(root, out)} (${(st.size / 1e6).toFixed(1)}MB, ${sec}s)`
+      `\n[완료] 영상 생성: ${path.relative(root, out)} (${(st.size / 1e6).toFixed(1)}MB, ${sec}s)`
     )
   } else {
-    console.log(`\n⚠ null 반환 (mock 모드이거나 폴백 경로) — ${sec}s`)
+    console.log(`\n[경고] null 반환 (mock 모드이거나 폴백 경로) — ${sec}s`)
   }
 } catch (err) {
-  console.log(`\n✗ 실패: ${err.message}`)
+  console.log(`\n[실패] ${err.message}`)
   process.exitCode = 1
 } finally {
   regen.close()

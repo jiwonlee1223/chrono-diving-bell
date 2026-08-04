@@ -75,10 +75,12 @@ async function main() {
         dir: path.join(LIBRARY, dirent.name),
         images: m.images
       })
-      console.log(`  ✔ ${dirent.name} → generatedPanoramaImages/${r.key}  (${r.count}장 업로드)`)
+      console.log(
+        `  [완료] ${dirent.name} → generatedPanoramaImages/${r.key}  (${r.count}장 업로드)`
+      )
       ok++
     } catch (err) {
-      console.error(`  ✗ 실패 ${dirent.name}: ${err.message}`)
+      console.error(`  [실패] 실패 ${dirent.name}: ${err.message}`)
       fail++
     }
   }

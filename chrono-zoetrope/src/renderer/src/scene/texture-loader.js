@@ -11,7 +11,7 @@ import * as THREE from 'three'
 
 // 방위각 → canvas x. az 0 = 좌단(u=0). CylinderGeometry u=0 이 +Z(=P0)라 일치.
 function azToX(azDeg, W) {
-  return (((azDeg % 360) + 360) % 360) / 360 * W
+  return ((((azDeg % 360) + 360) % 360) / 360) * W
 }
 
 const QUADRANTS = [

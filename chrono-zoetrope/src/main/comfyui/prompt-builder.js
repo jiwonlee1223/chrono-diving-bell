@@ -17,8 +17,10 @@
 // 소용돌이 보케는 빈티지 렌즈 질감 — 프롬프트로 잘 먹힌다. 가장자리 방사형 블러·비네트는
 // 여기 넣지 않는다: 생성 모델이 불안정하게 처리하므로 렌더러 포스트 셰이더에서 건다
 // (FREEZE→IMMERSION에서 블러가 걷히는 전환도 셰이더 유니폼으로 만든다).
+// 얕은 심도(shallow DoF + bokeh)는 배경 인물 얼굴을 아웃포커스로 뭉갠다 — 얼굴 선명 방침(2026-08-04,
+// 과거 '주변 인물 얼굴 smear' 연출 폐기)에 따라 깊은 심도 + 전 인물 얼굴 또렷로 교체.
 export const STYLE =
-  'candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, shallow depth of field with gentle swirly bokeh, photorealistic, no text, no watermark'
+  'candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark'
 
 // §1(해석적 자율성)·라인6: 이미지 안에 글자·숫자가 생기면 direct delivery가 된다. Gemini는
 // 태그("no text")보다 지시형 문장에 강하게 반응하므로, 프롬프트 끝에 명시적 금지문을 붙인다.
@@ -26,6 +28,31 @@ export const STYLE =
 export const NO_TEXT_DIRECTIVE =
   ' Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image.' +
   ' Any signs, posters, books, screens or clocks must be blank and free of writing or digits.'
+
+// 한국 배경 강제(2026-08-03) — 장면 묘사("school corridor" 등)가 국적 중립이면 모델이 미국식
+// 공간(사물함 복도·스쿨버스·교외 주택)을 디폴트로 그린다. 모든 장면 프롬프트에 이 지시를 넣어
+// 건축·인테리어·소품·주변 인물까지 한국 컨텍스트를 유지시킨다. 연대(item.year)를 알면 그
+// 시대의 한국으로 못 박고, 미래는 연대 고증 대신 "지금과 이어지는 일상의 한국"으로 둔다
+// (composeReelPhotoPrompt의 era 규칙과 동일 — 미래에 연대를 못 박으면 SF 소품이 끌려온다).
+export function koreanContextFor(item = {}) {
+  const hasYear = Number.isFinite(item.year)
+  const decade = hasYear ? Math.floor(item.year / 10) * 10 : null
+  const where =
+    item.isPast === false
+      ? 'South Korea some decades from now — everyday Korean life that still looks recognisably ordinary, quietly modern but NOT science fiction'
+      : hasYear
+        ? `${decade}s South Korea, with period-accurate everyday Korean details of that time`
+        : 'South Korea'
+  return (
+    ` IMPORTANT SETTING — unless the scene description above explicitly names a different country or city, this scene takes place in ${where}.` +
+    ` Every part of the environment is distinctly KOREAN: Korean-style architecture and interiors, Korean school buildings,` +
+    ` classrooms and hallways, Korean high-rise apartment complexes, streets, shops, furniture, food and everyday objects.` +
+    ` It must NOT default to American or European looks — no US-style hallway lockers, no yellow school buses, no western suburban houses.` +
+    ` Other people present are Korean by default.` +
+    ` EXCEPTION: if the scene description explicitly places this moment in another country (living, studying or traveling abroad),` +
+    ` depict that country's environment and local people authentically instead — the main subject is still the same Korean person visiting or living there.`
+  )
+}
 
 // 생애 10단계. Flash Back의 Age Profiles(3~82살)와 같은 골격.
 // {occ}는 직업, 장면 문구는 장소·빛·사물만 — 감정 서술 금지.
@@ -250,6 +277,25 @@ export function reelAges(currentAge, { count = 12, startAge = 3 } = {}) {
 }
 
 /**
+ * 미래 릴의 나이 사다리 — 현재 나이 **다음 해**부터 endAge(90)까지 균등 count개.
+ * 현재를 포함하지 않는 이유: 과거 릴의 마지막 장이 이미 현재 나이라, 두 릴을 이어 보면
+ * 같은 나이가 두 번 나온다. 미래 릴은 현재 바로 다음부터 시작해 그 지점에서 이어진다.
+ * 이미 90세를 넘겼거나 남은 해가 count보다 적으면 중복 없이 있는 만큼만 돌려준다.
+ * @param {number} currentAge
+ * @param {object} [opts] { count=12, endAge=90 }
+ * @returns {number[]}
+ */
+export function reelFutureAges(currentAge, { count = 12, endAge = 90 } = {}) {
+  const start = Math.max(0, Math.floor(currentAge)) + 1
+  const end = Math.floor(endAge)
+  if (start > end) return []
+  if (count <= 1) return [end]
+  const ages = []
+  for (let i = 0; i < count; i++) ages.push(Math.round(start + ((end - start) * i) / (count - 1)))
+  return [...new Set(ages)] // 남은 해가 짧으면 반올림이 겹친다 — 같은 나이를 두 번 만들지 않는다
+}
+
+/**
  * reel 사진 한 장의 장면 문구 — STAGES에서 그 나이에 가장 가까운 단계의 감각 재료 풀에서
  * 결정론적으로 1개 뽑는다({occ} 치환은 호출부 몫). 나이가 중복되는 어린 사용자를 위해
  * seedString에 idx를 섞어 같은 나이라도 다른 장면이 나오게 한다.
@@ -277,7 +323,15 @@ export function reelSceneForAge(age, seedString) {
  */
 export function composeReelPhotoPrompt(profile, item, { orientation = 'portrait' } = {}) {
   const who = `a ${item.age}-year-old ${subjectNoun(item.age, profile?.gender)}`
-  const era = `${Math.floor(item.year / 10) * 10}s Korea`
+  // 시대 문구 — 과거는 실제 연대의 고증을 요구할 수 있지만, 미래 연대(2070년대 등)에 "고증"을
+  // 요구하면 모델이 SF 소품(홀로그램·플라잉카)을 끌어온다. 미래는 연대를 못 박지 않고
+  // "지금에서 N십 년 흐른, 알아볼 수 있는 일상"으로 둔다 — 주마등은 공상과학이 아니다.
+  const decade = Math.floor(item.year / 10) * 10
+  const era =
+    item.isPast === false
+      ? `Korea a few decades from now — everyday life that still looks recognisably ordinary,` +
+        ` quietly modern but NOT science fiction: no futuristic technology, no holograms, no sleek sci-fi styling`
+      : `${decade}s Korea — everyday period-accurate details of that time and place`
   const extra = (profile?.descriptors || []).join(', ')
   const frame =
     orientation === 'landscape'
@@ -294,7 +348,9 @@ export function composeReelPhotoPrompt(profile, item, { orientation = 'portrait'
     ` The person is at the exact CENTER of the frame,` +
     ` actively doing what this moment is about (not posing for the camera);` +
     ` their face, small at this distance, is still unobstructed and recognizable.` +
-    ` The setting, clothing and hairstyle authentically reflect ${era} — everyday period-accurate details of that time and place.` +
+    ` The setting, clothing and hairstyle authentically reflect ${era} —` +
+    ` with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks),` +
+    ` UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean.` +
     ` Anyone else present is only a background bystander.` +
     (extra ? ` ${extra}.` : '') +
     ` ${STYLE}` +
@@ -302,12 +358,46 @@ export function composeReelPhotoPrompt(profile, item, { orientation = 'portrait'
   )
 }
 
+/**
+ * 과거 릴 마지막 장 — 탄생 사진 프롬프트. 주마등이 탄생까지 되감긴 끝점으로,
+ * "태어나자마자 보는 첫 기억"을 형상화한다: 산부인과 분만실에서 갓 태어난 나를 안아든 엄마.
+ * 일반 릴 프롬프트(composeReelPhotoPrompt)와 달리 주인공은 신생아가 아니라 엄마의 모습이며,
+ * 얼굴 레퍼런스를 쓰지 않는다(신생아 얼굴 정체성은 무의미하고 엄마 얼굴은 모른다 — 호출부가
+ * reference 없이 부른다). 시대(출생 연대의 한국 산부인과)와 스타일 규칙은 릴과 동일하게 입힌다.
+ * @param {{gender?:string}} profile
+ * @param {{age:number, year:number}} item  age=0, year=출생년
+ * @param {{orientation?:'portrait'|'landscape'}} [opts]
+ */
+export function composeBirthPhotoPrompt(profile, item, { orientation = 'portrait' } = {}) {
+  const decade = Math.floor(item.year / 10) * 10
+  const frame =
+    orientation === 'landscape'
+      ? 'A landscape-orientation candid snapshot photograph (wider than tall)'
+      : 'A portrait-orientation candid snapshot photograph (taller than wide)'
+  return (
+    `${frame} of the very first moment of a life — the first thing a newborn ever sees:` +
+    ` a young Korean mother in a hospital delivery room, just after giving birth,` +
+    ` cradling her swaddled newborn baby in her arms and gazing down at the baby's face.` +
+    ` The photograph is taken from close to the newborn's point of view, looking up at the mother,` +
+    ` so the mother's tired, gentle face and the wrapped baby are at the exact CENTER of the frame.` +
+    ` The setting is a maternity hospital delivery room in ${decade}s South Korea,` +
+    ` with period-accurate everyday Korean hospital details of that time —` +
+    ` warm soft hospital lighting, blankets and simple medical equipment softly out of the way.` +
+    ` It must NOT default to American or European looks; everyone present is Korean.` +
+    ` Any nurses are only background bystanders.` +
+    ` ${STYLE}` +
+    NO_TEXT_DIRECTIVE
+  )
+}
+
 // 나이에 맞는 성별 명사. gender가 없으면 중립 표현으로 폴백한다.
+// 'Korean'을 명사에 내장한다 — 레퍼런스 이미지가 안 실리는 장면(아동 폴백·hydrate 유실)에서
+// 인물 단서가 프롬프트에 전혀 없으면 모델이 서양인 디폴트로 그린다(2026-08-03 금발 외국인 실측).
 export function subjectNoun(age, gender) {
   const child = age <= 14
-  if (gender === 'male') return child ? 'boy' : 'man'
-  if (gender === 'female') return child ? 'girl' : 'woman'
-  return child ? 'child' : 'person'
+  if (gender === 'male') return child ? 'Korean boy' : 'Korean man'
+  if (gender === 'female') return child ? 'Korean girl' : 'Korean woman'
+  return child ? 'Korean child' : 'Korean person'
 }
 
 // ── 2단계 얼굴 앵커 A단계: "그 나이의 얼굴" 포트레이트 ─────────────────────────────
@@ -320,6 +410,15 @@ export function subjectNoun(age, gender) {
 // 목표 나이의 표면적 노화/성장 특징. 정체성(골격·이목구비 간격·눈 모양)은 유지하고, 여기 나열한
 // 표면 특징만 그 나이에 맞게 바뀌도록 한다.
 function ageTraitsFor(age) {
+  // 아동·청소년 — 얼굴 참조 최대화(2026-08-03): 아동 나이도 앵커 없이 두지 않고 그 나이 얼굴
+  // 포트레이트를 시도한다(IMAGE_SAFETY로 실패하면 호출부가 텍스트 폴백). 골격·이목구비 비율은
+  // 유지한 채 나이대의 표면 특징만 나열한다.
+  if (age <= 6)
+    return 'the soft round face of a small child — chubby cheeks, eyes large relative to the face, a delicate small nose and mouth, fine soft hair'
+  if (age <= 12)
+    return 'the face of a school-age child — round soft features, perfectly smooth skin, bright clear eyes, fine youthful hair'
+  if (age < 18)
+    return 'the fresh face of a teenager — youthful smooth skin, adolescent facial proportions between child and adult, thick full hair'
   if (age < 25)
     return 'youthful smooth clear taut skin, no wrinkles, full thick hair, bright fresh under-eyes — a young adult face in its early bloom'
   if (age < 35)
@@ -364,10 +463,8 @@ export function composeAgedPortraitPrompt(profile, age, { isPast = false } = {})
 // 모든 장면은 그 순간을 약간 위에서 내려다보는 3인칭 부감(high angle)으로 본다. 관람객은
 // 자기 삶의 한 장면을 바깥에서, 조금 떨어진 위쪽에서 관조한다. 이 부감 구도가 필수다.
 //  1. 주인공은 화면 중심에 보이고, 자기 얼굴도 드러난다(초점 안).
-//  2. 주인공을 제외한 모든 인물의 얼굴은 붓으로 문질러 지운 듯 매끄럽게 뭉개 흐릿하게 —
-//     특징 없는 얼룩처럼. 기형·왜곡이 아니라(그로테스크 금지) 그저 지워진 붓자국.
-//     "blurry face"라고 직접 쓰면 뭉개진 기형이 나오기 쉬워, smeared / wiped away like a
-//     brushstroke / painterly featureless smudge, not distorted 로 우회해 표현한다.
+//  2. (폐기, 2026-08-04) 과거엔 주인공 외 인물 얼굴을 smear로 뭉갰으나, 이제 모든 얼굴을
+//     선명하게 그린다 — STYLE도 deep focus + 전 인물 얼굴 또렷로 교체됨.
 // 감각적 지시일 뿐 감정·의미 서술이 아니다(§1). 가장자리 방사형 블러는 렌더러 셰이더 몫.
 // 주의(이력 역전): POV(1인칭·주인공 비가시)에서 이 3인칭 구도로 되돌린 것이라, 아동 나이
 // 얼굴 생성이 걸리던 Gemini IMAGE_SAFETY를 다시 노출할 수 있다. 서버 복구 후 첫 생성에서
@@ -386,6 +483,7 @@ export function composeKontextPrompt(profile, item) {
     ` the floor or ground filling much of the frame, as if observing a memory from above.` +
     ` ${who} is the central subject, clearly visible in this moment seen from above: ${item.scene}.` +
     ` Keep this main person's own face visible and in focus.` +
+    koreanContextFor(item) +
     (extra ? ` ${extra}.` : '') +
     ` ${STYLE}`
   )
@@ -412,6 +510,7 @@ export function composeGeminiScenePrompt(profile, item) {
     ` as if the viewer were floating a little above and behind, quietly watching a memory of their own life pass by below them.` +
     ` In the scene, seen from this high angle looking down, ${who} in this moment: ${item.scene}.` +
     ` This central person is the subject and is clearly visible, their own face shown and in focus.` +
+    koreanContextFor(item) +
     future +
     (extra ? ` ${extra}.` : '') +
     ` ${STYLE}` +
@@ -421,9 +520,9 @@ export function composeGeminiScenePrompt(profile, item) {
 
 /** SDXL 폴백용 서술형 프롬프트 — 3인칭 부감 구도 동일 유지. "high angle"은 SDXL이 잘 아는 태그다. */
 export function composeSdxlPrompt(profile, item) {
-  const who = `a ${item.age}-year-old Korean ${subjectNoun(item.age, profile.gender)}`
+  const who = `a ${item.age}-year-old ${subjectNoun(item.age, profile.gender)}`
   const extra = (profile.descriptors || []).join(', ')
-  return `strong high angle shot, elevated camera raised well above and tilted downward looking down on the scene, third person view seen from above, floor and ground filling much of the frame, observing a memory from outside, ${who} as the central subject clearly visible with their own face in focus, ${item.scene}${extra ? `, ${extra}` : ''}, ${STYLE}`
+  return `strong high angle shot, elevated camera raised well above and tilted downward looking down on the scene, third person view seen from above, floor and ground filling much of the frame, observing a memory from outside, ${who} as the central subject clearly visible with their own face in focus, ${item.scene}, set in South Korea with distinctly Korean architecture and everyday details unless the scene names another country${extra ? `, ${extra}` : ''}, ${STYLE}`
 }
 
 /**
@@ -457,12 +556,35 @@ export const SEAM_BAND_PROMPT =
  *   sdxl → 3인칭 부감 태그형 / gemini → 3인칭 부감 서술형 /
  *   seamfix → 1인칭 360° 파노라마(B안) / 그 외(kontext, 구 hybrid) → 편집형 부감
  */
+// 스케일·깊이 지시(2026-08-03, 장례식 파노라마에서 검증된 블록의 범용판) — 거리 지시가 없으면
+// 모델이 주인공·소품을 화면 가득 채워 배경(공간)이 죽는다. 실측 360 실내 사진처럼 카메라를
+// 피사체에서 몇 미터 떼고, 인물·사물을 작게, 바닥·천장·공간 자체가 프레임 대부분을 차지하게 한다.
+// 장면 내용을 오염시키는 이미지 레퍼런스(장례식 사진 등) 없이 텍스트만으로 거리감을 강제한다.
+// 주인공 얼굴은 여전히 알아볼 수 있어야 한다(정체성 앵커) — "작지만 전신+식별 가능한 얼굴"로 절충.
+const EQUIRECT_SCALE =
+  ` IMPORTANT SCALE: shot like a real 360 camera on a tripod at eye height, standing SEVERAL METERS AWAY from the` +
+  // "small fraction"이 인물을 픽셀 몇 줌으로 몰아 해부학이 뭉개졌다(2026-08-04) — 거리감은 유지하되
+  // 인체가 온전히 그려질 최소 크기(세로 1/4~1/3)를 명시한다.
+  ` main subject — everything is seen at a distance, as in a real interior/exterior panorama. The main subject appears` +
+  ` at a natural distance within the wide space: full figure from head to toe, standing about a quarter to a third of the image height tall,` +
+  ` large enough that their body and face are cleanly and completely rendered, with their face clearly recognizable.` +
+  ` Do NOT fill the frame with the person or with large close objects.` +
+  ` A wide expanse of open ground or floor stretches across the bottom of the panorama between the camera and everything else,` +
+  ` and the ceiling or sky spreads across the entire top; the environment itself — walls, buildings, furniture, landscape,` +
+  ` empty space — reads as a subject in its own right and fills most of the frame, with generous open space around every person and object.`
+
 // equirect 360° 기하 강제 지시(장면 내 간판·현수막 텍스트까지 억제).
 const EQUIRECT_GEO =
   ` TRUE equirectangular projection (spherical panorama unwrapped): the horizon runs straight across the vertical middle;` +
   ` the floor/ground sweeps across the ENTIRE bottom stretching toward the nadir (straight down) and the ceiling/sky across the ENTIRE top toward the zenith;` +
   ` straight lines (window frames, ceiling edges, desks, poles) visibly BOW and CURVE away from the center as in a real 360 camera capture;` +
   ` the place wraps completely around the single viewpoint so the far LEFT and far RIGHT edges are the same direction behind the camera.` +
+  // 인체 예외(2026-08-04) — 위 "직선은 휘어라" 지시를 모델이 사람 몸에도 적용해 인체가 휘거나
+  // 상하체가 어긋나는 사례가 잦았다. 왜곡은 건축·공간에만 걸고 인물은 명시적으로 보호한다
+  // (실제 360 사진에서도 화면 중앙 부근 인물은 거의 왜곡되지 않는다 — 물리적으로도 맞는 지시).
+  ` IMPORTANT: this bending applies ONLY to the architecture and environment — HUMAN BODIES are NEVER bent, warped, stretched, split or distorted.` +
+  ` Every person, especially the central subject near the middle of the frame where a real 360 camera shows almost no distortion,` +
+  ` has a complete, correctly proportioned, anatomically intact body — head, torso and legs naturally connected.` +
   ` Photorealistic, natural light. Absolutely NO text anywhere — no signs, no banners, no writing on walls, boards or screens, no watermark; not an illustration.`
 
 /**
@@ -476,11 +598,15 @@ export function composeEquirectGazePrompt(profile, item) {
   const extra = (profile.descriptors || []).join(', ')
   const future = item.isPast ? '' : ` An imagined moment further along in this life.`
   return (
-    `A 360-degree equirectangular panoramic photograph, captured with a 360 camera from a single fixed point at the very heart of this moment: ${item.scene}.` +
-    ` At the exact CENTER of the frame is ${who} — the person whose memory this is and the one and only main subject.` +
+    // "at the very heart of" → "inside" — 스케일 블록(SEVERAL METERS AWAY)과 모순되지 않게.
+    `A 360-degree equirectangular panoramic photograph, captured with a 360 camera from a single fixed point inside this moment: ${item.scene}.` +
+    ` At the exact horizontal CENTER of the frame, some distance away, is ${who} — the person whose memory this is and the one and only main subject.` +
     ` THEY are unmistakably the one performing the action of this moment, fully and actively engaged in it (not merely standing or posing); their face is clearly visible and in sharp focus, though they need not face the camera.` +
     ` The place wraps a full 360 degrees around them, revealing the surroundings and the context of what they are doing.` +
     ` Anyone else present is only a secondary bystander in the background and never takes over the main action — the central person is the sole active protagonist.` +
+    ` Every face in the scene, including background people, is natural, sharp and clearly rendered — no blurred, smeared or obscured faces anywhere.` +
+    koreanContextFor(item) +
+    EQUIRECT_SCALE +
     EQUIRECT_GEO +
     future +
     (extra ? ` ${extra}.` : '')
@@ -506,6 +632,9 @@ export function composePanoramaScenePrompt(profile, item) {
     ` The surrounding environment of this moment, seen from within: ${item.scene}.` +
     ` At the center of it is ${who} — the one and only main subject, actively and unmistakably performing the action of this moment (not merely standing or posing), their face clearly visible and in focus.` +
     ` Any other people are only secondary bystanders in the background and never take over the action.` +
+    ` Every face in the scene, including background people, is natural, sharp and clearly rendered — no blurred, smeared or obscured faces anywhere.` +
+    koreanContextFor(item) +
+    EQUIRECT_SCALE +
     ` One continuous unbroken environment with no visible seam, edge or border; the far left and far right flow into one another.` +
     // 이음매(far-left ≡ far-right wrap)의 '접합선 그 자리'만 단순면(벽·기둥)에 걸리게 한다. 콘텐츠를 엣지에서
     // 멀리 떼면 큰 민무늬 여백이 생기므로, 장면은 좌우 끝까지 자연스레 채우되 딱 이어지는 선만 단순면이면 된다.

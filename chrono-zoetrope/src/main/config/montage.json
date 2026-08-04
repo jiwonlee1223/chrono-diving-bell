@@ -26,14 +26,30 @@
     "onePerStage": true
   },
   "demo": {
-    "$comment": "1차 흐름(서버 소유 국면): 세션 지정 → spinup(실타래 배속) → reel(배속 재생) → ghost(유령 뜬 idle, 1인칭 진입 대기). 서버가 타이머로 진행하고 국면을 방송·부트스트랩에 실어, 런타임 페이지를 새로고침해도 직전 국면을 이어간다. 중단은 admin '세션 나가기'로만.",
+    "$comment": "1차 흐름(서버 소유 국면): 세션 지정 → spinup(실타래 배속) → funeral(자기 장례식 영상) → TV 꺼지듯 암전 → reel(주마등, 현 시점→탄생 역순) → ghost(유령 뜬 idle, 1인칭 진입 대기). 서버가 타이머로 진행하고 국면을 방송·부트스트랩에 실어, 런타임 페이지를 새로고침해도 직전 국면을 이어간다. 중단은 admin '세션 나가기'로만.",
     "spinupMs": 10000,
+    "$funeral": "주마등 앞에 자기 장례식 영상(고인 시선 파노라마)을 먼저 튼다. false면 건너뛴다. 영상이 아직 없으면(admin 승인·영상화 전) 자동으로 건너뛰므로 전시는 멈추지 않는다.",
+    "funeral": true,
+    "$funeralVariant": "어느 장례식인가. 'present'(기본)=지금 죽은 장례식 — 뒤따르는 주마등(탄생~현 시점)과 시간대가 맞는다. 'future'=이대로 살아 90세에 맞는 죽음의 장례식.",
+    "funeralVariant": "present",
+    "$funeralSceneMs": "장례식 장면에 머무는 시간(ms). Wan 클립 자체는 ~5초(81f/16fps)라 이 시간에 닿을 때까지 loop로 돈다 — 정확히는 이 값에 가장 가까운 정수 바퀴에서 끝내 이음매에서 끊기지 않게 한다(5.06초 클립 기준 3바퀴=15.2초). 1차·2차 플로우 장례식에 함께 적용된다.",
+    "funeralSceneMs": 15000,
+    "$funeralBlackoutMs": "장례식 영상이 끝나고 TV가 꺼지듯 접히는 암전 연출의 총 길이(ms). 이 암전에서 주마등이 시작된다.",
+    "funeralBlackoutMs": 1600,
+    "$funeralMaxMs": "장례식 국면 상한(ms). 클라이언트 무응답·로드 실패로 종료 신호가 안 오면 이 시간 뒤 주마등으로 넘어간다.",
+    "funeralMaxMs": 60000,
     "$reelMode": "reel 국면 형태. 'rotate'(기본)=Gemini 파노라마 이미지(탄생~현재)를 실린더에 감아 천천히 회전, 한 바퀴(rotateSecPerTurn초)마다 다음 이미지로 크로스페이드 → reel.mp4·영상생성 불필요. 'video'=사전 합성 reel.mp4를 reelPlaybackRate 배속 재생.",
     "reelMode": "rotate",
     "rotateSecPerTurn": 24,
+    "$reelScale": "reel 재생 중 콘텐츠 축소 배율(0.2~1). 1=세로 꽉 참(기존), 0.85=중앙 기준 15% 축소(위아래 검정 여백). 필름스트립은 종횡비 유지(가로도 같이 축소), rotate 파노라마는 360° wrap 때문에 세로만 줄어든다.",
+    "reelScale": 0.85,
     "rotateCrossfadeSec": 1.5,
     "$filmstripGutterFrac": "reel 전용 사진 필름스트립(사진이 있으면 rotate 대신 자동 사용)의 프레임 사이 검정 거터 폭 — 프레임 높이 대비 비율. 프레임 비율은 각 사진 원본 비율을 그대로 따른다. 스크롤 속도는 rotateSecPerTurn(실린더 1바퀴 시간)을 공유한다.",
     "filmstripGutterFrac": 0.05,
+    "$filmLook": "필름스트립을 옛날 필름 카메라 롤처럼 연출(기본 true). 스트립 위아래 퍼포레이션(스프로킷 구멍)·프레임 테두리를 그리고, 셰이더에서 세피아·그레인·프로젝터 플리커·세로 스크래치·게이트 위브(미세 흔들림)를 얹는다. false면 기존 민짜 스트립.",
+    "filmLook": true,
+    "$birthHoldSec": "1차 주마등 끝 연출 — 마지막 장(탄생)이 정면 중앙에 정지해 머무는 시간(초). 이후 릴이 다 돌 때까지 blank.",
+    "birthHoldSec": 5,
     "reelPlaybackRate": 3
   },
   "ghost": {
@@ -52,8 +68,8 @@
       "$apiKeyPath": "ElevenLabs API 키 파일(gitignore된 secrets/). 서버만 읽는다(bridge=TTS 호출, convai=서명 URL 발급).",
       "apiKeyPath": "./secrets/elevenlabs-api-key.txt",
       "language": "ko",
-      "$voiceId": "20대 한국어 여성 보이스 ID(선택). 비우면 에이전트 기본 보이스. 오버라이드는 에이전트 보안설정에서 허용해야 적용됨. 현재=Rosa Oh(ko·seoul·young·female·calm/soft).",
-      "voiceId": "sf8Bpb1IU97NI9BHSMRf",
+      "$voiceId": "20대 한국어 여성 보이스 ID(선택). 비우면 에이전트 기본 보이스. 오버라이드는 에이전트 보안설정에서 허용해야 적용됨.",
+      "voiceId": "ibCGc01503OQd2R6i1n1",
       "$flow": "대화 흐름. 'past'(기본)=1차 참여자 과거 회귀 — 회고 발화(Firebase 응답 기반 자동 생성)→'언제로 돌아가고 싶어?'→과거 장면 pingpong 재생. 'future'=2차 참여자 미래 큐레이션(기존 흐름 보존).",
       "flow": "past",
       "past": {
@@ -87,10 +103,11 @@
       "apiKeyPath": "./secrets/comfy-api-key.txt"
     },
     "wan": {
-      "$video": "4:1 = seamless 360° 파노라마(4096×1024) 비율 유지. 1920×480은 16의 배수·720p와 동일 latent 비용. 비파노라마(1.79) 페르소나엔 좌우 늘어남 — 파노라마 구도 기준값. width/height는 16의 배수.",
+      "$video": "4:1 = seamless 360° 파노라마(4096×1024) 비율 유지. 1536×384는 16의 배수 — 1920×480 대비 픽셀 0.64배로 생성 속도 우선(화질 더 필요하면 1920×480로 복귀). 비파노라마(1.79) 페르소나엔 좌우 늘어남 — 파노라마 구도 기준값. width/height는 16의 배수.",
       "$length": "영상 길이(초) = length/fps. length는 반드시 4k+1(4의 배수+1). 목표초 → round((초×fps-1)/4)×4+1. 예: 5s=81, 10s=161. 주의: 프레임 2배면 생성시간·VRAM 대략 2배(1920×480×161 ≈ 290s/클립), Wan2.2는 ~5s(81f) 학습이라 그 이상은 모션이 늘어지거나 반복될 수 있음. IMMERSION은 어차피 loop 재생이라 length는 '반복 주기'.",
-      "video": { "width": 1920, "height": 480, "length": 161, "fps": 16, "steps": 4, "shift": 5.0 },
-      "promptPrefix": "The scene gently comes alive with subtle natural motion, kept in its elevated high-angle view looking down on the moment from above, as if watching a memory of one's own life pass by below. The central person breathes and moves softly, hair and clothing stir in a faint breeze, ambient life continues around them. The camera holds its high vantage nearly still with a very slow drift. Cinematic, realistic, understated motion."
+      "video": { "width": 1536, "height": 384, "length": 161, "fps": 16, "steps": 4, "shift": 5.0 },
+      "$promptPrefix": "시네마그래프 지시(2026-08-04) — 4:1 equirect는 Wan2.2 학습 분포 밖이라 인물 사지를 움직이면 상하체 분리·해부학 붕괴가 난다. 사람은 제자리 정지(숨쉬기 수준)로 못 박고, 움직임은 빛·공기·머리카락·옷자락·배경 요소로만 한정한다.",
+    "promptPrefix": "A living photograph, cinemagraph style: the scene is almost completely still, like a held breath. Every person stays exactly in place — no walking, no limb movement, no gestures, no turning; bodies keep their exact pose and position, at most a barely perceptible breathing. All apparent motion comes only from the atmosphere: light subtly shifting, hair and clothing edges stirring in a faint breeze, leaves or curtains trembling, dust drifting in the light. The camera is completely locked and static, no drift, no zoom, no rotation. Cinematic, realistic, extremely understated motion."
     }
   }
 }

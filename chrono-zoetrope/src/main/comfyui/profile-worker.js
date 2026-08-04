@@ -12,14 +12,22 @@ import { generateLifeLibrary } from './life-library.js'
 import { composeScenePromptFor, buildScenePlan } from './prompt-builder.js'
 import { selectSceneReference } from './face-anchor.js'
 import { prepareAgedAnchors } from './aged-anchor.js'
-import { buildReelPhotoPlan, generateReelPhotos } from './reel-photos.js'
+import {
+  buildReelPhotoPlan,
+  generateReelPhotos,
+  REEL_VARIANTS,
+  reelVariantLabel
+} from './reel-photos.js'
 import {
   buildLifeGraphPlan,
+  buildBranchedPlan,
   collectSessionPhotoURLs,
   collectStagePhotoURLs,
-  synthesizeAgeScenes
+  synthesizeAgeScenes,
+  synthesizeBranchedScenes
 } from './life-graph-plan.js'
 import { GeminiClient, resolveGeminiApiKey } from './gemini-client.js'
+import { runFuneralWorkflow, FUNERAL_VARIANTS, funeralVariantLabel } from './funeral.js'
 import {
   claimProfile,
   downloadPhotos,
@@ -28,8 +36,11 @@ import {
   claimLifeGraphSession,
   setLifeGraphSessionStatus,
   upsertPersonaManifest,
+  upsertPersonaScenePlan,
   uploadPersonaPanoramas,
-  uploadPersonaReelPhotos
+  uploadPersonaReelPhotos,
+  fetchGhostTranscript,
+  updateProfileFields
 } from './firestore-source.js'
 
 const noop = () => {}
@@ -46,16 +57,18 @@ async function uploadPanoramasBestEffort(pid, outDir, manifest, log) {
       dir: path.join(outDir, pid),
       images: manifest.images
     })
-    log(`  ☁ 파노라마 ${r.count}장 Firebase 업로드`)
+    log(`  [Firebase] 파노라마 ${r.count}장 업로드`)
   } catch (err) {
-    log(`  ⚠ 파노라마 Firebase 업로드 실패(무시): ${err.message}`)
+    log(`  [경고] 파노라마 Firebase 업로드 실패(무시): ${err.message}`)
   }
 }
 
 // reel 전용 3:4 사진 12장 — 파노라마보다 먼저 도는 두 번째 생성 플로우(reel-photos.js).
 // 두 흐름(occupation·life-graph)이 공유한다. best-effort: 전면 실패해도 파노라마 생성은 계속하고
-// (§ reel은 별도 산출물), 진행분은 manifest.reelPhotos에 남아 재실행 시 이어진다(resume).
-// 성공분은 곧바로 Firebase 정본(generatedPanoramaImages.reelPhotos)에 올린다 — 실패는 무시.
+// (§ reel은 별도 산출물), 진행분은 manifest에 남아 재실행 시 이어진다(resume).
+// 성공분은 곧바로 Firebase 정본(generatedReelImage)에 올린다 — 실패는 무시.
+//
+// 판(variant)마다 따로 돈다: 'past'(3~현재, 1차 주마등) / 'future'(현재 다음 해~90세, 2차 미래 주마등).
 async function generateReelPhotosBestEffort({
   profile,
   personaDir,
@@ -65,12 +78,22 @@ async function generateReelPhotosBestEffort({
   faceRef,
   stageRefFor = null,
   ageScenes = null,
+  variant = 'past',
   signal,
   log
 }) {
   if (signal?.aborted) return
+  const label = reelVariantLabel(variant)
   try {
-    const reelPlan = buildReelPhotoPlan(profile, { ...(config.reelPhotos || {}), ageScenes })
+    const reelPlan = buildReelPhotoPlan(profile, {
+      ...(config.reelPhotos || {}),
+      variant,
+      ageScenes
+    })
+    if (reelPlan.length === 0) {
+      log(`  [릴] ${label} 사진: 만들 나이가 없다 — 건너뜀`) // 이미 90세를 넘긴 참가자 등
+      return
+    }
     const r = await generateReelPhotos({
       plan: reelPlan,
       profile,
@@ -81,14 +104,16 @@ async function generateReelPhotosBestEffort({
       aspectRatio: config.reelPhotos?.aspectRatio, // 미지정이면 기본 4:3(가로형)
       concurrency: config.reelPhotos?.concurrency, // Gemini API 병렬 호출 수(미지정이면 기본 3)
       faceRef,
-      stageRefFor,
+      // 미래 릴엔 "그 순간의 실제 사진"이 있을 수 없다 — 얼굴 앵커로 그 나이만큼 늙힌다.
+      stageRefFor: variant === 'future' ? null : stageRefFor,
       retries: config.sceneRetries,
+      variant,
       signal,
       log,
       onManifest: (m) => upsertPersonaManifest(m)
     })
     log(
-      `  📷 reel 사진 ${r.okCount}/${reelPlan.length}장${r.failedCount ? ` (실패 ${r.failedCount})` : ''}${r.cancelled ? ' — 중지됨' : ''}`
+      `  [릴] ${label} 사진 ${r.okCount}/${reelPlan.length}장${r.failedCount ? ` (실패 ${r.failedCount})` : ''}${r.cancelled ? ' — 중지됨' : ''}`
     )
     if (r.okCount) {
       try {
@@ -96,15 +121,57 @@ async function generateReelPhotosBestEffort({
           profile,
           personaId: pid,
           dir: personaDir,
-          reelPhotos: r.reelPhotos
+          reelPhotos: r.reelPhotos,
+          variant
         })
-        log(`  ☁ reel 사진 ${up.count}장 Firebase 업로드`)
+        log(`  [Firebase] ${label} 사진 ${up.count}장 업로드`)
       } catch (err) {
-        log(`  ⚠ reel 사진 Firebase 업로드 실패(무시): ${err.message}`)
+        log(`  [경고] ${label} 사진 Firebase 업로드 실패(무시): ${err.message}`)
       }
     }
   } catch (err) {
-    log(`  ⚠ reel 사진 생성 실패(파노라마는 계속): ${err.message}`)
+    log(`  [경고] ${label} 사진 생성 실패(파노라마는 계속): ${err.message}`)
+  }
+}
+
+// 장례식 파노라마 — 파노라마 라이브러리 완료 뒤 도는 best-effort 단계(funeral.js).
+// 워커는 **이미지 단계까지만** 자동 생성한다: Gemini 4:1(고인 시선의 한국식 장례식장) → admin
+// 검토 대기(review). 영상화(Wan2.2)는 admin에서 이미지를 승인한 뒤 버튼으로만 시작된다.
+// 두 벌(present=지금의 죽음 / future=90세의 죽음)을 차례로 만든다 — 하나가 실패해도 다른 하나는
+// 시도한다(둘은 독립된 산출물이고, 재생성도 admin에서 판별로 따로 누른다).
+// 실패해도 생성 완료 자체는 유지 — admin의 장례식 패널에서 재생성한다.
+async function generateFuneralBestEffort({
+  personaDir,
+  config,
+  gclient,
+  doc,
+  faceRef,
+  signal,
+  log
+}) {
+  if (config.funeral?.enabled === false) return
+  for (const variant of FUNERAL_VARIANTS) {
+    if (signal?.aborted) return
+    const label = funeralVariantLabel(variant)
+    try {
+      const r = await runFuneralWorkflow({
+        personaDir,
+        gclient,
+        config,
+        stage: 'image',
+        variant,
+        doc, // Firestore 문서(본인 입력 데이터) — 조문객 캐스트 개인화 재료
+        faceRef: faceRef?.buffer || null,
+        signal,
+        log,
+        onManifest: (m) => upsertPersonaManifest(m)
+      })
+      if (r.ok) log(`  [장례식] ${label} 이미지 완료 (rev ${r.rev}) — admin 승인 후 영상화`)
+      else if (!r.cancelled)
+        log(`  [경고] ${label} 이미지 실패(무시 — admin에서 재생성): ${r.error}`)
+    } catch (err) {
+      log(`  [경고] ${label} 이미지 실패(무시 — admin에서 재생성): ${err.message}`)
+    }
   }
 }
 
@@ -135,7 +202,7 @@ export async function processProfile(
     log(`건너뜀 (이미 처리 중/완료): ${label}`)
     return { claimed: false, ok: false }
   }
-  log(`▶ 생성 시작: ${label}`)
+  log(`[시작] 생성: ${label}`)
 
   try {
     // 1) 레퍼런스 사진을 로컬로 내려받기
@@ -231,7 +298,7 @@ export async function processProfile(
     // 사용자 중지 → 실패가 아니라 재개 가능하도록 submitted로 되돌린다(진행분은 남아 resume).
     if (signal?.aborted) {
       await setProfileStatus(pid, 'submitted', { error: null }).catch(() => {})
-      log(`⏸ 중지됨: ${label} — ${imageCount}장까지 생성(재개 가능)`)
+      log(`[일시정지] 중지됨: ${label} — ${imageCount}장까지 생성(재개 가능)`)
       return { claimed: true, ok: false, cancelled: true, imageCount }
     }
 
@@ -249,12 +316,22 @@ export async function processProfile(
       ...(detectedGender ? { gender: detectedGender } : {})
     })
     log(
-      `✓ 완료: ${label} — ${imageCount}장${failedCount ? ` (실패 ${failedCount}장 건너뜀 — admin 재생성)` : ''} (${(elapsedMs / 1000).toFixed(1)}s)`
+      `[완료] ${label} — ${imageCount}장${failedCount ? ` (실패 ${failedCount}장 건너뜀 — admin 재생성)` : ''} (${(elapsedMs / 1000).toFixed(1)}s)`
     )
     await uploadPanoramasBestEffort(pid, outDir, result.manifest, log)
+    // 장례식 파노라마+영상 — 라이브러리 완료 후 best-effort (실패해도 완료 유지, admin 재생성).
+    await generateFuneralBestEffort({
+      personaDir,
+      config,
+      gclient: proGclient,
+      doc: profile, // Firestore 문서 — 세션 텍스트·occupation이 캐스트 개인화 재료
+      faceRef,
+      signal,
+      log
+    })
     return { claimed: true, ok: true, imageCount, failedCount, elapsedMs }
   } catch (err) {
-    log(`✗ 실패: ${label} — ${err.message}`)
+    log(`[실패] ${label} — ${err.message}`)
     await setProfileStatus(pid, 'error', { error: String(err.message || err) }).catch(() => {})
     return { claimed: true, ok: false, error: String(err.message || err) }
   }
@@ -282,7 +359,7 @@ export async function processLifeGraphSession(
     log(`건너뜀 (이미 처리 중/완료): ${label}`)
     return { claimed: false, ok: false }
   }
-  log(`▶ 생성 시작: ${label}`)
+  log(`[시작] 생성: ${label}`)
 
   try {
     const sessionPoints = profile[sessionKey] || {}
@@ -292,7 +369,7 @@ export async function processLifeGraphSession(
     // 붙은 걸 하나 골라 downloadPhotos가 기대하는 { id, photoURLs } 모양으로 맞춰 넘긴다.
     // 사진이 하나도 없으면(아직 아무 점에도 사진을 안 올렸으면) downloadPhotos가 바로
     // 에러를 던진다 — seamfix는 레퍼런스 사진이 필수라 여기서 감싸지 않고 그대로 실패시킨다.
-    const photoURLs = collectSessionPhotoURLs(sessionPoints)
+    const photoURLs = collectSessionPhotoURLs(sessionPoints, profile)
     const inputDir = path.join(outDir, pid, '_input')
     const photoPaths = await downloadPhotos({ id: pid, photoURLs }, inputDir)
     log(`  사진 ${photoPaths.length}장 다운로드`)
@@ -300,7 +377,7 @@ export async function processLifeGraphSession(
     // 1.5) 단계별 사진 — 위 1)은 성별감지용 대표 사진 1장뿐이지만, 과거~현재는 각 단계마다
     // 다른 사진이 붙어있을 수 있다. 그 단계 생성에 "그 순간의 실제 사진"을 레퍼런스로 실어
     // 보내려고 전부 따로 내려받는다(없는 단계는 자연히 빠짐 — 미래는 애초에 사진이 없음).
-    const stagePhotoURLs = collectStagePhotoURLs(sessionPoints)
+    const stagePhotoURLs = collectStagePhotoURLs(sessionPoints, profile)
     const stageIds = Object.keys(stagePhotoURLs)
     const stagePhotoLocalPaths =
       stageIds.length > 0
@@ -336,7 +413,7 @@ export async function processLifeGraphSession(
         : null
 
     // 1.8) 1차 합성 — 세션의 7단계 text 전체를 한 번에 LLM에 넣어, 옛 occupation 플로우의
-    // 3~90세를 15등분한 나이 격자(life-graph-plan.js AGE_TO_STAGE, 15개 나이마다 장면 후보 2개)로 이 사람 고유의
+    // crafter STAGE_MAX_AGES 격자 + 2세(life-graph-plan.js AGE_TO_STAGE, 16개 나이마다 장면 후보 2개)로 이 사람 고유의
     // 장면 데이터를 만든다. 텍스트가 없는 단계는 life-graph-plan.js가 옛 STAGES 후보 풀로 폴백한다.
     const synthClient = new GeminiClient({
       apiKey: await resolveGeminiApiKey(config.gemini),
@@ -356,23 +433,42 @@ export async function processLifeGraphSession(
 
     // 1.85) reel 전용 3:4 사진 — 파노라마보다 먼저(관람 순서상 reel이 먼저 보인다). best-effort.
     // 그 단계의 실제 제출 사진(stageRefFor)이 있으면 그걸 최우선 앵커로 쓴다(아동 나이 커버).
-    await generateReelPhotosBestEffort({
-      profile,
-      personaDir,
-      pid,
-      config,
-      gclient: proGclient,
-      faceRef,
-      stageRefFor,
-      ageScenes,
-      signal,
-      log
-    })
+    // 두 벌을 차례로 — 과거 릴(1차 주마등)과 미래 릴(2차 미래 주마등). 하나가 실패해도 다른 하나는 시도한다.
+    for (const reelVariant of REEL_VARIANTS) {
+      await generateReelPhotosBestEffort({
+        profile,
+        personaDir,
+        pid,
+        config,
+        gclient: proGclient,
+        faceRef,
+        stageRefFor,
+        ageScenes,
+        variant: reelVariant,
+        signal,
+        log
+      })
+    }
 
     // 1.9) 2단계 aged 앵커 프리패스 — 스테이지 실제 사진이 없는 성인 나이만 aging 대상(있는 나이는 그
     // 사진을 앵커로 씀). 그 나이의 '그 나이 얼굴'을 pro로 미리 뽑아 _aged/{age}.png에 캐시하고, 아래
     // selectFor가 조회한다. 플랜을 여기서 확정해(ageScenes 필요) 프리패스와 생성 루프가 같은 플랜을 쓴다.
-    const lifePlan = buildLifeGraphPlan(profile, sessionPoints, ageScenes) // 나이 10개 × 3장 = 최대 30장
+    const lifePlan = buildLifeGraphPlan(profile, sessionPoints, ageScenes) // 16개 나이 × 2장 = 32장
+
+    // 확정된 32장면의 묘사를 Firebase('panoramaPrompts')에 먼저 남긴다 — 이미지가 나오기 전에
+    // 무엇이 그려질 예정인지 확인·검토할 수 있게. best-effort(실패해도 생성은 계속).
+    try {
+      const sp = await upsertPersonaScenePlan({
+        profile,
+        personaId: pid,
+        plan: lifePlan,
+        sessionKey
+      })
+      log(`  [Firebase] 장면 플랜 ${sp.count}개 Firebase 기록 ('panoramaPrompts'/${sp.key})`)
+    } catch (err) {
+      log(`  [경고] 장면 플랜 Firebase 기록 실패(무시): ${err.message}`)
+    }
+
     const agedByAge = await prepareAgedAnchors({
       gclient: faceRef ? proGclient : null,
       faceRef,
@@ -437,7 +533,7 @@ export async function processLifeGraphSession(
       await setLifeGraphSessionStatus(pid, sessionKey, 'submitted', {
         [`${sessionKey}Error`]: null
       }).catch(() => {})
-      log(`⏸ 중지됨: ${label} — ${imageCount}장까지 생성(재개 가능)`)
+      log(`[일시정지] 중지됨: ${label} — ${imageCount}장까지 생성(재개 가능)`)
       return { claimed: true, ok: false, cancelled: true, imageCount }
     }
 
@@ -452,15 +548,249 @@ export async function processLifeGraphSession(
       [`${sessionKey}GeneratedAt`]: new Date().toISOString()
     })
     log(
-      `✓ 완료: ${label} — ${imageCount}장${failedCount ? ` (실패 ${failedCount}장 건너뜀 — admin 재생성)` : ''} (${(elapsedMs / 1000).toFixed(1)}s)`
+      `[완료] ${label} — ${imageCount}장${failedCount ? ` (실패 ${failedCount}장 건너뜀 — admin 재생성)` : ''} (${(elapsedMs / 1000).toFixed(1)}s)`
     )
     await uploadPanoramasBestEffort(pid, outDir, result.manifest, log)
+    // 장례식 파노라마+영상 — 라이브러리 완료 후 best-effort (실패해도 완료 유지, admin 재생성).
+    await generateFuneralBestEffort({
+      personaDir,
+      config,
+      gclient: proGclient,
+      doc: profile, // Firestore 문서 — 세션 텍스트·occupation이 캐스트 개인화 재료
+      faceRef,
+      signal,
+      log
+    })
     return { claimed: true, ok: true, imageCount, failedCount, elapsedMs }
   } catch (err) {
-    log(`✗ 실패: ${label} — ${err.message}`)
+    log(`[실패] ${label} — ${err.message}`)
     await setLifeGraphSessionStatus(pid, sessionKey, 'error', {
       [`${sessionKey}Error`]: String(err.message || err)
     }).catch(() => {})
     return { claimed: true, ok: false, error: String(err.message || err) }
+  }
+}
+
+/**
+ * 3차 플로우(분기 미래) 생성 — 1·2차 라이브러리가 이미 있는 참가자에 대해, 유령 대화 기록
+ * (ghostTranscripts)을 재료로 "체험으로 마음가짐이 바뀌어 다른 삶을 살았을 때"의 미래를
+ * 현 시점→90세로 외삽해 덧생성한다. 산출물:
+ *   - manifest.images에 alt-<나이>-<n> 파노라마(branch:true) 합류 — 기존 영상화(clips)·업로드·
+ *     재생성 기계가 그대로 먹는다(1·2차 재생목록·카탈로그는 branch 플래그로 거른다).
+ *   - manifest.reelPhotosBranched (_reel-branched/) — 3차 릴 필름스트립.
+ *   - manifest.funeralBranched — 분기 장례식(90세) 이미지(승인 후 admin에서 영상화).
+ * 전제: library/<pid>/manifest.json과 _input 레퍼런스 사진이 로컬에 있어야 한다(1·2차 생성 완료
+ * 또는 hydrate). 대화 기록이 없으면 시작하지 않는다 — 3차의 재료가 없다.
+ * @param {object} profile  Firestore 문서 ({ id, name, birthDate, age, first/second/third, ... })
+ * @param {object} opts     { config, outDir, signal, log, onProgress }
+ */
+export async function processBranchedFuture(
+  profile,
+  { config, outDir, signal, log = noop, onProgress = noop } = {}
+) {
+  const pid = profile.id
+  const label = `${profile.name || '?'} (${pid}) · 분기 미래(3차)`
+  const personaDir = path.join(outDir, pid)
+  await updateProfileFields(pid, { branchedStatus: 'generating', branchedError: null }).catch(
+    () => {}
+  )
+  try {
+    // 0) 재료 — 유령 대화 기록. 없으면 3차를 만들 근거가 없다.
+    const transcript = await fetchGhostTranscript(profile)
+    if (!transcript?.turns?.length)
+      throw new Error('유령 대화 기록(ghostTranscripts)이 없다 — 1·2차 체험 후에 생성할 수 있다')
+    log(`[시작] ${label} — 대화 ${transcript.turns.length}턴 기반 외삽`)
+
+    // 기존 라이브러리 — 1·2차 32장이 이미 있어야 한다(그 위에 alt 장면을 덧생성·resume).
+    const manifestPath = path.join(personaDir, 'manifest.json')
+    let manifest
+    try {
+      manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'))
+    } catch {
+      throw new Error(`라이브러리가 없다: ${manifestPath} — 1·2차 생성(또는 hydrate)이 먼저다`)
+    }
+
+    // 1) 합성 — 최신 세션 점들(과거 사실의 연속성)+대화 기록 → 분기 미래 장면.
+    const sessionKey =
+      ['third', 'second', 'first'].find((k) => profile[k] && Object.keys(profile[k]).length) || null
+    const sessionPoints = sessionKey ? profile[sessionKey] : {}
+    const synthClient = new GeminiClient({
+      apiKey: await resolveGeminiApiKey(config.gemini),
+      textModel: config.gemini?.textModel,
+      timeoutMs: config.timeoutMs
+    })
+    const branchedScenes = await synthesizeBranchedScenes(
+      synthClient,
+      profile,
+      sessionPoints,
+      transcript.turns
+    )
+    if (!Object.keys(branchedScenes).length)
+      throw new Error('분기 장면 합성 결과가 비었다 — 현재 나이를 구할 수 없거나 대화가 빈약함')
+    const branchedPlan = buildBranchedPlan(profile, branchedScenes)
+    log(
+      `  분기 장면 합성 완료: ${Object.keys(branchedScenes).length}개 나이, ${branchedPlan.length}장 플랜`
+    )
+
+    // 플랜을 별도 문서(__branched)로 Firebase에 남긴다 — 32장 플랜 기록을 덮지 않는다. best-effort.
+    try {
+      const sp = await upsertPersonaScenePlan({
+        profile,
+        personaId: pid,
+        plan: branchedPlan,
+        sessionKey: 'branched',
+        docSuffix: '__branched'
+      })
+      log(`  [Firebase] 분기 플랜 ${sp.count}개 기록 ('panoramaPrompts'/${sp.key})`)
+    } catch (err) {
+      log(`  [경고] 분기 플랜 Firebase 기록 실패(무시): ${err.message}`)
+    }
+
+    // 2) 얼굴 앵커 — 1·2차 때 받아둔 로컬 레퍼런스 사진 재사용(manifest.profile.photos).
+    const photoPaths = []
+    for (const p of manifest.profile?.photos || []) {
+      const ok = await fs.access(p).then(
+        () => true,
+        () => false
+      )
+      if (ok) photoPaths.push(p)
+    }
+    if (!photoPaths.length)
+      throw new Error(
+        '레퍼런스 사진이 로컬에 없다(_input) — 1·2차를 만든 머신에서 실행하거나 hydrate 먼저'
+      )
+    const faceRef = {
+      buffer: await fs.readFile(photoPaths[0]),
+      path: path.relative(personaDir, photoPaths[0])
+    }
+
+    const proGclient = new GeminiClient({
+      apiKey: await resolveGeminiApiKey(config.gemini),
+      model: config.gemini.model,
+      textModel: config.gemini.textModel,
+      timeoutMs: config.timeoutMs
+    })
+
+    // 3) 분기 릴(_reel-branched) — 미래 나이라 스테이지 사진은 없다(얼굴 앵커로 aging). best-effort.
+    await generateReelPhotosBestEffort({
+      profile,
+      personaDir,
+      pid,
+      config,
+      gclient: proGclient,
+      faceRef,
+      stageRefFor: null,
+      ageScenes: branchedScenes,
+      variant: 'branched',
+      signal,
+      log
+    })
+    if (signal?.aborted) return { ok: false, cancelled: true }
+
+    // 4) aged 앵커 — 미래 나이의 '그 나이 얼굴'. 1·2차 프리패스가 이미 _aged/에 캐시해뒀으면 재사용.
+    const agedByAge = await prepareAgedAnchors({
+      gclient: proGclient,
+      faceRef,
+      profile,
+      plan: branchedPlan,
+      personaDir,
+      model: config.gemini.model,
+      imageSize: config.gemini.imageSize,
+      signal,
+      log,
+      needsAged: () => true // 분기 장면은 전부 미래 — 스테이지 실제 사진이 있을 수 없다
+    })
+    const agedRefFor = (age) => agedByAge.get(age) || null
+    const selectFor = (item) => selectSceneReference(item, { stageRef: null, faceRef, agedRefFor })
+
+    // 5) 파노라마 생성 — 기존 32장 플랜(manifest.images 그대로) + 분기 플랜을 합쳐 넘긴다.
+    // generateLifeLibrary의 resume이 기존 장은 건너뛰고(성공분) 분기 장만 새로 만든다.
+    const mergedPlan = [...manifest.images.map((im) => ({ ...im })), ...branchedPlan]
+    const t0 = Date.now()
+    const result = await generateLifeLibrary(
+      { name: profile.name, birthDate: profile.birthDate, photos: photoPaths },
+      {
+        host: config.host,
+        outDir,
+        workflow: config.workflow,
+        panorama: config.panorama,
+        seamfix: config.seamfix,
+        timeoutMs: config.timeoutMs,
+        sceneRetries: config.sceneRetries,
+        signal,
+        gemini: config.gemini,
+        pid,
+        plan: mergedPlan,
+        // 분기 장면만 새 프롬프트·레퍼런스를 조립한다. 기존 장은 resume으로 건너뛰지만,
+        // 혹시 failed였던 옛 장이 재시도되면 기록된 원래 프롬프트를 그대로 쓴다(레퍼런스 없이).
+        promptFor: (p, item) =>
+          item.branch
+            ? selectFor(item).prefix + composeScenePromptFor(config.workflow, p, item)
+            : item.prompt || composeScenePromptFor(config.workflow, p, item),
+        referencesFor: (item) => {
+          if (!item.branch) return []
+          const r = selectFor(item).reference
+          return r ? [r.buffer] : []
+        },
+        referenceMetaFor: (item) => {
+          if (!item.branch) return null
+          const s = selectFor(item)
+          return s.reference ? { file: s.reference.path, kind: s.kind } : null
+        },
+        skipSeamfix: config.lifeGraphSkipSeamfix,
+        onManifest: (m) => upsertPersonaManifest(m),
+        onProgress
+      }
+    )
+    const altAll = result.manifest.images.filter((im) => im.branch)
+    const imageCount = altAll.filter((im) => !im.failed).length
+    const failedCount = altAll.length - imageCount
+
+    if (signal?.aborted) {
+      await updateProfileFields(pid, { branchedStatus: 'submitted' }).catch(() => {})
+      log(`[일시정지] 중지됨: ${label} — 분기 ${imageCount}장까지 생성(재개 가능)`)
+      return { ok: false, cancelled: true, imageCount }
+    }
+    if (imageCount === 0) throw new Error(`분기 장면 전부 실패 (${failedCount}장)`)
+
+    await uploadPanoramasBestEffort(pid, outDir, result.manifest, log)
+
+    // 6) 분기 장례식(90세) — 이미지 단계까지. 승인·영상화는 admin에서(기존 게이트 그대로).
+    try {
+      const r = await runFuneralWorkflow({
+        personaDir,
+        gclient: proGclient,
+        config,
+        stage: 'image',
+        variant: 'branched',
+        doc: profile,
+        faceRef: faceRef.buffer,
+        signal,
+        log,
+        onManifest: (m) => upsertPersonaManifest(m)
+      })
+      if (r.ok) log(`  [장례식] 분기 장례식 이미지 완료 (rev ${r.rev}) — admin 승인 후 영상화`)
+      else if (!r.cancelled) log(`  [경고] 분기 장례식 이미지 실패(무시): ${r.error}`)
+    } catch (err) {
+      log(`  [경고] 분기 장례식 이미지 실패(무시): ${err.message}`)
+    }
+
+    await updateProfileFields(pid, {
+      branchedStatus: 'done',
+      branchedImageCount: imageCount,
+      branchedFailedCount: failedCount,
+      branchedGeneratedAt: new Date().toISOString()
+    }).catch(() => {})
+    log(
+      `[완료] ${label} — 분기 ${imageCount}장${failedCount ? ` (실패 ${failedCount}장)` : ''} (${((Date.now() - t0) / 1000).toFixed(1)}s)`
+    )
+    return { ok: true, imageCount, failedCount }
+  } catch (err) {
+    log(`[실패] ${label} — ${err.message}`)
+    await updateProfileFields(pid, {
+      branchedStatus: 'error',
+      branchedError: String(err.message || err)
+    }).catch(() => {})
+    return { ok: false, error: String(err.message || err) }
   }
 }

@@ -28,7 +28,11 @@ const plan = buildScenePlan(profile, { perStage: 3 })
 const AGES = [3, 7, 14, 32]
 const scenes = AGES.map((age) => {
   const item = plan.find((p) => p.age === age)
-  return { age, scene: item.scene, img: `library/_probe/scene-safety/age-${String(age).padStart(2, '0')}.png` }
+  return {
+    age,
+    scene: item.scene,
+    img: `library/_probe/scene-safety/age-${String(age).padStart(2, '0')}.png`
+  }
 })
 
 // ── 컨텍스트 자동 생성 — 두 장면(상황·나이)에 맞춘 전이 프롬프트 ──────────────
@@ -50,7 +54,10 @@ await mkdir(outDir, { recursive: true })
 
 // 이미지 한 번씩만 업로드 (연속 전이가 공유)
 const uploads = {}
-for (const s of scenes) uploads[s.age] = (await client.uploadImage(await readFile(resolve(root, s.img)), `mini-${s.age}.png`)).name
+for (const s of scenes)
+  uploads[s.age] = (
+    await client.uploadImage(await readFile(resolve(root, s.img)), `mini-${s.age}.png`)
+  ).name
 
 async function genTransition(a, b, idx) {
   const workflow = {
@@ -73,20 +80,32 @@ async function genTransition(a, b, idx) {
     },
     4: {
       class_type: 'SaveVideo',
-      inputs: { video: ['3', 0], filename_prefix: `chrono-compare/mini-${idx}`, format: 'mp4', codec: 'h264' }
+      inputs: {
+        video: ['3', 0],
+        filename_prefix: `chrono-compare/mini-${idx}`,
+        format: 'mp4',
+        codec: 'h264'
+      }
     }
   }
   const t0 = Date.now()
   const res = await fetch(`${HOST}/prompt`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt: workflow, client_id: 'mini-reel', extra_data: { api_key_comfy_org: KEY } })
+    body: JSON.stringify({
+      prompt: workflow,
+      client_id: 'mini-reel',
+      extra_data: { api_key_comfy_org: KEY }
+    })
   })
   const body = await res.json().catch(() => ({}))
-  if (!res.ok || !body.prompt_id) throw new Error(`큐잉 실패 ${res.status}: ${JSON.stringify(body).slice(0, 500)}`)
+  if (!res.ok || !body.prompt_id)
+    throw new Error(`큐잉 실패 ${res.status}: ${JSON.stringify(body).slice(0, 500)}`)
   for (let i = 0; i < 120; i++) {
     await new Promise((r) => setTimeout(r, 3000))
-    const h = await fetch(`${HOST}/history/${body.prompt_id}`).then((r) => r.json()).catch(() => ({}))
+    const h = await fetch(`${HOST}/history/${body.prompt_id}`)
+      .then((r) => r.json())
+      .catch(() => ({}))
     const e = h[body.prompt_id]
     if (!e) continue
     if ((e.status?.messages || []).some((m) => m[0] === 'execution_error'))
@@ -95,13 +114,20 @@ async function genTransition(a, b, idx) {
       let vid = null
       for (const node of Object.values(e.outputs))
         for (const arr of Object.values(node))
-          if (Array.isArray(arr)) for (const f of arr) if (f?.filename && /\.mp4$/i.test(f.filename)) vid = f
+          if (Array.isArray(arr))
+            for (const f of arr) if (f?.filename && /\.mp4$/i.test(f.filename)) vid = f
       if (!vid) throw new Error('영상 출력 없음')
-      const q = new URLSearchParams({ filename: vid.filename, subfolder: vid.subfolder || '', type: vid.type || 'output' })
+      const q = new URLSearchParams({
+        filename: vid.filename,
+        subfolder: vid.subfolder || '',
+        type: vid.type || 'output'
+      })
       const data = Buffer.from(await (await fetch(`${HOST}/view?${q}`)).arrayBuffer())
       const p = join(outDir, `mini-${idx}.mp4`)
       await writeFile(p, data)
-      console.log(`  ✓ 전이 ${idx}: ${a.age}살→${b.age}살 (${(data.length / 1e6).toFixed(1)}MB, ${((Date.now() - t0) / 1000).toFixed(0)}s)`)
+      console.log(
+        `  [완료] 전이 ${idx}: ${a.age}살→${b.age}살 (${(data.length / 1e6).toFixed(1)}MB, ${((Date.now() - t0) / 1000).toFixed(0)}s)`
+      )
       return p
     }
   }
@@ -121,7 +147,20 @@ const listFile = join(outDir, 'mini-list.txt')
 await writeFile(listFile, clips.map((c) => `file '${c}'`).join('\n'))
 const outPath = join(outDir, 'minireel.mp4')
 await new Promise((res, rej) => {
-  const p = spawn('ffmpeg', ['-y', '-v', 'error', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', outPath])
+  const p = spawn('ffmpeg', [
+    '-y',
+    '-v',
+    'error',
+    '-f',
+    'concat',
+    '-safe',
+    '0',
+    '-i',
+    listFile,
+    '-c',
+    'copy',
+    outPath
+  ])
   p.on('close', (c) => (c === 0 ? res() : rej(new Error('concat 실패'))))
 })
-console.log(`\n✓ 미니 릴: ${outPath} (${clips.length}개 전이 이어붙임)`)
+console.log(`\n[완료] 미니 릴: ${outPath} (${clips.length}개 전이 이어붙임)`)

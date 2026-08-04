@@ -31,8 +31,12 @@ export const PANORAMA_NEGATIVE =
   'text, watermark, caption, subtitles, logo, cartoon, illustration, 3d render, deformed, extra fingers, lowres, visible seam, hard edge, vertical border, frame, split image, duplicated subject, mirrored'
 
 // Wan2.2 공식 템플릿 계열의 표준 네거티브(중국어). 정적 화면·저품질·자막 억제.
+// + 해부학 붕괴 항목(영어, 2026-08-04) — 4:1 equirect 입력에서 인물이 움직일 때 상하체가
+// 분리되거나 몸이 찢어지는 아티팩트를 직접 겨냥한다(시네마그래프 promptPrefix와 한 쌍).
 export const WAN_NEGATIVE =
-  '色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走'
+  '色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走，' +
+  'split body, severed torso, detached lower body, body separating, broken anatomy, disconnected limbs, ' +
+  'torso and legs splitting apart, melting body, warping distorted person, duplicated person, body horror'
 
 export function randomSeed() {
   return Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)

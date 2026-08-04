@@ -14,12 +14,14 @@ const toSlash = (s) => (s || '').replace(/\\/g, '/')
 
 /** /view 다운로드 — subfolder 백슬래시(Windows ComfyUI) 원본 우선, 실패 시 슬래시로 폴백. */
 async function fetchView(host, file) {
-  const variants = [file.subfolder, toSlash(file.subfolder)].filter(
-    (v, i, a) => a.indexOf(v) === i
-  )
+  const variants = [file.subfolder, toSlash(file.subfolder)].filter((v, i, a) => a.indexOf(v) === i)
   let lastErr
   for (const subfolder of variants) {
-    const q = new URLSearchParams({ filename: file.filename, subfolder, type: file.type || 'output' })
+    const q = new URLSearchParams({
+      filename: file.filename,
+      subfolder,
+      type: file.type || 'output'
+    })
     try {
       const res = await fetch(`${host}/view?${q}`)
       if (res.ok) return Buffer.from(await res.arrayBuffer())
@@ -35,7 +37,10 @@ async function fetchView(host, file) {
  * ComfyUI /history에서 subfolders에 속한 mp4 output을 모아 장면 id별 최신 카운터 파일을 고른다.
  * @returns {Map<string, {file: object, counter: number}>}  id → 최신 output file
  */
-export async function indexComfyOutputs(host, subfolders = ['chrono-zoetrope/regen', 'chrono-zoetrope/loop']) {
+export async function indexComfyOutputs(
+  host,
+  subfolders = ['chrono-zoetrope/regen', 'chrono-zoetrope/loop']
+) {
   const res = await fetch(`${host}/history`)
   if (!res.ok) throw new Error(`ComfyUI /history 실패: HTTP ${res.status}`)
   const hist = await res.json()
@@ -71,7 +76,13 @@ export async function indexComfyOutputs(host, subfolders = ['chrono-zoetrope/reg
  * @param {(e:object)=>void} [p.onProgress]
  * @returns {Promise<{recovered:string[], missing:string[]}>}
  */
-export async function recoverClipsFromComfy({ host, ids, videosDir, subfolders, onProgress = () => {} }) {
+export async function recoverClipsFromComfy({
+  host,
+  ids,
+  videosDir,
+  subfolders,
+  onProgress = () => {}
+}) {
   const latest = await indexComfyOutputs(host, subfolders)
   await mkdir(videosDir, { recursive: true })
   const recovered = []

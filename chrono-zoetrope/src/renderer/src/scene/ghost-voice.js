@@ -24,7 +24,22 @@ import { Conversation } from '@elevenlabs/client'
 //   들리게 스테레오 패닝한다(입체감). 없으면 중앙 고정.
 // playVideo: (url, opts?) => Promise — 대화 tool이 부르는 영상 재생. opts.fadeIn=true면 검정에서
 //   서서히 떠오른다(과거 회귀 연출). 첫 한 바퀴 뒤 resolve하고 영상은 loop로 계속 흐른다.
-export function createGhostVoice({ getSession, onSpeaking, onListening, getPan, playVideo } = {}) {
+// clearVideo: (opts?) => Promise — 대화 영상을 걷고 유령 idle 앰비언트로 복귀. 1장(과거)→2장(미래)
+//   전환 발화("이제 넌, 미래로 갈 거야…") 시점에 부른다 — 서버 턴 응답의 chapterTurned 신호.
+// playFutureFuneral: (url, opts?) => Promise — 2장(미래) 진입의 첫 장면(90세 장례식)을 1회 재생하고
+//   TV 꺼지듯 암전시킨다. clearVideo 직후에 부른다.
+// playFutureReel: (payload) => Promise — 그 암전에서 미래 릴(필름스트립)을 흘린다. 1사이클이 끝나면
+//   resolve — 그때서야 유령이 2장 전환 발화를 시작한다(장례식 → 미래 릴 → 발화 순서).
+export function createGhostVoice({
+  getSession,
+  onSpeaking,
+  onListening,
+  getPan,
+  playVideo,
+  clearVideo,
+  playFutureFuneral,
+  playFutureReel
+} = {}) {
   let convo = null //     현재 Conversation 세션(없으면 null, convai 엔진 전용).
   let starting = false // start 진행 중(중복 시작 방지).
   let stopped = true //   stop 요청 상태 — 시작 지연 도중 취소를 감지한다.
@@ -38,6 +53,11 @@ export function createGhostVoice({ getSession, onSpeaking, onListening, getPan, 
   // 보이면 PAN_INVERT를 -1로(런타임 머신에서 검증). MAX_PAN<1 로 완전 하드패닝은 피해 중앙 존재감을 남긴다.
   const PAN_INVERT = 1
   const MAX_PAN = 0.85
+  const VOICE_GAIN = 5 // 목소리 배율
+  // 에코 — 유령 목소리에 공간감(먼 곳에서 울려오는 느낌). 원음은 그대로 두고 젖은 신호만 섞는다.
+  const ECHO_DELAY = 0.28 //    반복 간격(초). 짧으면 방 울림, 길면 동굴 울림.
+  const ECHO_FEEDBACK = 0.35 // 반복마다 감쇠율(0~1). 높을수록 꼬리가 길게 남는다.
+  const ECHO_WET = 0.3 //       에코 섞는 비율. 0이면 에코 없음(원음만).
   let audioCtx = null //      목소리 패닝용 AudioContext(지연 생성).
   const mediaSources = new WeakMap() // <audio> → MediaElementSource(요소당 한 번만 생성 가능).
   let panRaf = 0 //           재생 중 pan 추종 rAF.
@@ -65,8 +85,34 @@ export function createGhostVoice({ getSession, onSpeaking, onListening, getPan, 
         mediaSources.set(a, src)
       }
       panner = ctx.createStereoPanner()
+      const boost = ctx.createGain() // 목소리 증폭 — HTMLAudio volume은 1.0이 상한이라 Web Audio 게인으로 키운다.
+      boost.gain.value = VOICE_GAIN
+      // 리미터 — 증폭으로 0dB를 넘는 피크만 눌러 클리핑(찢어짐)을 막는다. 평상시 음색엔 거의 관여 안 함.
+      const limiter = ctx.createDynamicsCompressor()
+      limiter.threshold.value = -3
+      limiter.knee.value = 0
+      limiter.ratio.value = 20
+      limiter.attack.value = 0.002
+      limiter.release.value = 0.1
       src.connect(panner)
-      panner.connect(ctx.destination)
+      panner.connect(boost)
+      boost.connect(limiter)
+      // 에코 — boost에서 갈라져 delay→feedback 루프를 돌며 잦아드는 젖은 신호를 리미터에 합류시킨다.
+      // 원음(dry) 경로는 위에서 그대로 유지되므로 대사 명료도는 잃지 않는다.
+      if (ECHO_WET > 0) {
+        const delay = ctx.createDelay(2)
+        delay.delayTime.value = ECHO_DELAY
+        const feedback = ctx.createGain()
+        feedback.gain.value = ECHO_FEEDBACK
+        const wet = ctx.createGain()
+        wet.gain.value = ECHO_WET
+        boost.connect(delay)
+        delay.connect(feedback)
+        feedback.connect(delay)
+        delay.connect(wet)
+        wet.connect(limiter)
+      }
+      limiter.connect(ctx.destination)
     } catch {
       return () => {} // 이 요소는 이미 라우팅됐거나 패닝 불가 — 그냥 둔다.
     }
@@ -245,6 +291,20 @@ export function createGhostVoice({ getSession, onSpeaking, onListening, getPan, 
         continue
       }
       if (stopped) return
+      // 1장(과거)→2장(미래) 전환 — 직전 장면 영상을 걷고, 미래로 들어가는 첫 장면으로
+      // **90세 장례식**을 튼다(2차 플로우의 initiate). 1차가 "장례식 → 암전 → 주마등"으로 열리듯
+      // 2차도 같은 문법으로 열린다: 이 사람이 이대로 살아 맞이할 죽음을 먼저 보고, 그 암전에서
+      // 미래의 순간들로 넘어간다. 영상이 아직 없으면(승인·영상화 전) 서버가 url을 안 주고 건너뛴다.
+      if (reply?.chapterTurned) {
+        await clearVideo?.()
+        if (stopped) return
+        if (reply.funeral?.url) await playFutureFuneral?.(reply.funeral.url, reply.funeral)
+        if (stopped) return
+        // 장례식이 암전으로 닫히면 그 자리에서 미래 릴이 흐른다(현재 다음 해 → 90세).
+        // 1사이클이 끝나야 아래 전환 발화로 넘어간다 — 유령은 미래를 다 보여준 뒤에 말을 건다.
+        if (reply.futureReel?.photos?.length) await playFutureReel?.(reply.futureReel)
+      }
+      if (stopped) return
       if (reply?.say) await speak(reply.say) // 예: "기다려봐. 그때의 기억으로 돌아가자."
       if (stopped) return
       if (reply?.end && !reply?.video) {
@@ -255,7 +315,11 @@ export function createGhostVoice({ getSession, onSpeaking, onListening, getPan, 
       if (reply?.video?.url) {
         // 검정 → 그 순간이 떠오른다(pingpong loop). resolveAfterSec: 첫 loop 한 바퀴(최대 18s)를
         // 기다리지 않고 fade-in 직후 후속 대사로 넘어간다 — 영상은 뒤에서 계속 돈다.
-        await playVideo?.(reply.video.url, { fadeIn: true, resolveAfterSec: 3 })
+        await playVideo?.(reply.video.url, {
+          fadeIn: true,
+          resolveAfterSec: 3,
+          scene: reply.video.scene // 장면 맥락 → 앰비언스 효과음(sfx-layer) 매칭
+        })
         if (stopped) return
         // 영상이 떠오른 상황을 서버 두뇌에 알려 다음 대사("이때 쯤을 이야기하는 거지?" /
         // "왜 이때의 모습이 보고싶었어?")를 받는다.
@@ -304,7 +368,7 @@ export function createGhostVoice({ getSession, onSpeaking, onListening, getPan, 
         }
         if (!m) return '보여줄 과거 영상이 없어.'
         const exact = (params.exact === true || params.exact === 'true') && !idFallback
-        await playVideo?.(m.url, { fadeIn: true })
+        await playVideo?.(m.url, { fadeIn: true, scene: m.scene }) // scene → 앰비언스 매칭
         const head = `${m.age}살(${m.year}년)의 순간이야.`
         const desc = m.scene ? ` [화면 속 장면] ${m.scene}` : ''
         const note = exact
@@ -345,7 +409,7 @@ export function createGhostVoice({ getSession, onSpeaking, onListening, getPan, 
         cursor = 0
         if (!stage || !stage.videos.length) return '보여줄 미래 영상이 없어.'
         const v = stage.videos[cursor]
-        await playVideo?.(v.url)
+        await playVideo?.(v.url, { scene: v.scene }) // scene → 앰비언스 매칭
         cursor = 1
         return describe(v, stage.videos.length - cursor, true)
       },
@@ -353,7 +417,7 @@ export function createGhostVoice({ getSession, onSpeaking, onListening, getPan, 
         if (!stage) return '아직 보여준 시기가 없어. 먼저 show_future_self를 써.'
         if (cursor >= stage.videos.length) return '이 시기 장면은 이게 마지막이었어. 더 없어.'
         const v = stage.videos[cursor]
-        await playVideo?.(v.url)
+        await playVideo?.(v.url, { scene: v.scene }) // scene → 앰비언스 매칭
         cursor += 1
         return describe(v, stage.videos.length - cursor, false)
       }

@@ -12,13 +12,15 @@
 //
 // 실패는 조용히 삼킨다 — 파일 없음·디코드 실패·오디오 컨텍스트 불가면 음악 없이 진행한다(§1 침묵 폴백).
 
-const LEVEL = { idle: 10, agent: 3, user: 5 }
+const LEVEL = { idle: 10, agent: 5, user: 5 } // agent: 유령 발화 중 — 최종 gain 0.1 (5/10 × MASTER 0.2)
 const CROSSFADE_SEC = 4 //  앞뒤 이음매 crossfade 길이(초)
 const DUCK_RAMP_SEC = 0.5 // 발화/청취 전이 시 볼륨 램프 길이(초)
-const MASTER = 1.3 //        level 10 → gain(MASTER). 설치 현장에서 전체 크기만 조정하고 싶을 때 여기만 만진다.
-//                          (1.0=파일 원음 크기. 음악이 작아 전체를 30% 키움 — 1.0 대비 gain +30%.)
+const MASTER = 0.2 //        level 10 → gain(MASTER). 설치 현장에서 전체 크기만 조정하고 싶을 때 여기만 만진다.
+//                          (1.0=파일 원음 크기. 목소리가 음악 위로 또렷하게 들리도록 전체를 낮춰 둠.)
 
 const gainForLevel = (level) => (Math.max(0, Math.min(10, level)) / 10) * MASTER
+const TRIM_MIN = 0.05 // 무음 직전까지만 — 완전 0이면 켜져 있는지 알 수 없다
+const TRIM_MAX = 3.0 //  MASTER 대비 최대 3배(파일 원음 0.9)까지
 
 // src: 배경음악 파일 URL(예: '/resources/Where_Light_Ends.mp3')
 export function createBgMusic({ src } = {}) {
@@ -31,6 +33,7 @@ export function createBgMusic({ src } = {}) {
   let sources = [] //      살아있는 BufferSource들(stop()이 모두 끊는다)
   let agentSpeaking = false
   let userListening = false
+  let trim = 1 // 런타임 배율(A/S 키) — 덕킹 레벨에 곱해진다. 1 = MASTER 그대로.
 
   async function ensureLoaded() {
     if (buffer) return true
@@ -60,7 +63,16 @@ export function createBgMusic({ src } = {}) {
     const g = duck.gain
     g.cancelScheduledValues(now)
     g.setValueAtTime(g.value, now)
-    g.linearRampToValueAtTime(gainForLevel(targetLevel()), now + rampSec)
+    g.linearRampToValueAtTime(gainForLevel(targetLevel()) * trim, now + rampSec)
+  }
+
+  // A/S 키 — 재생 중 음량 배율을 곱해 조절한다(예: 1.25 = 업, 1/1.25 = 다운).
+  function nudgeVolume(factor) {
+    trim = Math.max(TRIM_MIN, Math.min(TRIM_MAX, trim * factor))
+    applyLevel(0.1)
+    console.log(
+      `[bg-music] trim ×${trim.toFixed(2)} → 실효 gain ${(gainForLevel(targetLevel()) * trim).toFixed(3)}`
+    )
   }
 
   // 한 바퀴 소스를 지금 시각(when)에 예약하고, 자기 몫의 crossfade 페이드를 건다.
@@ -114,8 +126,24 @@ export function createBgMusic({ src } = {}) {
     } catch {
       /* 무시 */
     }
+    if (ctx.state !== 'running') {
+      // 자동재생 차단 — 제스처 없이 만든 컨텍스트는 suspended로 남는다. 첫 입력에서 재개.
+      console.warn(
+        `[bg-music] AudioContext '${ctx.state}' — 자동재생 정책으로 무음. 클릭/키 입력 시 재개됩니다.`
+      )
+      const resume = () => {
+        ctx
+          .resume()
+          .then(() => console.log(`[bg-music] AudioContext 재개됨 (state=${ctx.state})`))
+          .catch(() => {})
+      }
+      window.addEventListener('pointerdown', resume, { once: true })
+      window.addEventListener('keydown', resume, { once: true })
+    } else {
+      console.log('[bg-music] 재생 시작 (AudioContext running)')
+    }
     duck = ctx.createGain()
-    duck.gain.setValueAtTime(gainForLevel(targetLevel()), ctx.currentTime)
+    duck.gain.setValueAtTime(gainForLevel(targetLevel()) * trim, ctx.currentTime)
     duck.connect(ctx.destination)
     scheduleLoop(ctx.currentTime + 0.05)
   }
@@ -158,5 +186,5 @@ export function createBgMusic({ src } = {}) {
     applyLevel()
   }
 
-  return { start, stop, setAgentSpeaking, setUserListening, dispose: stop }
+  return { start, stop, setAgentSpeaking, setUserListening, nudgeVolume, dispose: stop }
 }

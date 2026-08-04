@@ -22,7 +22,9 @@ import { buildSeamlessPanoramaWorkflow, randomSeed } from '../src/main/comfyui/w
 import { buildScenePlan, composePanoramaScenePrompt } from '../src/main/comfyui/prompt-builder.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const config = JSON.parse(await fs.readFile(path.join(root, 'src/main/config/comfyui.json'), 'utf-8'))
+const config = JSON.parse(
+  await fs.readFile(path.join(root, 'src/main/config/comfyui.json'), 'utf-8')
+)
 
 // CLI 파싱: 정수는 나이, --width/--height 는 파노라마 크기.
 const args = process.argv.slice(2)

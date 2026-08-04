@@ -13,7 +13,9 @@ import { initFirebase, uploadPersonaVideos } from '../src/main/comfyui/firestore
 import { recoverClipsFromComfy } from '../src/main/comfyui/recover-clips.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const config = JSON.parse(await fs.readFile(path.join(root, 'src/main/config/comfyui.json'), 'utf-8'))
+const config = JSON.parse(
+  await fs.readFile(path.join(root, 'src/main/config/comfyui.json'), 'utf-8')
+)
 const LIBRARY = path.join(root, config.outDir || 'library')
 
 let args = process.argv.slice(2)
@@ -37,7 +39,7 @@ if (!noUpload) {
     })
     firebaseReady = true
   } catch (e) {
-    console.warn(`⚠ Firebase 초기화 실패 — 로컬만 복구한다: ${e.message}`)
+    console.warn(`[경고] Firebase 초기화 실패 — 로컬만 복구한다: ${e.message}`)
   }
 }
 
@@ -47,7 +49,12 @@ if (args[0] === '--all') {
   pids = []
   for (const e of entries) {
     if (!e.isDirectory() || e.name.startsWith('_')) continue
-    if (await fs.access(path.join(LIBRARY, e.name, 'manifest.json')).then(() => true, () => false))
+    if (
+      await fs.access(path.join(LIBRARY, e.name, 'manifest.json')).then(
+        () => true,
+        () => false
+      )
+    )
       pids.push(e.name)
   }
 } else {
@@ -76,7 +83,9 @@ for (const pid of pids) {
     videosDir: path.join(dir, 'videos'),
     onProgress: (e) => e.phase === 'recover' && e.id && process.stdout.write('.')
   })
-  console.log(`\n  회수 ${recovered.length}/${ids.length}${missing.length ? ` · 누락: ${missing.join(', ')}` : ''}`)
+  console.log(
+    `\n  회수 ${recovered.length}/${ids.length}${missing.length ? ` · 누락: ${missing.join(', ')}` : ''}`
+  )
 
   // manifest.clips 갱신 (완료 배지 = 로컬 파일 수 기준이므로 실제 회수분을 반영)
   manifest.clips = {
@@ -100,7 +109,7 @@ for (const pid of pids) {
       })
       console.log(`\n  → Firebase 'generatedVideos'/${up.key} (${up.count}개)`)
     } catch (e) {
-      console.error(`\n  ⚠ Firebase 업로드 실패(로컬 보존됨): ${e.message}`)
+      console.error(`\n  [경고] Firebase 업로드 실패(로컬 보존됨): ${e.message}`)
     }
   }
 }

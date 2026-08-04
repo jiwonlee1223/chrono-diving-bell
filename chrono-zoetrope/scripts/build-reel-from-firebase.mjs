@@ -16,8 +16,12 @@ import {
 import { ReelBuilder } from '../src/main/comfyui/reel-builder.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const config = JSON.parse(await fs.readFile(path.join(root, 'src/main/config/comfyui.json'), 'utf-8'))
-const montage = JSON.parse(await fs.readFile(path.join(root, 'src/main/config/montage.json'), 'utf-8'))
+const config = JSON.parse(
+  await fs.readFile(path.join(root, 'src/main/config/comfyui.json'), 'utf-8')
+)
+const montage = JSON.parse(
+  await fs.readFile(path.join(root, 'src/main/config/montage.json'), 'utf-8')
+)
 const LIBRARY = path.join(root, config.outDir || 'library')
 
 let args = process.argv.slice(2)
@@ -49,7 +53,9 @@ if (montage.reel?.birthToCurrentOnly !== false) {
   if (Number.isFinite(birthYear)) {
     const before = images.length
     images = images.filter((im) => birthYear + (im.age ?? 0) <= currentYear)
-    console.log(`[${pid}] 릴 범위: 탄생~현재(${currentYear - birthYear}세) → ${images.length}/${before}장 (미래 제외)`)
+    console.log(
+      `[${pid}] 릴 범위: 탄생~현재(${currentYear - birthYear}세) → ${images.length}/${before}장 (미래 제외)`
+    )
   }
 }
 // 나잇대별 1장만(montage.reel.onePerStage, 기본 true) — 단계별 첫 장면.
@@ -70,7 +76,7 @@ const { paths, missing } = await ensureLocalClipsFromFirebase(profile, dir, {
   ids,
   onProgress: (e) => e.id && process.stdout.write('.')
 })
-if (missing.length) console.log(`\n  ⚠ Firebase 문서에 없는 id: ${missing.join(', ')}`)
+if (missing.length) console.log(`\n  [경고] Firebase 문서에 없는 id: ${missing.join(', ')}`)
 const clipPaths = ids.map((id) => paths.get(id)).filter(Boolean)
 console.log(`\n  확보 ${clipPaths.length}/${ids.length}`)
 if (clipPaths.length === 0) {
@@ -82,7 +88,8 @@ const builder = new ReelBuilder({ reel: montage.reel, log: (m) => console.log(' 
 const outPath = path.join(dir, 'reel.mp4')
 console.log(`[${pid}] reel 합성(fast-forward) → reel.mp4`)
 const meta = await builder.concat(clipPaths, outPath, {
-  onProgress: (e) => e.phase === 'done' && console.log(`  ffmpeg: ${e.durationSec.toFixed(1)}s · ${e.clipCount}개`)
+  onProgress: (e) =>
+    e.phase === 'done' && console.log(`  ffmpeg: ${e.durationSec.toFixed(1)}s · ${e.clipCount}개`)
 })
 
 manifest.reel = {
@@ -95,7 +102,7 @@ manifest.reel = {
   rev: (manifest.reel?.rev || 0) + 1
 }
 await fs.writeFile(path.join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2))
-console.log(`  ✓ reel.mp4 ${meta.durationSec.toFixed(1)}s (${meta.clipCount}개)`)
+console.log(`  [완료] reel.mp4 ${meta.durationSec.toFixed(1)}s (${meta.clipCount}개)`)
 
 if (!noUpload) {
   try {
@@ -109,7 +116,7 @@ if (!noUpload) {
     })
     console.log(`  → Firebase 'generatedVideos'/${up.key} reel ${up.reel ? 'OK' : '-'}`)
   } catch (e) {
-    console.error(`  ⚠ Firebase reel 업로드 실패(로컬 보존됨): ${e.message}`)
+    console.error(`  [경고] Firebase reel 업로드 실패(로컬 보존됨): ${e.message}`)
   }
 }
 console.log('완료.')

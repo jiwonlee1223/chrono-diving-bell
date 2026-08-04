@@ -10,8 +10,9 @@
 //      pro로 미리 뽑아 캐시한 "그 나이 얼굴")가 있으면 그걸 앵커로 실어 얼굴을 '유지'만 시킨다
 //      (aging은 포트레이트 단계에서 끝남). 프롬프트엔 KEEP_FACE_PREFIX. 포트레이트가 없으면(구경로·
 //      실패) 현재 얼굴(faceRef) + 나이 변환 단일패스로 폴백. 프롬프트엔 ageAnchorPrefix.
-//  (3) 없고 아동 나이면 앵커 없이 텍스트로 — 성인 얼굴을 아동으로 de-age하다 Gemini IMAGE_SAFETY에
-//      걸리는 걸 피한다(그 나이 실제 사진이 있으면 (1)에서 이미 걸린다).
+//  (3) 아동 나이도 (2)와 같이 aged 포트레이트가 준비됐으면 그걸 앵커로 쓴다(2026-08-03, 얼굴 참조
+//      최대화). 포트레이트 생성이 IMAGE_SAFETY로 실패한 아동 나이만 앵커 없이 텍스트로 폴백한다 —
+//      성인 얼굴을 장면 단계에서 아동으로 de-age하는 단일패스는 여전히 하지 않는다.
 
 // 이 나이 이상만 "현재 얼굴 앵커"로 나이 변환을 건다(미만은 아동 — de-age 세이프티 회피).
 export const ADULT_MIN_AGE = 18
@@ -66,13 +67,20 @@ export function ageAnchorPrefix(item) {
  *        그 나이의 미리 만든 aged 포트레이트를 돌려주는 조회 함수(없으면 null → 폴백).
  * @returns {{ reference:{buffer?:Buffer, path?:string}|null, prefix:string, kind:'stage'|'aged'|'anchor'|'none' }}
  */
-export function selectSceneReference(item, { stageRef = null, faceRef = null, agedRefFor = null } = {}) {
+export function selectSceneReference(
+  item,
+  { stageRef = null, faceRef = null, agedRefFor = null } = {}
+) {
   if (stageRef) return { reference: stageRef, prefix: REFERENCE_PHOTO_PREFIX, kind: 'stage' }
-  if (item.age >= ADULT_MIN_AGE) {
-    const aged = agedRefFor ? agedRefFor(item.age) : null
-    if (aged) return { reference: aged, prefix: KEEP_FACE_PREFIX, kind: 'aged' }
-    if (faceRef) return { reference: faceRef, prefix: ageAnchorPrefix(item), kind: 'anchor' }
-  }
+  // 얼굴 참조 최대화(2026-08-03): aged 포트레이트는 나이 제한 없이 앵커로 쓴다 — 아동 나이도
+  // 프리패스(prepareAgedAnchors)가 그 나이 얼굴을 뽑는 데 성공했으면 그걸 실어 정체성을 잇는다.
+  // (de-age는 포트레이트 단계에서 이미 끝났으므로 장면 단계엔 세이프티 위험이 없다.)
+  const aged = agedRefFor ? agedRefFor(item.age) : null
+  if (aged) return { reference: aged, prefix: KEEP_FACE_PREFIX, kind: 'aged' }
+  // 단일패스 폴백(현재 얼굴 + 나이 변환)은 성인만 — 성인 얼굴을 아동으로 de-age하는 장면 생성은
+  // Gemini IMAGE_SAFETY에 걸린다(포트레이트 프리패스가 실패한 아동 나이는 텍스트로 폴백).
+  if (item.age >= ADULT_MIN_AGE && faceRef)
+    return { reference: faceRef, prefix: ageAnchorPrefix(item), kind: 'anchor' }
   return { reference: null, prefix: '', kind: 'none' }
 }
 

@@ -95,7 +95,7 @@ export class ProjectionQuad {
     const turns = install?.thread?.turns ?? 9
     const thickness = install?.thread?.thickness ?? 0.011
     const overlapU = (install?.blend?.overlapDeg ?? 10) / 360 // 슬라이스 양쪽 오버랩(경도)
-    const centerU = ((projector.azimuthDeg % 360) + 360) % 360 / 360
+    const centerU = (((projector.azimuthDeg % 360) + 360) % 360) / 360
 
     this.scene = new THREE.Scene()
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)

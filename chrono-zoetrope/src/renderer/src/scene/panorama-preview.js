@@ -16,7 +16,7 @@ export function createPanoramaPreview(projector, material) {
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10)
   camera.position.z = 1
 
-  const centerU = ((((projector.azimuthDeg % 360) + 360) % 360) / 360)
+  const centerU = (((projector.azimuthDeg % 360) + 360) % 360) / 360
   const halfU = 45 / 360 // 90° 담당 호의 절반
   const uStart = centerU - halfU
   const uEnd = centerU + halfU

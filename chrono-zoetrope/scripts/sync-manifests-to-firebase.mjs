@@ -18,7 +18,9 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const args = process.argv.slice(2)
 const dryRun = args.includes('--dry-run')
 
-const config = JSON.parse(await fs.readFile(path.join(root, 'src/main/config/comfyui.json'), 'utf-8'))
+const config = JSON.parse(
+  await fs.readFile(path.join(root, 'src/main/config/comfyui.json'), 'utf-8')
+)
 const LIBRARY = path.resolve(root, config.outDir)
 const saPath = config.firebase?.serviceAccountPath
   ? path.resolve(root, config.firebase.serviceAccountPath)
@@ -58,14 +60,18 @@ async function main() {
     }
     try {
       const key = await upsertPersonaManifest(m)
-      console.log(`  ✔ ${dirent.name} → personaManifests/${key}  (이미지 ${(m.images || []).length})`)
+      console.log(
+        `  [완료] ${dirent.name} → personaManifests/${key}  (이미지 ${(m.images || []).length})`
+      )
       ok++
     } catch (err) {
-      console.error(`  ✗ 실패 ${dirent.name}: ${err.message}`)
+      console.error(`  [실패] 실패 ${dirent.name}: ${err.message}`)
       fail++
     }
   }
-  console.log(`\n완료 — 업로드 ${ok}, 건너뜀 ${skip}, 실패 ${fail}${dryRun ? '  (dry-run: 실제 업로드 안 함)' : ''}`)
+  console.log(
+    `\n완료 — 업로드 ${ok}, 건너뜀 ${skip}, 실패 ${fail}${dryRun ? '  (dry-run: 실제 업로드 안 함)' : ''}`
+  )
   process.exit(fail > 0 ? 1 : 0)
 }
 

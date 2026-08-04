@@ -43,6 +43,12 @@ const FRAG = /* glsl */ `
   uniform float uEdgeFeather;   // 이미지 가장자리 페더 (어둠 속에 떠 있는 사진)
   uniform float uYaw;           // 설치 캘리브레이션: 둘레 회전(0..1=360°, wrap). 실린더 안 좌우 정렬.
   uniform float uPitch;         // 설치 캘리브레이션: 상하 이동(타일 높이 비율, wrap 없음).
+  uniform float uReelScale;     // reel 재생 중에만 <1 — 콘텐츠를 중앙 기준으로 축소(상하 검정 여백). 평소 1.
+  uniform float uFilmLook;      // filmstrip 전용: 1이면 옛날 필름 롤 질감(세피아·그레인·플리커·스크래치·게이트 위브)
+  uniform float uTime;          // filmstrip 필름 질감용 시계(초) — renderer가 프레임마다 갱신
+
+  float hash1(float n) { return fract(sin(n * 127.1) * 43758.5453); }
+  float hash2(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 
   // 실린더 UV → 사분면 로컬 x(0..1). 사분면 밖(front 모드)은 -1.
   float quadLocalX(float u) {
@@ -97,13 +103,40 @@ const FRAG = /* glsl */ `
         gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
         return;
       }
-      float py = vUv.y - uPitch;
+      // uReelScale<1이면 세로를 중앙 기준으로 줄이고, 종횡비 유지를 위해 가로도 같은 비로 줄인다
+      // (화면 단위당 스트립을 1/s 더 샘플 → 프레임이 s배 작게 보인다. 줄어든 만큼 위아래는 검정).
+      float s = uReelScale;
+      float py = (vUv.y - 0.5) / s + 0.5 - uPitch;
       if (py < 0.0 || py > 1.0) {
         gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
         return;
       }
-      vec2 cuv = vec2(fract((vUv.x + uYaw) * uStripScale), py);
-      gl_FragColor = vec4(sampleBlurred(uTexImage, cuv, uBlur), 1.0);
+      vec2 cuv = vec2(fract((vUv.x + uYaw) * uStripScale / s), py);
+      // 게이트 위브 — 영사기 게이트에서 필름이 미세하게 상하로 노는 흔들림. 샘플 전에 준다.
+      if (uFilmLook > 0.5) {
+        cuv.y = clamp(cuv.y + sin(uTime * 2.3) * 0.0015 + sin(uTime * 7.1 + 1.7) * 0.0006, 0.0, 1.0);
+      }
+      vec3 fcol = sampleBlurred(uTexImage, cuv, uBlur);
+      if (uFilmLook > 0.5) {
+        // 빛바랜 세피아 그레이드 — 채도를 죽이고 따뜻한 톤으로 기운다.
+        float lum = dot(fcol, vec3(0.299, 0.587, 0.114));
+        fcol = mix(fcol, vec3(lum) * vec3(1.10, 0.97, 0.78), 0.45);
+        // 필름 그레인 — 프레임마다 갱신되는 미세 노이즈.
+        float g = hash2(cuv * 913.7 + fract(uTime * 60.0) * vec2(157.0, 113.0));
+        fcol += (g - 0.5) * 0.08;
+        // 프로젝터 플리커 — 24fps 셔터 느낌의 불규칙한 밝기 떨림.
+        fcol *= 0.93 + 0.07 * hash1(floor(uTime * 24.0));
+        // 세로 스크래치 — 초당 두 번쯤 위치가 바뀌는 가는 줄(밝은 긁힘). 항상 있진 않다.
+        float seed = floor(uTime * 2.0);
+        float sx = fract(vUv.x + uYaw);
+        float d = abs(sx - hash1(seed));
+        float scratch = (1.0 - smoothstep(0.0, 0.0012, d)) * step(0.55, hash1(seed + 31.7));
+        fcol += scratch * 0.14;
+        // 상하 비네트(화면 기준) — 영사광의 중심이 밝고 가장자리가 어둡다.
+        float vy = abs(vUv.y - 0.5) * 2.0;
+        fcol *= 1.0 - 0.22 * vy * vy;
+      }
+      gl_FragColor = vec4(fcol, 1.0);
       return;
     }
 
@@ -116,7 +149,8 @@ const FRAG = /* glsl */ `
         return;
       }
       // 캘리브레이션: 둘레 회전(yaw, wrap)과 상하 이동(pitch). pitch로 밀려 콘텐츠 밖은 검정.
-      float py = vUv.y - uPitch;
+      // 360° wrap 때문에 가로는 못 줄인다 — uReelScale은 세로만 축소(reel rotate 중 상하 검정 여백).
+      float py = (vUv.y - 0.5) / uReelScale + 0.5 - uPitch;
       if (py < 0.0 || py > 1.0) {
         gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
         return;
@@ -179,7 +213,11 @@ export function createMontageMaterial(install, montageConfig) {
       uFit: { value: montageConfig?.fitMode === 'height' ? 1 : 0 },
       uEdgeFeather: { value: montageConfig?.edgeFeather ?? 0.05 },
       uYaw: { value: montageConfig?.calibration?.yaw ?? 0 },
-      uPitch: { value: montageConfig?.calibration?.pitch ?? 0 }
+      uPitch: { value: montageConfig?.calibration?.pitch ?? 0 },
+      uReelScale: { value: 1 }, // reel 진입/이탈 시 renderer가 설정
+      uFilmLook: { value: 0 }, // filmstrip 진입 시 renderer가 설정(옛날 필름 롤 질감)
+      uTime: { value: 0 } // filmstrip 필름 질감용 — renderer가 프레임마다 갱신
+
     },
     vertexShader: VERT,
     fragmentShader: FRAG,

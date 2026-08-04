@@ -32,6 +32,9 @@ export const COLLECTION_REEL_IMAGES = 'generatedReelImage'
 // persona manifest 정본. 로컬 library/{pid}/manifest.json 을 Firebase에 올려 어느 머신에서든
 // 리뷰·재생성·세션재생이 되게 한다(로컬은 read-through 캐시). 키는 파노라마와 같은 '이름_생년월일6자'.
 export const COLLECTION_MANIFESTS = 'personaManifests'
+// 생성 예정 장면 30개의 묘사 — 이미지가 나오기 **전에** 무엇이 그려질지 확인하는 자리.
+// manifest는 생성이 끝나야 채워지므로, 플랜이 확정된 시점에 이쪽을 먼저 쓴다.
+export const COLLECTION_SCENE_PLANS = 'panoramaPrompts'
 
 /**
  * Admin SDK 초기화. 서비스 계정 키 출처는 세 가지(우선순위 순):
@@ -209,6 +212,129 @@ export async function uploadPersonaPanoramaImage({ profile, personaId, dir, imag
   return { key, id: image.id, url, storagePath }
 }
 
+// 유령 대화 기록 정본 — 1·2차 플로우에서 관람객과 유령이 주고받은 전체 대화(JSON).
+// 3차 플로우(분기된 미래 외삽)의 재료가 되므로 세션이 끝나기 전에도 턴마다 업서트한다.
+// 키는 파노라마·manifest와 같은 '이름_생년월일6자' — 다른 정본들과 나란히 조인된다.
+export const COLLECTION_GHOST_TRANSCRIPTS = 'ghostTranscripts'
+
+/**
+ * 유령 대화 전체 기록을 업서트한다(턴마다 호출 — 문서 하나를 통째로 갱신).
+ * turns 각 항목: { who:'유령'|'사람'|'상황', text, chapter:'past'|'future', at(ms) }
+ * @param {object} p { profile:{name,birthDate,id?}, personaId, flow, turns, ended? }
+ * @returns {Promise<{key:string, count:number}>}
+ */
+export async function upsertGhostTranscript({
+  profile,
+  personaId,
+  flow = 'past',
+  turns = [],
+  ended = false
+}) {
+  if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  const key = panoramaDocKey(profile)
+  await db
+    .collection(COLLECTION_GHOST_TRANSCRIPTS)
+    .doc(key)
+    .set(
+      {
+        name: profile.name || null,
+        birthDate: profile.birthDate || null,
+        personaId: personaId || null,
+        flow, //           어느 플로우의 대화인지('past'=1차 | 'future'=2차)
+        ended, //          체험이 끝까지 갔는지
+        count: turns.length,
+        turns,
+        updatedAt: FieldValue.serverTimestamp()
+      },
+      { merge: true }
+    )
+  return { key, count: turns.length }
+}
+
+/** 유령 대화 기록 조회 — 3차 플로우의 외삽 재료. profile 객체나 문서 키 문자열 둘 다 받는다. */
+export async function fetchGhostTranscript(profileOrKey) {
+  if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  const key = typeof profileOrKey === 'string' ? profileOrKey : panoramaDocKey(profileOrKey)
+  const snap = await db.collection(COLLECTION_GHOST_TRANSCRIPTS).doc(key).get()
+  return snap.exists ? snap.data() : null
+}
+
+export const COLLECTION_FUNERALS = 'generatedFunerals'
+
+/**
+ * 장례식 산출물(파노라마 + Wan 영상)을 Storage에 올리고 'generatedFunerals' 컬렉션에 프로필별로
+ * 기록한다 — admin "Firebase 저장" 버튼 전용(자동 업로드 없음: 승인·영상화 완료 후 연구자가 누른다).
+ * objectPath에 rev가 들어가 재생성본을 올려도 이전 rev 바이트를 덮어쓰지 않는다.
+ *
+ * 장례식은 두 벌(variant)이라 한 문서 안에 나란히 기록한다(2026-08-03):
+ *   present → 문서 최상위 image/video/rev (기존 스키마 그대로 — 이미 읽는 쪽이 있다)
+ *   future  → 문서의 future: { image, video, rev, approvedAt } 하위 맵
+ * merge:true라 한쪽을 올려도 다른 쪽 기록은 남는다.
+ * @param {object} p { profile:{name,birthDate,id?}, personaId, dir, funeral, variant?, bucket? }
+ * @returns {Promise<{key:string, rev:number, variant:string, imageUrl:string, videoUrl:string|null}>}
+ */
+export async function uploadPersonaFuneral({
+  profile,
+  personaId,
+  dir,
+  funeral,
+  variant = 'present',
+  bucket
+}) {
+  if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  if (!funeral?.image?.file) throw new Error('업로드할 장례식 이미지가 없다')
+  // present → 문서 최상위(기존 스키마) / future·branched → 각자의 하위 맵(future / branched).
+  const v = variant === 'future' || variant === 'branched' ? variant : 'present'
+  const prefix =
+    v === 'branched' ? 'funeral-branched' : v === 'future' ? 'funeral-future' : 'funeral'
+  const bkt = getStorage(app).bucket(bucket || defaultBucket)
+  const key = panoramaDocKey(profile)
+  const rev = funeral.rev
+
+  const img = await uploadFileToStorage(
+    bkt,
+    path.join(dir, funeral.image.file),
+    `generated-funerals/${key}/${prefix}-r${rev}.png`,
+    'image/png'
+  )
+  let vid = null
+  if (funeral.video?.file) {
+    vid = await uploadFileToStorage(
+      bkt,
+      path.join(dir, funeral.video.file),
+      `generated-funerals/${key}/${prefix}-r${rev}.mp4`,
+      'video/mp4'
+    )
+  }
+  const payload = {
+    rev,
+    image: { url: img.url, storagePath: img.storagePath },
+    video: vid ? { url: vid.url, storagePath: vid.storagePath } : null,
+    approvedAt: funeral.approvedAt || null
+  }
+  await db
+    .collection(COLLECTION_FUNERALS)
+    .doc(key)
+    .set(
+      {
+        name: profile.name || null,
+        birthDate: profile.birthDate || null,
+        personaId,
+        bucket: bkt.name,
+        ...(v !== 'present' ? { [v]: { ...payload, deathAge: 90 } } : payload),
+        updatedAt: FieldValue.serverTimestamp()
+      },
+      { merge: true }
+    )
+  return {
+    key,
+    rev,
+    variant: v,
+    imageUrl: img.url,
+    videoUrl: vid?.url || null
+  }
+}
+
 // 재생성 이력 보존 상한 — 문서 1MB 한계 대비 안전판(버전당 ~5KB, 20이면 충분히 여유).
 const REEL_HISTORY_MAX = 20
 
@@ -223,8 +349,17 @@ const REEL_HISTORY_MAX = 20
  * @param {object} p { profile:{name,birthDate,id?}, personaId, dir, reelPhotos: manifest.reelPhotos, bucket? }
  * @returns {Promise<{key:string, count:number, rev:string}>}
  */
-export async function uploadPersonaReelPhotos({ profile, personaId, dir, reelPhotos, bucket }) {
+export async function uploadPersonaReelPhotos({
+  profile,
+  personaId,
+  dir,
+  reelPhotos,
+  variant = 'past',
+  bucket
+}) {
   if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  // past → top-level(기존 스키마) / future·branched → 각자의 하위 맵.
+  const v = variant === 'future' || variant === 'branched' ? variant : 'past'
   const bkt = getStorage(app).bucket(bucket || defaultBucket)
   const key = panoramaDocKey(profile)
   const rev = new Date().toISOString().replace(/[:.]/g, '-') // Storage 폴더명 안전 문자
@@ -232,7 +367,7 @@ export async function uploadPersonaReelPhotos({ profile, personaId, dir, reelPho
   const uploaded = []
   for (const e of ok) {
     const local = path.join(dir, e.file)
-    const objectPath = `generated-reel-photos/${key}/${rev}/${path.posix.basename(e.file)}`
+    const objectPath = `generated-reel-photos/${key}/${v !== 'past' ? `${v}/` : ''}${rev}/${path.posix.basename(e.file)}`
     const { url, storagePath } = await uploadFileToStorage(bkt, local, objectPath, 'image/png')
     uploaded.push({
       id: e.id,
@@ -246,31 +381,35 @@ export async function uploadPersonaReelPhotos({ profile, personaId, dir, reelPho
     })
   }
 
-  // 이전 버전을 history로 보존(기록만 — 소비처는 전부 top-level reelPhotos=최신을 읽는다).
+  // 두 판은 한 문서 안에서 필드로 갈린다(2026-08-03):
+  //   past   → top-level reelPhotos / rev / count / history (기존 스키마 그대로 — 읽는 쪽이 이미 있다)
+  //   future → future: { reelPhotos, rev, count, history }
+  // merge:true라 한쪽을 올려도 다른 쪽 기록은 남는다.
   const ref = db.collection(COLLECTION_REEL_IMAGES).doc(key)
   const snap = await ref.get()
-  const prev = snap.exists ? snap.data() : null
+  const prevDoc = snap.exists ? snap.data() : null
+  const prev = v !== 'past' ? prevDoc?.[v] || null : prevDoc
+  // 이전 버전을 history로 보존(기록만 — 소비처는 전부 최신 목록을 읽는다).
   const history = [...(prev?.history || [])]
-  if (prev?.reelPhotos?.length) {
+  const prevList = prev?.reelPhotos || null
+  if (prevList?.length) {
     history.push({
       rev: prev.rev ?? null,
       archivedAt: new Date().toISOString(),
-      count: prev.reelPhotos.length,
-      reelPhotos: prev.reelPhotos
+      count: prevList.length,
+      reelPhotos: prevList
     })
     while (history.length > REEL_HISTORY_MAX) history.shift()
   }
 
+  const payload = { rev, count: uploaded.length, reelPhotos: uploaded, history }
   await ref.set(
     {
       name: profile.name || null,
       birthDate: profile.birthDate || null,
       personaId,
       bucket: bkt.name,
-      rev,
-      count: uploaded.length,
-      reelPhotos: uploaded,
-      history,
+      ...(v !== 'past' ? { [v]: payload } : payload),
       updatedAt: FieldValue.serverTimestamp()
     },
     { merge: true }
@@ -462,6 +601,65 @@ export async function fetchPersonaImages(profile) {
 // 어느 머신에서든 fetchPersonaManifest → 로컬 복원(hydrate)하면 리뷰·재생성이 동등하게 된다.
 
 /** 로컬 manifest 를 Firebase 정본으로 upsert. docKey 는 manifest.profile 로부터 계산('이름_생년월일6자'). */
+/**
+ * 장면 플랜(생성 예정 30장의 묘사)을 'panoramaPrompts' 컬렉션에 기록한다.
+ *
+ * 왜 따로 두나: 이 30장면이 무엇인지는 지금까지 생성이 다 끝난 뒤 manifest 안에서만 볼 수 있었다.
+ * 플랜이 확정되는 순간(생성 직전) 여기에 먼저 써두면, 이미지가 나오기 전에 "무엇이 그려질
+ * 예정인가"를 Firebase 콘솔에서 그대로 확인·검토할 수 있다. 문서 키는 다른 컬렉션과 같은
+ * '이름_생년월일6자'라 파노라마·manifest와 나란히 조인된다.
+ *
+ * sceneSource로 각 장면의 출처가 함께 남는다 — 'user'(본인 글에서 합성) · 'extrapolated'(본인이
+ * 안 채운 미래를 과거에서 이어 예측) · 'fallback'(사람이 써둔 후보 풀) · 'final'(고정 임종 장면).
+ * @param {object} p { profile:{name,birthDate,id?}, personaId, plan, sessionKey? }
+ * @returns {Promise<{key:string, count:number}>}
+ */
+export async function upsertPersonaScenePlan({
+  profile,
+  personaId,
+  plan = [],
+  sessionKey = null,
+  docSuffix = '' // '__branched' 등 — 같은 프로필의 다른 플랜(3차 분기)을 별도 문서로 남길 때
+}) {
+  if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  const key = panoramaDocKey(profile) + docSuffix
+  const scenes = plan.map((p) => ({
+    id: p.id ?? null,
+    age: p.age ?? null,
+    year: p.year ?? null,
+    scene: p.scene ?? null, //         이미지 프롬프트 한가운데 꽂히는 장면 묘사(영어)
+    sceneSource: p.sceneSource ?? null,
+    isPast: p.isPast ?? null,
+    isFinal: p.isFinal ?? false,
+    stageId: p.stageId ?? null, //     문서상 점 키(age-40 등) — 어느 입력에서 나왔는지 되짚는 용도
+    emotion: p.emotion ?? null //      감정곡선 x(기록만)
+  }))
+  // 출처별 집계 — 콘솔에서 문서를 열자마자 "몇 장이 본인 글이고 몇 장이 예측인지"가 보이게.
+  const sourceCounts = scenes.reduce((acc, s) => {
+    const k = s.sceneSource || 'unknown'
+    acc[k] = (acc[k] || 0) + 1
+    return acc
+  }, {})
+  await db
+    .collection(COLLECTION_SCENE_PLANS)
+    .doc(key)
+    .set(
+      {
+        name: profile.name || null,
+        birthDate: profile.birthDate || null,
+        personaId: personaId || null,
+        profileDocId: profile.id || null,
+        sessionKey, // 어느 세션(first/second/third)의 입력으로 만든 플랜인지
+        count: scenes.length,
+        sourceCounts,
+        scenes,
+        updatedAt: FieldValue.serverTimestamp()
+      },
+      { merge: true }
+    )
+  return { key, count: scenes.length }
+}
+
 export async function upsertPersonaManifest(manifest) {
   if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
   const profile = manifest?.profile || {}

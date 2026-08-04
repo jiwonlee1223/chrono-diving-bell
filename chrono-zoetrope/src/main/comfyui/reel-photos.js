@@ -1,8 +1,15 @@
 // reel 전용 사진 생성 — 파노라마(영상 생성용)와 분리된 두 번째 백그라운드 생성 플로우.
 //
 // reel(주마등 회전 국면)은 이제 세로형(3:4) 일반 사진 12장을 필름스트립처럼 이어 돌린다.
-// 나이는 기억이 시작되는 3살부터 현재 나이까지 균등 12개(사용자마다 다름 — 어린 사용자는
-// 나이 중복 허용, 장면은 다르게). 모든 나이가 과거(≤현재)라 미래를 단정하지 않는다(§1).
+//
+// 릴은 두 벌이다(2026-08-03) — 전시가 1차(과거 회귀)와 2차(미래)로 이어지기 때문:
+//   variant 'past'   — 3살부터 현재 나이까지 균등 12개. 1차 주마등이 이걸 역순으로 흘린다.
+//                      전부 과거(≤현재)라 미래를 단정하지 않는다(§1).
+//   variant 'future' — 현재 다음 해부터 90세까지 균등 12개. 2차에서 관람객이 보는 미래의 주마등.
+//                      장면은 미래 외삽 합성(life-graph-plan.buildFutureExtrapolationPrompt)이
+//                      만든 것을 쓰고, 얼굴은 그 나이로 늙힌다(ageAnchorPrefix isPast=false).
+//                      이건 §1의 의식적 예외다 — 2차 플로우 자체가 "AI가 만든 미래를 보는" 과정이다.
+// 두 벌은 폴더(_reel / _reel-future)와 manifest 키(reelPhotos / reelPhotosFuture)가 갈린다.
 //
 // 얼굴 앵커: 파노라마의 2단계 aged 앵커(aged-anchor.js)가 필요 없다 — 일반 비율 근접 프레임은
 // pro가 "정체성 보존 + 나이 변환"을 한 번에 해내는 조건(그 모듈 상단 주석의 전제)이라
@@ -19,8 +26,10 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
   reelAges,
+  reelFutureAges,
   reelSceneForAge,
   composeReelPhotoPrompt,
+  composeBirthPhotoPrompt,
   personaId as derivePersonaId
 } from './prompt-builder.js'
 import { REFERENCE_PHOTO_PREFIX, ageAnchorPrefix } from './face-anchor.js'
@@ -28,6 +37,34 @@ import { AGES as STAGE_AGES, AGE_TO_STAGE } from './life-graph-plan.js'
 
 // persona 디렉토리 하위, reel 사진 폴더. '_' 접두라 library-loader(몽타주 재생목록) 스캔에 안 잡힌다.
 export const REEL_DIR = '_reel'
+export const REEL_FUTURE_DIR = '_reel-future'
+export const REEL_BRANCHED_DIR = '_reel-branched' // 3차(분기 미래) 릴 — 대화 기록 기반 외삽 장면
+
+// 1·2차 자동 생성이 도는 두 벌. 'branched'(3차)는 여기 없다 — 대화 기록이 생긴 뒤
+// processBranchedFuture가 따로 생성한다(1차 생성 시점엔 재료가 없다).
+export const REEL_VARIANTS = ['past', 'future']
+
+/** variant 정규화 — 알 수 없는 값은 past(기존 동작)로. */
+export function normalizeReelVariant(variant) {
+  return variant === 'future' || variant === 'branched' ? variant : 'past'
+}
+/** 이 판의 사진이 들어가는 폴더 / manifest 키 / 로그 라벨. past는 기존 이름을 그대로 쓴다(하위호환). */
+export function reelDirFor(variant) {
+  const v = normalizeReelVariant(variant)
+  return v === 'branched' ? REEL_BRANCHED_DIR : v === 'future' ? REEL_FUTURE_DIR : REEL_DIR
+}
+export function reelManifestKey(variant) {
+  const v = normalizeReelVariant(variant)
+  return v === 'branched'
+    ? 'reelPhotosBranched'
+    : v === 'future'
+      ? 'reelPhotosFuture'
+      : 'reelPhotos'
+}
+export function reelVariantLabel(variant) {
+  const v = normalizeReelVariant(variant)
+  return v === 'branched' ? '분기 릴' : v === 'future' ? '미래 릴' : '과거 릴'
+}
 
 // reel 나이에 가장 가까운 STAGES 기준 나이(3·7·…·82) — ageScenes(life-graph 합성 결과) 키 조회
 // 및 그 나이 실제 사진(stageId) 앵커 조회에 쓴다.
@@ -46,27 +83,44 @@ function nearestStageAge(age) {
  * @param {object} profile  { name, birthDate, occupation? }
  * @param {object} [opts]
  * @param {number} [opts.count=12] @param {number} [opts.startAge=3]
+ * @param {'past'|'future'} [opts.variant='past']  past=3~현재 / future=현재 다음 해~endAge(90)
+ * @param {number} [opts.endAge=90]  future 판의 마지막 나이
  * @param {Record<number,string[]>|null} [opts.ageScenes]  synthesizeAgeScenes() 결과(life-graph)
  * @param {Date}   [opts.now]
- * @returns {Array<{idx:number, id:string, age:number, year:number, isPast:true, scene:string, stageAge:number, stageId:string}>}
+ * @returns {Array<{idx:number, id:string, age:number, year:number, isPast:boolean, scene:string, stageAge:number, stageId:string}>}
  */
 export function buildReelPhotoPlan(
   profile,
-  { count = 12, startAge = 3, ageScenes = null, now = new Date() } = {}
+  {
+    count = 12,
+    startAge = 3,
+    variant = 'past',
+    endAge = 90,
+    ageScenes = null,
+    now = new Date()
+  } = {}
 ) {
   const birthYear = parseInt(String(profile.birthDate).slice(0, 4), 10)
   if (!Number.isFinite(birthYear))
     throw new Error(`birthDate 형식이 잘못됨: ${profile.birthDate} (YYYY-MM-DD)`)
-  const currentAge = Math.max(0, now.getFullYear() - birthYear)
-  const ages = reelAges(currentAge, { count, startAge })
+  const v = normalizeReelVariant(variant)
+  const isPast = v === 'past' // future·branched 둘 다 미래 나이(현재 다음 해~90)를 쓴다
+  // 현재 나이는 profile.age(문서 값)를 우선한다 — 생일 전후로 birthDate 계산과 1살 어긋나면
+  // 과거 릴의 끝과 미래 릴의 시작이 겹치거나 벌어진다(두 릴이 이어 붙는 자리라 민감하다).
+  const currentAge = Number.isFinite(profile.age)
+    ? Math.round(profile.age)
+    : Math.max(0, now.getFullYear() - birthYear)
+  const ages = isPast
+    ? reelAges(currentAge, { count, startAge })
+    : reelFutureAges(currentAge, { count, endAge })
 
   // 어린 사용자는 같은 단계(stageAge)에 여러 장이 몰린다 — 단계 풀 안에서 이미 쓴 장면을 피해
   // 다양성을 유지한다(풀이 바닥나면 중복 허용). 결정론(시드 변형도 결정론적)은 그대로다.
   const usedByStage = new Map()
-  return ages.map((age, i) => {
+  const items = ages.map((age, i) => {
     const idx = i + 1
     const stageAge = nearestStageAge(age)
-    const seed = `${profile.name}|${profile.birthDate}|reel|${idx}`
+    const seed = `${profile.name}|${profile.birthDate}|reel${isPast ? '' : `-${v}`}|${idx}`
     // life-graph 합성 장면이 그 단계에 있으면 그중 하나를 idx 시드로 결정론 선택, 없으면 STAGES 폴백.
     let scene
     const synth = ageScenes?.[stageAge]
@@ -83,15 +137,32 @@ export function buildReelPhotoPlan(
     }
     return {
       idx,
-      id: `r-${idx}`,
+      id: isPast ? `r-${idx}` : v === 'branched' ? `rb-${idx}` : `rf-${idx}`, // past는 기존 id 유지(라이브러리 resume 호환)
       age,
       year: birthYear + age,
-      isPast: true,
+      isPast,
       scene,
       stageAge,
       stageId: AGE_TO_STAGE[stageAge]
     }
   })
+  // 과거 릴의 시작(오름차순 기준 첫 장) = 탄생. 서버가 재생목록을 역순으로 흘리므로 이 장이
+  // 주마등의 **마지막** 이미지가 된다 — 산부인과에서 나를 안아든 엄마, 태어나 처음 보는 광경.
+  // 얼굴 앵커를 쓰지 않는 전용 프롬프트(composeBirthPhotoPrompt)로 생성한다(processItem 분기).
+  if (isPast) {
+    items.unshift({
+      idx: 0,
+      id: 'r-birth',
+      age: 0,
+      year: birthYear,
+      isPast: true,
+      birth: true,
+      scene: 'birth — mother cradling her newborn in a maternity hospital delivery room',
+      stageAge: STAGE_AGES[0],
+      stageId: AGE_TO_STAGE[STAGE_AGES[0]]
+    })
+  }
+  return items
 }
 
 /**
@@ -128,14 +199,17 @@ export async function generateReelPhotos({
   faceRef = null,
   stageRefFor = null,
   retries = 1,
+  variant = 'past',
   signal,
   log = () => {},
   onManifest
 }) {
+  const dirName = reelDirFor(variant) // _reel | _reel-future
+  const mKey = reelManifestKey(variant) // reelPhotos | reelPhotosFuture
   const manifestPath = path.join(personaDir, 'manifest.json')
-  await fs.mkdir(path.join(personaDir, REEL_DIR), { recursive: true })
+  await fs.mkdir(path.join(personaDir, dirName), { recursive: true })
 
-  // manifest 병합 기록 — reelPhotos 배열만 소유한다. 파일이 없으면(reel 우선 생성) 최소 골격 생성.
+  // manifest 병합 기록 — 이 판의 배열만 소유한다. 파일이 없으면(reel 우선 생성) 최소 골격 생성.
   const readManifest = async () => {
     try {
       return JSON.parse(await fs.readFile(manifestPath, 'utf8'))
@@ -148,7 +222,7 @@ export async function generateReelPhotos({
       }
     }
   }
-  const prior = new Map(((await readManifest()).reelPhotos || []).map((e) => [e.id, e]))
+  const prior = new Map(((await readManifest())[mKey] || []).map((e) => [e.id, e]))
   const results = new Map() // id → entry (병렬 완료 순서와 무관하게 plan 순서로 기록·반환)
   // 병렬 워커들이 장마다 호출한다 — read-modify-write 경합이 없도록 뮤텍스 체인으로 직렬화.
   let writing = Promise.resolve()
@@ -156,9 +230,9 @@ export async function generateReelPhotos({
     const run = writing.then(async () => {
       const manifest = await readManifest() // 파노라마 패스와 파일을 공유하므로 매번 다시 읽어 병합한다
       // 이번 실행 entry가 같은 id의 이전 entry를 대체하고, 아직 도달 못 한 이전 entry는 보존(plan 순서 유지).
-      const byId = new Map((manifest.reelPhotos || []).map((e) => [e.id, e]))
+      const byId = new Map((manifest[mKey] || []).map((e) => [e.id, e]))
       for (const [id, e] of results) byId.set(id, e)
-      manifest.reelPhotos = plan.map((p) => byId.get(p.id)).filter(Boolean)
+      manifest[mKey] = plan.map((p) => byId.get(p.id)).filter(Boolean)
       await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2))
       if (onManifest) {
         try {
@@ -189,7 +263,7 @@ export async function generateReelPhotos({
 
   // 장 하나 처리 — 기존 직렬 루프의 본문. 아래 병렬 워커 풀이 plan 인덱스를 나눠 호출한다.
   async function processItem(item) {
-    const fileRel = path.posix.join(REEL_DIR, `${item.id}-age${item.age}.png`)
+    const fileRel = path.posix.join(dirName, `${item.id}-age${item.age}.png`)
     const fileAbs = path.join(personaDir, fileRel)
 
     // resume: 이전 실행에서 성공한 장은 건너뛴다.
@@ -205,16 +279,23 @@ export async function generateReelPhotos({
     let reference = null
     let prefix = ''
     let kind = 'none'
-    if (stageRef) {
-      reference = stageRef
-      prefix = REFERENCE_PHOTO_PREFIX
-      kind = 'stage'
-    } else if (faceRef) {
-      reference = faceRef
-      prefix = ageAnchorPrefix(item)
-      kind = 'anchor'
+    // 탄생 장(r-birth)은 전용 프롬프트 + 레퍼런스 없이(주인공이 엄마라 얼굴 앵커가 무의미
+    // — composeBirthPhotoPrompt 주석 참조). 병렬 풀 리팩터링 때 이 분기가 유실돼 일반 릴
+    // 프롬프트+얼굴 앵커로 생성되던 버그를 복구(2026-08-04).
+    if (!item.birth) {
+      if (stageRef) {
+        reference = stageRef
+        prefix = REFERENCE_PHOTO_PREFIX
+        kind = 'stage'
+      } else if (faceRef) {
+        reference = faceRef
+        prefix = ageAnchorPrefix(item)
+        kind = 'anchor'
+      }
     }
-    const basePrompt = composeReelPhotoPrompt(profile, item, { orientation })
+    const basePrompt = item.birth
+      ? composeBirthPhotoPrompt(profile, item, { orientation })
+      : composeReelPhotoPrompt(profile, item, { orientation })
 
     const t0 = Date.now()
     let ok = false
@@ -245,7 +326,7 @@ export async function generateReelPhotos({
         lastErr = err
         // 아동 de-age 등 안전 필터 거부 → 레퍼런스를 떼고 텍스트-only로 한 번 더(추가 시도 소모 없이 전환).
         if (reference && /IMAGE_SAFETY|safety/i.test(String(err.message))) {
-          log(`  ⚠ reel ${item.id}(${item.age}세) 안전 필터 — 레퍼런스 없이 재시도`)
+          log(`  [경고] reel ${item.id}(${item.age}세) 안전 필터 — 레퍼런스 없이 재시도`)
           reference = null
           usedKind = 'none'
           usedPrompt = basePrompt
@@ -263,7 +344,7 @@ export async function generateReelPhotos({
       id: item.id,
       age: item.age,
       year: item.year,
-      isPast: true,
+      isPast: item.isPast, // future·branched 판은 false — 과거 true 하드코딩이던 걸 플랜 값으로 수정(2026-08-04)
       scene: item.scene,
       prompt: usedPrompt,
       file: fileRel,
@@ -277,13 +358,13 @@ export async function generateReelPhotos({
       failedCount++
       entry.failed = true
       await fs.rm(fileAbs, { force: true }).catch(() => {})
-      log(`  ✗ reel ${item.id}(${item.age}세) 실패: ${lastErr?.message}`)
+      log(`  [실패] reel ${item.id}(${item.age}세) 실패: ${lastErr?.message}`)
     }
     results.set(item.id, entry)
     await writeManifest() // 장마다 기록 — 중단돼도 진행분은 남는다
     if (ok)
       log(
-        `  📷 reel ${item.idx}/${plan.length} — ${item.age}세 (${((Date.now() - t0) / 1000).toFixed(1)}s)`
+        `  [릴] reel ${item.idx}/${plan.length} — ${item.age}세 (${((Date.now() - t0) / 1000).toFixed(1)}s)`
       )
   }
 
