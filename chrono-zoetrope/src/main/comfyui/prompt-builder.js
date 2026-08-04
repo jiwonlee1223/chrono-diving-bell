@@ -561,17 +561,29 @@ export const SEAM_BAND_PROMPT =
 // 피사체에서 몇 미터 떼고, 인물·사물을 작게, 바닥·천장·공간 자체가 프레임 대부분을 차지하게 한다.
 // 장면 내용을 오염시키는 이미지 레퍼런스(장례식 사진 등) 없이 텍스트만으로 거리감을 강제한다.
 // 주인공 얼굴은 여전히 알아볼 수 있어야 한다(정체성 앵커) — "작지만 전신+식별 가능한 얼굴"로 절충.
+// 전신 불변식(2026-08-04 사용자 확정) — 모든 파노라마(장면·장례식 공통)의 포인트는 등장 인물
+// 전원의 전신이 잘리지 않고 나오는 것. 프레임 가장자리에 머리·다리가 잘리는 인물이 하나라도
+// 있으면 실패다. 장례식 프롬프트(funeral.js)도 이 상수를 import해 같은 규칙을 쓴다.
+export const FULL_BODY_RULE =
+  ` FULL BODIES, NOTHING CROPPED: EVERY person in the scene — the main subject and every background figure —` +
+  ` is shown in COMPLETE FULL FIGURE from the top of the head to the soles of the feet, entirely inside the frame.` +
+  ` NO person is cropped by any edge of the image: no cut-off heads, no cut-off legs, and the FEET and the patch of` +
+  ` floor or ground directly beneath each person are always visible, with their shadow falling on it.` +
+  ` If in doubt, render people SMALLER within the frame rather than ever cropping any part of anyone.`
+
 const EQUIRECT_SCALE =
-  ` IMPORTANT SCALE: shot like a real 360 camera on a tripod at eye height, standing SEVERAL METERS AWAY from the` +
-  // "small fraction"이 인물을 픽셀 몇 줌으로 몰아 해부학이 뭉개졌다(2026-08-04) — 거리감은 유지하되
-  // 인체가 온전히 그려질 최소 크기(세로 1/4~1/3)를 명시한다.
-  ` main subject — everything is seen at a distance, as in a real interior/exterior panorama. The main subject appears` +
-  ` at a natural distance within the wide space: full figure from head to toe, standing about a quarter to a third of the image height tall,` +
-  ` large enough that their body and face are cleanly and completely rendered, with their face clearly recognizable.` +
+  ` IMPORTANT SCALE: shot like a real 360 camera on a tripod at eye height, standing FAR AWAY — a good 8 to 10 meters — from the` +
+  // "small fraction"이 인물을 픽셀 몇 줌으로 몰아 해부학이 뭉개졌다(2026-08-04) — 이후 1/4~1/3로
+  // 절충했으나 거리감이 부족하다는 피드백(2026-08-04)으로 세로 1/5 기준으로 다시 낮춤.
+  // 해부학 보호는 "cleanly and completely rendered" 지시로 유지한다.
+  ` main subject — everything is seen from a distance, as in a real interior/exterior panorama. The main subject appears` +
+  ` far away within the wide space: full figure from head to toe, standing only about ONE FIFTH of the image height tall —` +
+  ` clearly distant, yet their body and face are still cleanly and completely rendered, with their face recognizable.` +
   ` Do NOT fill the frame with the person or with large close objects.` +
   ` A wide expanse of open ground or floor stretches across the bottom of the panorama between the camera and everything else,` +
   ` and the ceiling or sky spreads across the entire top; the environment itself — walls, buildings, furniture, landscape,` +
-  ` empty space — reads as a subject in its own right and fills most of the frame, with generous open space around every person and object.`
+  ` empty space — reads as a subject in its own right and fills most of the frame, with generous open space around every person and object.` +
+  FULL_BODY_RULE
 
 // equirect 360° 기하 강제 지시(장면 내 간판·현수막 텍스트까지 억제).
 const EQUIRECT_GEO =
@@ -598,13 +610,18 @@ export function composeEquirectGazePrompt(profile, item) {
   const extra = (profile.descriptors || []).join(', ')
   const future = item.isPast ? '' : ` An imagined moment further along in this life.`
   return (
-    // "at the very heart of" → "inside" — 스케일 블록(SEVERAL METERS AWAY)과 모순되지 않게.
-    `A 360-degree equirectangular panoramic photograph, captured with a 360 camera from a single fixed point inside this moment: ${item.scene}.` +
-    ` At the exact horizontal CENTER of the frame, some distance away, is ${who} — the person whose memory this is and the one and only main subject.` +
-    ` THEY are unmistakably the one performing the action of this moment, fully and actively engaged in it (not merely standing or posing); their face is clearly visible and in sharp focus, though they need not face the camera.` +
+    // 거리 선언을 최선두로(2026-08-04 widefirst 프로브 검증) — 뒤쪽 EQUIRECT_SCALE만으로는
+    // 모델이 앞의 "얼굴 선명" 지시를 우선해 인물을 화면 가득 채웠다(세로 70~80%). 카메라 위치를
+    // 문장 처음에 확정하고 얼굴 지시를 "식별 가능" 수준으로 완화하니 세로 ~40%까지 물러남.
+    `EXTREME WIDE SHOT, camera VERY FAR from every person. The environment is the primary subject;` +
+    ` all people are small distant figures. The main subject stands only about ONE FIFTH of the image height tall.` +
+    // "at the very heart of" → "inside" — 스케일 블록(FAR AWAY, 8~10m)과 모순되지 않게.
+    ` A 360-degree equirectangular panoramic photograph, captured with a 360 camera from a single fixed point inside this moment: ${item.scene}.` +
+    ` At the exact horizontal CENTER of the frame, far away, is ${who} — the person whose memory this is and the one and only main subject.` +
+    ` THEY are unmistakably the one performing the action of this moment, fully and actively engaged in it (not merely standing or posing); their face, small at this distance, is still recognizable, though they need not face the camera.` +
     ` The place wraps a full 360 degrees around them, revealing the surroundings and the context of what they are doing.` +
     ` Anyone else present is only a secondary bystander in the background and never takes over the main action — the central person is the sole active protagonist.` +
-    ` Every face in the scene, including background people, is natural, sharp and clearly rendered — no blurred, smeared or obscured faces anywhere.` +
+    ` Every face in the scene is natural and undistorted — no smeared or mangled faces anywhere.` +
     koreanContextFor(item) +
     EQUIRECT_SCALE +
     EQUIRECT_GEO +

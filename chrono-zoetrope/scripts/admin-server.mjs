@@ -45,6 +45,7 @@ import {
   deleteLifeGraphSession,
   uploadPersonaVideos,
   uploadPersonaFuneral,
+  uploadPersonaGrave,
   downloadPhotos,
   uploadPersonaPanoramaImage,
   uploadPersonaReelPhotos,
@@ -87,6 +88,7 @@ import {
   funeralManifestKey,
   funeralVariantLabel
 } from '../src/main/comfyui/funeral.js'
+import { runGraveWorkflow, GRAVE_MANIFEST_KEY } from '../src/main/comfyui/grave.js'
 import { readSession, writeSession, clearSession } from '../src/main/session-pointer.js'
 import { VideoRegenerator } from '../src/main/comfyui/video-cache.js'
 import { ReelBuilder } from '../src/main/comfyui/reel-builder.js'
@@ -240,7 +242,22 @@ async function loadEntryReference(pid, entry, manifest = null) {
   return null
 }
 
-async function regenerate(pid, id) {
+// 거리감 재생성용 접미 프롬프트 — 목적은 단순히 카메라를 멀리 두는 게 아니라(2026-08-04 사용자
+// 확정), **등장 인물 전원의 전신(머리끝~발끝)이 하나의 앵글 안에 잘리지 않고 들어오고, 발밑
+// 바닥까지 전부 프레임에 담기게** 하는 것. 카메라 거리는 그걸 이루기 위한 수단으로만 지시한다.
+// '거리감↑' 버튼을 눌렀을 때만 덧붙는다.
+const DISTANCE_SUFFIX =
+  ' ABSOLUTELY CRITICAL FRAMING — FULL BODIES, NOTHING CROPPED: EVERY person in the scene must be shown in' +
+  ' COMPLETE FULL FIGURE from the top of their head to the soles of their feet, entirely inside the frame in one' +
+  ' single angle. NO person may be cropped by any edge of the image — no cut-off heads, no cut-off legs, and' +
+  ' above all their FEET and the floor they stand on MUST be visible. Move the camera back as far as needed to' +
+  ' achieve this, with clear empty margin above every head and clearly visible floor below every pair of feet.' +
+  ' The floor/ground must be rendered all the way down: a continuous stretch of visible floor fills the bottom of' +
+  ' the panorama down to the nadir beneath the camera, including the patch of floor directly under each person,' +
+  ' with their feet planted on it and their shadows falling on it. The ceiling/sky likewise remains unbroken' +
+  ' across the top. If in doubt, make people SMALLER within the frame rather than ever cropping any part of them.'
+
+async function regenerate(pid, id, opts = {}) {
   const manifest = await readManifest(pid)
   const entry = (manifest.images || []).find((img) => img.id === id)
   if (!entry) throw new Error(`항목 없음: ${id}`)
@@ -295,6 +312,9 @@ async function regenerate(pid, id) {
   // entry에 남아 유지되므로 얼굴 앵커·나이 변환 접두어(prefixForEntry)도 함께 재적용된다.
   // (레퍼런스가 기록되지 않은 구버전 entry는 접두어·참조 없이 순수 장면 프롬프트로만 재조립된다.)
   entry.prompt = prefixForEntry(entry) + composeScenePromptFor(wf, manifest.profile, entry)
+  // 거리감 재생성 — 이번 생성에만 거리 강조를 덧붙인다. 일반 재생성이 다시 돌면 프롬프트가
+  // 재조립되므로 자동으로 원상 복구된다.
+  if (opts.distance) entry.prompt += DISTANCE_SUFFIX
 
   const result = await runRegen(pid, manifest, entry, wf)
 
@@ -846,6 +866,91 @@ async function runFuneralJob(pid, { force = false, stage = 'image', variant = 'p
       : r.ok
         ? `[완료] ${vlabel} ${what} 완료: ${funeralLast.name} (rev ${r.rev})${stage === 'image' ? ' — 검토·승인 대기' : ' — Firebase 저장 가능'}`
         : `[실패] ${vlabel} ${what} 실패: ${funeralLast.name} — ${r.error}`
+  )
+}
+
+// ── 장지(안식처) 파노라마 큐 — 장례식 큐와 같은 구조, variant 없음(1차 전용) ──────────
+// 장례식과 별개의 생성물: 묻히길 바란 곳(burialSite)의 풍경 + 묘비석. funeral 큐를 그대로
+// 축소한 형태(동시 1잡, 승인 게이트, image/video 2단계). 얼굴 앵커는 불필요(무인 풍경).
+let graveQueue = [] // [{ pid, force, stage }]
+let graveJob = null // { pid, name, stage, phase, startedAt }
+let graveAbort = null
+let graveLast = null // { pid, name, ok, rev, stage, cancelled?, error?, at }
+
+function enqueueGrave(pid, { force = false, stage = 'image' } = {}) {
+  if (graveJob?.pid === pid) throw new Error('이 페르소나의 장지 생성이 이미 진행 중입니다')
+  if (graveQueue.some((q) => q.pid === pid)) throw new Error('이미 대기열에 있습니다')
+  graveQueue.push({ pid, force, stage })
+  pumpGrave()
+  return graveQueue.length
+}
+
+async function pumpGrave() {
+  if (graveJob || graveQueue.length === 0) return
+  const { pid, force, stage } = graveQueue.shift()
+  graveJob = { pid, name: pid, stage, phase: stage, startedAt: Date.now() }
+  graveAbort = new AbortController()
+  try {
+    await runGraveJob(pid, { force, stage })
+  } catch (e) {
+    graveLast = { pid, name: graveJob?.name || pid, ok: false, stage, error: e.message, at: Date.now() }
+    logAction(`[실패] 장지 생성 실패: ${e.message}`)
+  } finally {
+    graveJob = null
+    graveAbort = null
+    pumpGrave()
+  }
+}
+
+async function runGraveJob(pid, { force = false, stage = 'image' } = {}) {
+  await ensurePersonaLocal(pid).catch(() => {})
+  const manifest = await readManifest(pid)
+  const profile = manifest.profile || {}
+  const personaDir = path.join(LIBRARY, pid)
+  if (graveJob) graveJob.name = profile.name || pid
+  logAction(
+    `[시작] 장지 ${stage === 'video' ? '영상화' : '이미지 생성'} 시작: ${profile.name || pid}${force ? (stage === 'video' ? ' (영상만 재생성)' : ' (새 rev 재생성)') : ''}`
+  )
+  const doc = profiles.find((p) => p.id === (profile.id || pid)) || null
+  const gclient = new GeminiClient({
+    apiKey: await resolveGeminiApiKey(config.gemini),
+    model: config.gemini.model,
+    textModel: config.gemini.textModel,
+    timeoutMs: config.timeoutMs
+  })
+  const r = await runGraveWorkflow({
+    personaDir,
+    gclient,
+    config,
+    stage,
+    doc,
+    force,
+    signal: graveAbort.signal,
+    log: logAction,
+    onManifest: async (m) => {
+      if (firebaseReady) await upsertPersonaManifest(m).catch(() => {})
+    },
+    onProgress: (e) => {
+      if (graveJob) graveJob.phase = e.phase
+    }
+  })
+  graveLast = {
+    pid,
+    name: profile.name || pid,
+    ok: r.ok,
+    rev: r.rev,
+    stage,
+    cancelled: r.cancelled,
+    error: r.error || null,
+    at: Date.now()
+  }
+  const what = stage === 'video' ? '영상화' : '이미지 생성'
+  logAction(
+    r.cancelled
+      ? `[중지] 장지 ${what} 중지: ${graveLast.name} (rev ${r.rev} — 재실행으로 이어짐)`
+      : r.ok
+        ? `[완료] 장지 ${what} 완료: ${graveLast.name} (rev ${r.rev})${stage === 'image' ? ' — 검토·승인 대기' : ' — Firebase 저장 가능'}`
+        : `[실패] 장지 ${what} 실패: ${graveLast.name} — ${r.error}`
   )
 }
 
@@ -1563,7 +1668,8 @@ const server = http.createServer(async (req, res) => {
         video: { building: videoBuilding, queue: videoQueue, job: videoJob, last: videoLast },
         regenAll: { job: regenJob, last: regenLast },
         reelPhotos: { job: reelPhotoJob, queue: reelPhotoQueue, last: reelPhotoLast },
-        funeral: { job: funeralJob, queue: funeralQueue, last: funeralLast }
+        funeral: { job: funeralJob, queue: funeralQueue, last: funeralLast },
+        grave: { job: graveJob, queue: graveQueue, last: graveLast }
       })
     }
 
@@ -1672,6 +1778,22 @@ const server = http.createServer(async (req, res) => {
       logAction(`[중지] 장례식 생성 중지 요청 → ${funeralJob.name}`)
       funeralAbort?.abort()
       return send(res, 200, { stopped: true, pid: funeralJob.pid, cleared: clearedCount })
+    }
+
+    // POST /api/grave/stop → 진행 중인 장지 생성 중지(진행분은 manifest에 남아 재실행 시 이어짐).
+    if (req.method === 'POST' && url.pathname === '/api/grave/stop') {
+      const { clearQueue = false } = await readBody(req).catch(() => ({}))
+      const clearedCount = clearQueue ? graveQueue.length : 0
+      if (clearQueue) graveQueue = []
+      if (!graveJob)
+        return send(res, 200, {
+          stopped: false,
+          cleared: clearedCount,
+          note: clearedCount ? `대기열 ${clearedCount}건 비움` : '진행 중인 장지 생성 없음'
+        })
+      logAction(`[중지] 장지 생성 중지 요청 → ${graveJob.name}`)
+      graveAbort?.abort()
+      return send(res, 200, { stopped: true, pid: graveJob.pid, cleared: clearedCount })
     }
 
     // POST /api/regen-all/stop → 진행 중인 전체 재생성 중지(현재 장면까지 마치고 멈춤).
@@ -1983,11 +2105,11 @@ const server = http.createServer(async (req, res) => {
         })
       }
 
-      // 재생성: { id } — 동기 처리(장당 ~15초)
+      // 재생성: { id, distance? } — 동기 처리(장당 ~15초). distance=true면 거리감 강조 프롬프트를 덧붙인다.
       if (req.method === 'POST' && parts[3] === 'regen') {
-        const { id } = await readBody(req)
-        logAction(`${pid}  [재실행] 재생성 시작  장면 ${id}`)
-        const result = await regenerate(pid, id)
+        const { id, distance } = await readBody(req)
+        logAction(`${pid}  [재실행] ${distance ? '거리감 ' : ''}재생성 시작  장면 ${id}`)
+        const result = await regenerate(pid, id, { distance })
         logAction(
           `${pid}  [재실행] 재생성 완료  장면 ${id}  (${(result.entry.elapsedMs / 1000).toFixed(1)}s${result.entry.seed != null ? `, seed ${result.entry.seed}` : ''})`
         )
@@ -2155,6 +2277,83 @@ const server = http.createServer(async (req, res) => {
             `[Firebase] ${funeralVariantLabel(v)} 저장: ${manifest.profile?.name || pid} (rev ${up.rev}) → 'generatedFunerals'/${up.key}`
           )
           return send(res, 200, { uploaded: true, pid, variant: v, ...up })
+        } catch (e) {
+          return send(res, 500, { error: `Firebase 저장 실패: ${e.message}` })
+        }
+      }
+
+      // ── 장지(안식처) 파노라마 — funeral과 같은 4단계, variant 없음(1차 전용) ──
+      // ① POST /grave { force } → 이미지 생성 대기열 등록. force=새 rev 재생성(승인 리셋).
+      if (req.method === 'POST' && parts[3] === 'grave' && parts.length === 4) {
+        if (VIEW_ONLY) return send(res, 400, { error: '뷰어 모드에서는 생성 불가' })
+        const { force = false } = await readBody(req).catch(() => ({}))
+        try {
+          const position = enqueueGrave(pid, { force, stage: 'image' })
+          return send(res, 200, { queued: true, pid, force, stage: 'image', position })
+        } catch (e) {
+          return send(res, 400, { error: e.message })
+        }
+      }
+
+      // ② POST /grave/approve → 검토된 이미지를 승인.
+      if (req.method === 'POST' && parts[3] === 'grave' && parts[4] === 'approve') {
+        if (VIEW_ONLY) return send(res, 400, { error: '뷰어 모드에서는 승인 불가' })
+        const manifest = await readManifest(pid)
+        const g = manifest[GRAVE_MANIFEST_KEY]
+        if (!g?.image) return send(res, 400, { error: '승인할 장지 이미지가 없습니다' })
+        g.approved = true
+        g.approvedAt = new Date().toISOString()
+        if (!g.video && g.status !== 'video') g.status = 'review'
+        await writeManifest(pid, manifest)
+        logAction(
+          `[완료] 장지 이미지 승인: ${manifest.profile?.name || pid} (rev ${g.rev}) — 영상화 가능`
+        )
+        return send(res, 200, { approved: true, pid, rev: g.rev })
+      }
+
+      // ③ POST /grave/video { force } → 승인된 이미지를 Wan2.2로 영상화(대기열 등록).
+      if (req.method === 'POST' && parts[3] === 'grave' && parts[4] === 'video') {
+        if (VIEW_ONLY) return send(res, 400, { error: '뷰어 모드에서는 생성 불가' })
+        const { force = false } = await readBody(req).catch(() => ({}))
+        const manifest = await readManifest(pid)
+        const g = manifest[GRAVE_MANIFEST_KEY]
+        if (!g?.image) return send(res, 400, { error: '장지 이미지가 없습니다 — 먼저 생성하세요' })
+        if (!g.approved)
+          return send(res, 400, { error: '이미지 승인이 필요합니다 — 먼저 승인하세요' })
+        try {
+          const position = enqueueGrave(pid, { stage: 'video', force })
+          return send(res, 200, { queued: true, pid, stage: 'video', force, position })
+        } catch (e) {
+          return send(res, 400, { error: e.message })
+        }
+      }
+
+      // ④ POST /grave/upload → 완료된 이미지+영상을 Firebase(generatedFunerals.grave)에 저장.
+      if (req.method === 'POST' && parts[3] === 'grave' && parts[4] === 'upload') {
+        if (VIEW_ONLY) return send(res, 400, { error: '뷰어 모드에서는 저장 불가' })
+        if (!firebaseReady) return send(res, 400, { error: 'Firebase 미연결' })
+        const manifest = await readManifest(pid)
+        const g = manifest[GRAVE_MANIFEST_KEY]
+        if (!g?.image) return send(res, 400, { error: '저장할 장지 이미지가 없습니다' })
+        if (!g.video) return send(res, 400, { error: '영상화가 끝나야 저장할 수 있습니다' })
+        try {
+          const up = await uploadPersonaGrave({
+            profile: manifest.profile,
+            personaId: manifest.personaId || pid,
+            dir: path.join(LIBRARY, pid),
+            grave: g
+          })
+          g.firebase = {
+            uploadedAt: new Date().toISOString(),
+            rev: up.rev,
+            imageUrl: up.imageUrl,
+            videoUrl: up.videoUrl
+          }
+          await writeManifest(pid, manifest)
+          logAction(
+            `[Firebase] 장지 저장: ${manifest.profile?.name || pid} (rev ${up.rev}) → 'generatedFunerals'/${up.key}`
+          )
+          return send(res, 200, { uploaded: true, pid, ...up })
         } catch (e) {
           return send(res, 500, { error: `Firebase 저장 실패: ${e.message}` })
         }

@@ -335,6 +335,55 @@ export async function uploadPersonaFuneral({
   }
 }
 
+/**
+ * 장지(안식처) 산출물(파노라마 + Wan 영상)을 Storage에 올리고 generatedFunerals 문서의
+ * grave 하위 맵에 기록한다(2026-08-04) — 장례식과 같은 문서를 공유해 hydrate가 한 번에 읽는다.
+ * admin "Firebase 저장" 버튼 전용. 1차 플로우 전용이라 variant 개념이 없다.
+ * @param {object} p { profile, personaId, dir, grave: manifest.grave, bucket? }
+ */
+export async function uploadPersonaGrave({ profile, personaId, dir, grave, bucket }) {
+  if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  if (!grave?.image?.file) throw new Error('업로드할 장지 이미지가 없다')
+  const bkt = getStorage(app).bucket(bucket || defaultBucket)
+  const key = panoramaDocKey(profile)
+  const rev = grave.rev
+  const img = await uploadFileToStorage(
+    bkt,
+    path.join(dir, grave.image.file),
+    `generated-funerals/${key}/grave-r${rev}.png`,
+    'image/png'
+  )
+  let vid = null
+  if (grave.video?.file) {
+    vid = await uploadFileToStorage(
+      bkt,
+      path.join(dir, grave.video.file),
+      `generated-funerals/${key}/grave-r${rev}.mp4`,
+      'video/mp4'
+    )
+  }
+  await db
+    .collection(COLLECTION_FUNERALS)
+    .doc(key)
+    .set(
+      {
+        name: profile.name || null,
+        birthDate: profile.birthDate || null,
+        personaId,
+        bucket: bkt.name,
+        grave: {
+          rev,
+          image: { url: img.url, storagePath: img.storagePath },
+          video: vid ? { url: vid.url, storagePath: vid.storagePath } : null,
+          approvedAt: grave.approvedAt || null
+        },
+        updatedAt: FieldValue.serverTimestamp()
+      },
+      { merge: true }
+    )
+  return { key, rev, imageUrl: img.url, videoUrl: vid?.url || null }
+}
+
 // 재생성 이력 보존 상한 — 문서 1MB 한계 대비 안전판(버전당 ~5KB, 20이면 충분히 여유).
 const REEL_HISTORY_MAX = 20
 

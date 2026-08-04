@@ -32,6 +32,8 @@ import { Conversation } from '@elevenlabs/client'
 //   TV 꺼지듯 암전시킨다. clearVideo 직후에 부른다.
 // playFutureReel: (payload) => Promise — 그 암전에서 미래 릴(필름스트립)을 흘린다. 1사이클이 끝나면
 //   resolve — 그때서야 유령이 2장 전환 발화를 시작한다(장례식 → 미래 릴 → 발화 순서).
+// playFinale: (opts?) => Promise — 체험 종료 연출: 종결 발화가 끝난 뒤 태풍소리와 함께
+//   실 감김 모션이 역재생되고 암전으로 저문다 — 1차 체험 전체의 닫힘.
 export function createGhostVoice({
   getSession,
   onSpeaking,
@@ -41,7 +43,8 @@ export function createGhostVoice({
   clearVideo,
   playFutureSpinup,
   playFutureFuneral,
-  playFutureReel
+  playFutureReel,
+  playFinale
 } = {}) {
   let convo = null //     현재 Conversation 세션(없으면 null, convai 엔진 전용).
   let starting = false // start 진행 중(중복 시작 방지).
@@ -59,8 +62,8 @@ export function createGhostVoice({
   const VOICE_GAIN = 5 // 목소리 배율
   // 에코 — 유령 목소리에 공간감(먼 곳에서 울려오는 느낌). 원음은 그대로 두고 젖은 신호만 섞는다.
   const ECHO_DELAY = 0.28 //    반복 간격(초). 짧으면 방 울림, 길면 동굴 울림.
-  const ECHO_FEEDBACK = 0.35 // 반복마다 감쇠율(0~1). 높을수록 꼬리가 길게 남는다.
-  const ECHO_WET = 0.3 //       에코 섞는 비율. 0이면 에코 없음(원음만).
+  const ECHO_FEEDBACK = 0.25 // 반복마다 감쇠율(0~1). 높을수록 꼬리가 길게 남는다.
+  const ECHO_WET = 0.15 //      에코 섞는 비율. 0이면 에코 없음(원음만).
   let audioCtx = null //      목소리 패닝용 AudioContext(지연 생성).
   const mediaSources = new WeakMap() // <audio> → MediaElementSource(요소당 한 번만 생성 가능).
   let panRaf = 0 //           재생 중 pan 추종 rAF.
@@ -73,6 +76,28 @@ export function createGhostVoice({
     }
     if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {})
     return audioCtx
+  }
+
+  // 첫 발화 워밍업 — AudioContext 생성·resume과 OS 출력 스트림이 열리는 첫 100~300ms 동안은
+  // 소리가 버려져 TTS 앞 반 음절이 잘린다. 첫 speak 전에 무음 버퍼를 한 번 틀어 출력을 깨우고
+  // 잠깐 기다린다(이후 발화는 이미 열려 있어 바로 통과).
+  let voiceWarmedUp = false
+  async function warmUpVoiceAudio() {
+    if (voiceWarmedUp) return
+    voiceWarmedUp = true // 실패해도 재시도로 발화를 계속 지연시키지 않는다
+    const ctx = ensureAudioCtx()
+    if (!ctx) return
+    try {
+      if (ctx.state !== 'running') await ctx.resume()
+      const buf = ctx.createBuffer(1, Math.round(ctx.sampleRate * 0.05), ctx.sampleRate)
+      const src = ctx.createBufferSource()
+      src.buffer = buf
+      src.connect(ctx.destination)
+      src.start()
+      await new Promise((r) => setTimeout(r, 150)) // 출력 스트림이 실제로 열릴 시간
+    } catch {
+      /* 워밍업 실패 — 그냥 재생(기존 동작) */
+    }
   }
 
   // <audio>를 패너에 연결하고 재생이 끝날 때까지 유령 위치를 따라 pan을 갱신한다. 반환 = 정리 함수.
@@ -167,14 +192,31 @@ export function createGhostVoice({
     })
   }
 
+  // 완성 오디오 프리페치(POST → blob URL). GET 스트리밍은 합성이 재생을 못 따라가면 Chrome이
+  // 버퍼 끝에서 ended를 조기 발화해 긴 대사가 중간에 잘린다 — 앞선 연출(장례식·미래 릴)로 시간을
+  // 벌 수 있는 긴 전환 발화는 그 동안 전체를 미리 받아 재생한다. 실패는 null(스트리밍 경로로 폴백).
+  function prefetchTtsBlob(text) {
+    return fetch('/api/ghost/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text })
+    })
+      .then((r) => (r.ok ? r.blob() : null))
+      .then((b) => (b ? URL.createObjectURL(b) : null))
+      .catch(() => null)
+  }
+
   // 한 마디를 소리로 낸다: 서버 TTS(ElevenLabs)를 GET 스트리밍으로 — <audio src>가 첫 청크부터
   // 점진 재생하므로 합성 전체를 기다리지 않는다(발화 시작 지연 최소화). 실패 시 브라우저 TTS 폴백.
-  async function speak(text) {
+  // srcOverride(프리페치된 blob URL)가 있으면 그걸 재생한다 — 끝까지 잘리지 않는 완성본.
+  async function speak(text, srcOverride) {
     if (!text || stopped) return
+    await warmUpVoiceAudio() // 첫 발화 앞 잘림 방지 — 출력이 열린 뒤에 재생 시작
+    if (stopped) return
     onSpeaking?.(true)
     try {
       const ok = await new Promise((resolve) => {
-        const a = new Audio(`/api/ghost/tts?text=${encodeURIComponent(text)}`)
+        const a = new Audio(srcOverride || `/api/ghost/tts?text=${encodeURIComponent(text)}`)
         a.crossOrigin = 'anonymous' // 동일 오리진이지만 MediaElementSource 라우팅 시 taint 방지.
         bridgeAudio = a
         const detachPan = attachPanFollow(a) // 유령 위치 따라 목소리를 좌우로(입체감).
@@ -184,6 +226,7 @@ export function createGhostVoice({
           settled = true
           detachPan()
           if (bridgeAudio === a) bridgeAudio = null
+          if (srcOverride) URL.revokeObjectURL(srcOverride)
           resolve(good)
         }
         a.onended = () => done(true)
@@ -298,11 +341,15 @@ export function createGhostVoice({
       // **90세 장례식**을 튼다(2차 플로우의 initiate). 1차가 "장례식 → 암전 → 주마등"으로 열리듯
       // 2차도 같은 문법으로 열린다: 이 사람이 이대로 살아 맞이할 죽음을 먼저 보고, 그 암전에서
       // 미래의 순간들로 넘어간다. 영상이 아직 없으면(승인·영상화 전) 서버가 url을 안 주고 건너뛴다.
+      let saySrc = null // 릴 뒤 고정 질문의 프리페치 오디오 — 연출이 흐르는 동안 미리 받는다
       if (reply?.chapterTurned) {
+        if (reply.say) saySrc = prefetchTtsBlob(reply.say)
+        // 전환 선언도 이제 두세 문장이라 스트리밍 조기 종료에 잘릴 수 있다 — 완성본을 받아 재생.
+        const spinupSrc = reply.spinup?.say ? prefetchTtsBlob(reply.spinup.say) : null
         await clearVideo?.()
         if (stopped) return
-        // ⓪ 개막 선언 — 감아올리기 모션 직전, 유령 idle에서 짧게 못박는다("이젠, 미래로 갈 거야.").
-        if (reply.spinup?.say) await speak(reply.spinup.say)
+        // ⓪ 전환 선언 — 감아올리기 모션 직전, 유령 idle에서 말한다("…내가 좀 보여줄게. 거기 가만히 앉아서 잘 따라와.").
+        if (reply.spinup?.say) await speak(reply.spinup.say, (await spinupSrc) || undefined)
         if (stopped) return
         // ⓪ 실타래 감아올리기(10배속 가속 → 어둠). 이어질 재료(장례식·미래 릴)가 하나도 없으면
         // 건너뛴다 — 어둠에서 아무것도 떠오르지 못해 화면이 검정에 갇히는 걸 막는다.
@@ -316,11 +363,12 @@ export function createGhostVoice({
         if (reply.futureReel?.photos?.length) await playFutureReel?.(reply.futureReel)
       }
       if (stopped) return
-      if (reply?.say) await speak(reply.say) // 예: "기다려봐. 그때의 기억으로 돌아가자."
+      if (reply?.say) await speak(reply.say, saySrc ? await saySrc : undefined) // 예: "기다려봐. 그때의 기억으로 돌아가자."
       if (stopped) return
       if (reply?.end && !reply?.video) {
-        // 체험 종료(마지막 화답까지 마쳤다) — 듣기를 멈추고 조용히 곁에 머문다(영상은 계속 흐른다).
-        console.log('[ghost-voice] 체험 종료 — 유령은 침묵한다')
+        // 체험 종료(종결 발화까지 마쳤다) — 태풍소리와 함께 실 감김 역재생 → 암전으로 닫는다.
+        console.log('[ghost-voice] 체험 종료 — 마침 연출 후 암전')
+        await playFinale?.()
         return
       }
       if (reply?.video?.url) {
@@ -341,7 +389,8 @@ export function createGhostVoice({
           )
           if (!stopped && follow?.say) await speak(follow.say)
           if (follow?.end) {
-            console.log('[ghost-voice] 체험 종료 — 유령은 침묵한다')
+            console.log('[ghost-voice] 체험 종료 — 마침 연출 후 암전')
+            await playFinale?.()
             return
           }
         } catch {

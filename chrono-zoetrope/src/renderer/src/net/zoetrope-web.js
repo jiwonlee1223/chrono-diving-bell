@@ -106,8 +106,10 @@ export function installZoetropeWeb() {
     togglePlay: () => postJson('/api/toggle-play', {}),
     // reel(회전) 한 바퀴 완료 → 서버가 대화(유령)로 전환. Q/W로 빨라지면 조기 도착해 전환이 앞당겨진다.
     sendReelDone: () => postJson('/api/reel-done', {}),
-    // 장례식 영상 재생 + TV 암전 연출 완료 → 서버가 주마등(reel)을 시작한다.
+    // 장례식 영상 재생 + TV 암전 연출 완료 → 서버가 장지(1차, 있으면) 또는 주마등을 시작한다.
     sendFuneralDone: () => postJson('/api/funeral-done', {}),
+    // 장지(안식처) 영상 재생 + 암전 연출 완료 → 서버가 주마등(reel)을 시작한다.
+    sendGraveDone: () => postJson('/api/grave-done', {}),
     // reel(회전) 진행 heartbeat — 도는 동안 주기적으로 보내 서버 안전 폴백을 리셋(Q로 느려도 안 끊기게).
     sendReelProgress: () => postJson('/api/reel-progress', {}),
     // 설치 캘리브레이션(yaw/pitch) 저장 — 실시간 조정 후 재시작에도 유지되도록.

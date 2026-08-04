@@ -59,20 +59,23 @@
       "provider": "elevenlabs",
       "engine": "bridge",
       "ttsModelId": "eleven_flash_v2_5",
+      "sentenceBreak": 0.6,
       "listen": { "endSilenceMs": 2500, "maxUtteranceMs": 45000 },
       "agentId": "agent_7101ky4wmb2wfj4bnf3ajcpbgsfw",
       "apiKeyPath": "./secrets/elevenlabs-api-key.txt",
       "language": "ko",
       "voiceId": "Ip8ZgfdNlluBt9FGzcAN",
+      "$speed": "발화 템포(0.7~1.2, 1=기본). 낮을수록 천천히 — 모델이 그 템포로 자연 발화한다.",
+      "speed": 0.9,
       "flow": "past",
       "past": {
         "$systemPromptPath": "1차(과거 회귀) 페르소나. 첫 발화(회고)는 서버가 Firebase 세션 텍스트로 생성해 오버라이드하므로 firstMessage 설정이 없다.",
         "systemPromptPath": "src/main/config/ghost-persona-past.md"
       },
       "future": {
-        "$comment": "2차(미래 큐레이션) — 기존 1차 흐름을 그대로 이관해 보존.",
+        "$comment": "2차 체험(3차 플로우) — 1차의 2장(미래)과 같은 장 로직(브리지)으로 돌되, 보여주는 미래는 지난 만남과 다른 갈래(대화 기반 분기 외삽)라는 프레이밍.",
         "systemPromptPath": "src/main/config/ghost-persona.md",
-        "firstMessage": "너는 지금 여기서 죽게 되었지만, 만약에 한 번의 기회를 얻어 삶을 이어갈 수 있다면, 몇 년 뒤의 너를 보고 싶어?"
+        "firstMessage": "다시 왔구나. 지난번에 너는, 이대로 살아간다면의 너를 봤었지. 하지만 미래는 예측할 수 없는 거야. 나조차도. 나는 방금, 또 다른 갈래를 걷는 너를 보고 왔어. 어때, 궁금하지 않아? 가장 보고 싶은 모습이 있다면 말해줘. 내가 보여줄게."
       },
       "startDelayMs": 2600
     }
@@ -100,6 +103,17 @@
       "video": { "width": 1536, "height": 384, "length": 161, "fps": 16, "steps": 4, "shift": 5.0 },
       "$promptPrefix": "시네마그래프 지시(2026-08-04) — 4:1 equirect는 Wan2.2 학습 분포 밖이라 인물 사지를 움직이면 상하체 분리·해부학 붕괴가 난다. 사람은 제자리 정지(숨쉬기 수준)로 못 박고, 움직임은 빛·공기·머리카락·옷자락·배경 요소로만 한정한다.",
     "promptPrefix": "A living photograph, cinemagraph style: the scene is almost completely still, like a held breath. Every person stays exactly in place — no walking, no limb movement, no gestures, no turning; bodies keep their exact pose and position, at most a barely perceptible breathing. All apparent motion comes only from the atmosphere: light subtly shifting, hair and clothing edges stirring in a faint breeze, leaves or curtains trembling, dust drifting in the light. The camera is completely locked and static, no drift, no zoom, no rotation. Cinematic, realistic, extremely understated motion."
+    }
+  },
+  "dome": {
+    "$comment": "물리 돔(ESP32 'OrigamiDome' 스테퍼 4개, BT SPP) 자동 제어. port=Windows 블루투스 페어링이 만든 '발신' COM 포트(예: COM6). null이면 돔 연동 꺼짐. cues=1차 흐름 국면 진입 시 보낼 한 글자 명령 — f=감기, b=되감기, s=정지, p=ESP32 내장 시퀀스. 국면 키(idle/spinup/funeral/reel/ghost)가 없으면 그 전환엔 아무것도 안 보낸다.",
+    "port": null,
+    "baudRate": 115200,
+    "cues": {
+      "spinup": "f",
+      "reel": "b",
+      "ghost": "s",
+      "idle": "s"
     }
   }
 }

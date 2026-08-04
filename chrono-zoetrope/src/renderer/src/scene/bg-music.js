@@ -12,17 +12,18 @@
 //
 // 실패는 조용히 삼킨다 — 파일 없음·디코드 실패·오디오 컨텍스트 불가면 음악 없이 진행한다(§1 침묵 폴백).
 
-const LEVEL = { idle: 10, agent: 5, user: 5 } // agent: 유령 발화 중 — 최종 gain 0.05 (5/10 × MASTER 0.1)
+const LEVEL = { idle: 10, agent: 5, user: 5 } // agent: 유령 발화 중 — 최종 gain 0.075 (5/10 × MASTER 0.15)
 const CROSSFADE_SEC = 4 //  앞뒤 이음매 crossfade 길이(초)
+const STOP_FADE_SEC = 1.5 // stop() 시 페이드아웃 길이(초) — 배경음은 뚝 끊지 않는다
 const DUCK_RAMP_SEC = 0.5 // 발화/청취 전이 시 볼륨 램프 길이(초)
-const MASTER = 0.1 //        level 10 → gain(MASTER). 설치 현장에서 전체 크기만 조정하고 싶을 때 여기만 만진다.
+const MASTER = 0.25 //       level 10 → gain(MASTER). 설치 현장에서 전체 크기만 조정하고 싶을 때 여기만 만진다.
 //                          (1.0=파일 원음 크기. 목소리가 음악 위로 또렷하게 들리도록 전체를 낮춰 둠.)
 
 const gainForLevel = (level) => (Math.max(0, Math.min(10, level)) / 10) * MASTER
 const TRIM_MIN = 0.05 // 무음 직전까지만 — 완전 0이면 켜져 있는지 알 수 없다
 const TRIM_MAX = 3.0 //  MASTER 대비 최대 3배(파일 원음 0.9)까지
 
-// src: 배경음악 파일 URL(예: '/resources/Where_Light_Ends.mp3')
+// src: 배경음악 파일 URL(예: '/resources/underwaterWhiteNoise.mp3')
 export function createBgMusic({ src } = {}) {
   let ctx = null //        AudioContext
   let buffer = null //     디코드된 오디오 버퍼
@@ -149,6 +150,8 @@ export function createBgMusic({ src } = {}) {
     scheduleLoop(ctx.currentTime + 0.05)
   }
 
+  // 페이드아웃으로 멈춘다 — 배경음은 뚝 끊지 않는다(§연출). 소스·게인을 지역으로 넘겨받아
+  // 죽이므로, 페이드 중에 start()가 다시 불려도(새 duck·소스) 서로 간섭하지 않는다.
   function stop() {
     stopped = true
     started = false
@@ -156,23 +159,37 @@ export function createBgMusic({ src } = {}) {
       clearTimeout(loopTimer)
       loopTimer = null
     }
-    for (const s of sources) {
-      try {
-        s.stop()
-      } catch {
-        /* 무시 */
-      }
-    }
+    const oldSources = sources
     sources = []
+    const oldDuck = duck
+    duck = null
     agentSpeaking = false
     userListening = false
-    if (duck) {
-      try {
-        duck.disconnect()
-      } catch {
-        /* 무시 */
+    const kill = () => {
+      for (const s of oldSources) {
+        try {
+          s.stop()
+        } catch {
+          /* 무시 */
+        }
       }
-      duck = null
+      if (oldDuck) {
+        try {
+          oldDuck.disconnect()
+        } catch {
+          /* 무시 */
+        }
+      }
+    }
+    if (oldDuck && ctx) {
+      const now = ctx.currentTime
+      const g = oldDuck.gain
+      g.cancelScheduledValues(now)
+      g.setValueAtTime(g.value, now)
+      g.linearRampToValueAtTime(0, now + STOP_FADE_SEC)
+      setTimeout(kill, STOP_FADE_SEC * 1000 + 100)
+    } else {
+      kill()
     }
   }
 

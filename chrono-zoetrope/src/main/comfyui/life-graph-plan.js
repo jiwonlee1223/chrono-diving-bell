@@ -109,24 +109,84 @@ export const FINAL_SCENE =
   'lying in a hospital bed in a quiet ward, a thin blanket drawn up to the chest,' +
   ' late afternoon light through a window, an empty chair beside the bed'
 
-// ── 세션 점 스키마 어댑터(2026-08-03) ─────────────────────────────────────────
+// ── 세션 점 스키마 어댑터(2026-08-03, 배열 스키마 2026-08-04) ──────────────────
 //
-// cdb-crafter가 점의 키를 바꿨다. 두 형태가 공존한다:
+// cdb-crafter가 점의 키·모양을 바꿔 왔다. 세 형태가 공존한다:
 //
 //   [옛] 단계 키   — { protect|growth|…|settlement: {x,text,imageURL}, future-<id>: {…} }
 //                    7개 생애주기 단계마다 점 하나. 미래는 `future-` 접두. 한 단계에 나이가
 //                    여럿 매달린다(growth = 9세·15세) — 그 나이들이 같은 글·같은 사진을 공유했다.
-//   [새] 나이 키   — { "age-3", "age-9", "age-15", … : {x,text,imageURL} }
+//   [중간] 나이 키 — { "age-3", "age-9", … : {x,text,imageURL} }
 //                    AGE_TO_STAGE의 나이 격자와 1:1. 나이마다 자기 글과 자기 사진을 갖는다.
 //                    `future-` 접두가 없고, **문서의 age보다 큰 나이가 곧 미래**다.
+//   [새] 점 배열   — { "age-6": [ {age,x,event,companion,place,imageURL}, … 최대 3개 ], … }
+//                    구간(id)마다 점이 배열로 최대 3개, 점마다 **자기 정확한 나이(age)**와
+//                    구조화된 필드(event=사건, companion=함께한 사람, place=장소)를 갖는다.
+//                    옛 text 자리는 event가 잇는다(composePointText가 세 필드를 한 줄로 합친다).
+//                    구간 id 격자는 crafter 쪽 사정으로 계속 흔들리므로 여기서는 믿지 않고,
+//                    각 점의 age를 AGES 격자의 가장 가까운 나이에 배정해 쓴다.
 //
-// 새 스키마가 오히려 생성 파이프라인(나이 단위)과 직결이라 변환 없이 그대로 쓴다. 옛 문서는
-// 기존 참가자의 재생성이 걸려 있어 계속 받는다 — 아래 resolveAgePoint 하나가 그 차이를 흡수하고,
-// 나머지 코드는 전부 "나이 → 점"으로만 생각한다.
+// 옛 문서는 기존 참가자의 재생성이 걸려 있어 계속 받는다 — 아래 resolveAgePoint 하나가 그
+// 차이를 전부 흡수하고, 나머지 코드는 "나이 → 점 {x,text,imageURL,age?}"로만 생각한다.
 
 /** 이 세션이 새(나이 키) 스키마인가 — `age-<숫자>` 키가 하나라도 있으면 그렇다. */
 export function isAgeKeyedSession(sessionPoints = {}) {
   return Object.keys(sessionPoints).some((k) => /^age-\d+$/.test(k))
+}
+
+/** 이 세션이 점 배열 스키마인가 — 구간 값이 배열인 키가 하나라도 있으면 그렇다. */
+export function isArrayPointSession(sessionPoints = {}) {
+  return Object.values(sessionPoints).some(Array.isArray)
+}
+
+/**
+ * 점 배열 스키마의 점 하나 → 옛 text 한 줄(한국어). 합성·회고·장례식 프롬프트가 전부
+ * "본인이 쓴 글"로 원문 인용하므로, 구조화 필드를 사람이 쓴 문장처럼 한 줄로 합친다.
+ */
+export function composePointText(point = {}) {
+  const event = point.event?.trim() || point.text?.trim() || ''
+  const extras = []
+  if (point.companion?.trim()) extras.push(`함께한 사람: ${point.companion.trim()}`)
+  if (point.place?.trim()) extras.push(`장소: ${point.place.trim()}`)
+  if (!event) return extras.length ? extras.join(', ') : ''
+  return extras.length ? `${event} (${extras.join(', ')})` : event
+}
+
+/** age와 가장 가까운 AGES 격자 나이(동률이면 젊은 쪽). */
+export function nearestGridAge(age) {
+  let best = AGES[0]
+  for (const a of AGES) if (Math.abs(a - age) < Math.abs(best - age)) best = a
+  return best
+}
+
+/**
+ * 점 배열 스키마를 편다 → 격자 나이(AGES) → 그 나이에 배정된 점들.
+ * 각 점은 자기 age 기준 **가장 가까운 격자 나이 하나**에만 배정된다 — 격자→점의 역방향으로
+ * 당기면(가까운 점 아무거나) 참가자가 안 찍은 미래 나이까지 과거 점이 흘러 들어가
+ * 외삽(extrapolationAges) 판정이 깨진다.
+ * key는 '구간id#인덱스'(점 1개면 구간id 그대로) — plan.stageId·사진 맵이 이 키로 점을 되찾는다.
+ */
+function arrayPointsByGridAge(sessionPoints = {}) {
+  const byAge = new Map()
+  for (const [stageId, value] of Object.entries(sessionPoints)) {
+    if (!Array.isArray(value)) continue
+    value.forEach((p, i) => {
+      if (!p || typeof p !== 'object') return
+      const own = Number(p.age)
+      const age = Number.isFinite(own) ? Math.round(own) : ageOfStageId(stageId)
+      if (age == null) return
+      const grid = nearestGridAge(age)
+      if (!byAge.has(grid)) byAge.set(grid, [])
+      byAge.get(grid).push({
+        key: value.length > 1 ? `${stageId}#${i}` : stageId,
+        age,
+        x: p.x ?? null,
+        text: composePointText(p),
+        imageURL: p.imageURL ?? null
+      })
+    })
+  }
+  return byAge
 }
 
 /**
@@ -151,6 +211,28 @@ export function currentAgeOf(profile = {}) {
  *   옛 스키마에선 여러 나이가 같은 key를 공유하고(= 같은 사진), 새 스키마에선 나이마다 다르다.
  */
 export function resolveAgePoint(age, sessionPoints = {}, profile = {}) {
+  // 점 배열 스키마 — 이 격자 나이에 배정된 점들 중 나이가 가장 가까운 점을 대표로 쓰되,
+  // 같은 격자 나이에 배정된 다른 점들의 글도 잃지 않고 합쳐 싣는다(사진은 대표 우선).
+  if (isArrayPointSession(sessionPoints)) {
+    const gridAge = AGE_POINT_ALIAS[age] ?? age
+    const entries = arrayPointsByGridAge(sessionPoints).get(gridAge)
+    if (!entries?.length) return null
+    const primary = [...entries].sort(
+      (a, b) => Math.abs(a.age - gridAge) - Math.abs(b.age - gridAge) || a.age - b.age
+    )[0]
+    const texts = entries.map((e) => e.text).filter(Boolean)
+    const cur = currentAgeOf(profile)
+    return {
+      key: primary.key,
+      isFuture: cur != null && age > cur,
+      point: {
+        age: primary.age, // 점의 실제 나이 — 프롬프트 표기가 격자 나이 대신 이걸 쓴다
+        x: primary.x,
+        text: texts.join(' / '),
+        imageURL: primary.imageURL || entries.find((e) => e.imageURL)?.imageURL || null
+      }
+    }
+  }
   // 격자 밖 나이(2세)는 별칭 격자 나이(6세)의 점을 그대로 빌린다 — key도 그 점의 키라서
   // 사진 맵·합성 프롬프트가 자연히 "한 점에 나이 여럿"(옛 스키마와 같은 모양)으로 묶인다.
   const ageKey = `age-${AGE_POINT_ALIAS[age] ?? age}`
@@ -191,6 +273,21 @@ function ageOfStageId(stageId) {
 }
 
 /**
+ * selections 항목 하나가 가리키는 점의 실제 나이. 점 배열 스키마는 { stageId, index }가
+ * 배열 속 점 하나를 가리키므로 그 점의 age를 쓰고, 아니면 stageId의 숫자로 폴백.
+ */
+function selectionAge(sessionPoints, sel) {
+  if (!sel) return null
+  const arr = sessionPoints[sel.stageId]
+  if (Array.isArray(arr)) {
+    const p = arr[sel.index ?? 0]
+    const own = Number(p?.age)
+    if (Number.isFinite(own)) return Math.round(own)
+  }
+  return ageOfStageId(sel.stageId)
+}
+
+/**
  * 세션의 부가 데이터를 프롬프트 재료로 편다.
  * @returns {{ marks: Record<number, Array<{kind,label,reason}>>, lines: string[] }}
  *   marks — 나이 → 그 나이에 찍힌 선택(influential/best/worst)들. 해당 나이의 "사건" 장면이 이걸 딛는다.
@@ -200,8 +297,11 @@ export function collectSessionContext(profile = {}, sessionPoints = {}) {
   const marks = {}
   for (const kind of ['influential', 'best', 'worst']) {
     const s = sessionPoints.selections?.[kind]
-    const age = ageOfStageId(s?.stageId)
-    if (age == null) continue
+    const pointAge = selectionAge(sessionPoints, s)
+    if (pointAge == null) continue
+    // marks는 격자 나이로 조회된다(buildSynthesisPrompt의 entry.ages) — 점의 실제 나이(33 등)를
+    // 그 점이 배정되는 격자 나이로 스냅해 같은 자리에서 만나게 한다.
+    const age = nearestGridAge(pointAge)
     ;(marks[age] ??= []).push({
       kind,
       label: SELECTION_LABELS_EN[kind],
@@ -499,8 +599,10 @@ export function buildFutureExtrapolationPrompt(profile, sessionPoints, futureAge
     seen.add(r.key)
     const t = r.point?.text?.trim()
     if (!t) continue
-    // 별칭 나이(2세)로 처음 만나도 점의 실제 나이(age-6 → 6)로 표기한다 — LLM이 시기를 오해하지 않게.
-    ;(r.isFuture ? futureNotes : pastNotes).push(`- age ${ageOfStageId(r.key) ?? age}: "${t}"`)
+    // 별칭 나이(2세)로 처음 만나도 점의 실제 나이(point.age 또는 age-6 → 6)로 표기한다 — LLM이 시기를 오해하지 않게.
+    ;(r.isFuture ? futureNotes : pastNotes).push(
+      `- age ${r.point?.age ?? ageOfStageId(r.key) ?? age}: "${t}"`
+    )
   }
   // 부가 데이터(버킷리스트·모토·묘비명·마지막 편지) — 미래 외삽의 "본인이 쓴 미래" 재료를 두껍게 한다.
   const ctx = collectSessionContext(profile, sessionPoints)
@@ -636,7 +738,7 @@ export function buildBranchedExtrapolationPrompt(
     if (!r || seen.has(r.key) || r.isFuture) continue
     seen.add(r.key)
     const t = r.point?.text?.trim()
-    if (t) pastNotes.push(`- age ${ageOfStageId(r.key) ?? age}: "${t}"`)
+    if (t) pastNotes.push(`- age ${r.point?.age ?? ageOfStageId(r.key) ?? age}: "${t}"`)
   }
   const ctx = collectSessionContext(profile, sessionPoints)
   const cur = currentAgeOf(profile)
@@ -774,8 +876,9 @@ export function buildBranchedPlan(profile, branchedScenes = {}) {
  * life-library.js의 manifest.images 항목과 같은 모양이라 admin UI가 그대로 읽는다.
  * @param {object} profile        { name, birthDate, age }
  * @param {object} sessionPoints  Firestore 문서의 first/second/third 필드 —
- *   새 스키마 `{ "age-<나이>": { x, text, imageURL? } }` 또는 옛 스키마
- *   `{ [stageId]: {…}, [future-stageId]: {…} }` (resolveAgePoint가 둘 다 흡수).
+ *   점 배열 스키마 `{ "age-<구간>": [ {age,x,event,companion,place,imageURL}, … ] }`,
+ *   나이 키 스키마 `{ "age-<나이>": { x, text, imageURL? } }`, 옛 단계 키 스키마
+ *   `{ [stageId]: {…}, [future-stageId]: {…} }` 전부 (resolveAgePoint가 셋 다 흡수).
  * @param {Record<number, string[]>} [ageScenes]  synthesizeAgeScenes() 결과 — 본인 글에서 나온 나이와
  *   미래 외삽으로 만든 나이의 장면 SCENES_PER_AGE개씩. 둘 다 없는 나이는 fallbackScenesForAge().
  * @returns {Array<{ stageIndex, sceneIndex, id, stageId, age, year, isPast, scene, sceneSource, emotion }>}

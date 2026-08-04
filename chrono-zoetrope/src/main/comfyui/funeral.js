@@ -52,6 +52,7 @@ import { buildWan22I2VWorkflow } from './workflows.js'
 import { nearestGeminiAspect } from './gemini-client.js'
 import { agedPortrait } from './aged-anchor.js'
 import { AGES, resolveAgePoint } from './life-graph-plan.js'
+import { FULL_BODY_RULE } from './prompt-builder.js'
 
 export const FUNERAL_DIR = 'funeral'
 
@@ -477,6 +478,65 @@ export async function synthesizeFuneralCast(
 }
 
 /**
+ * 장례식 배경(장소) 합성 — 본인이 답한 장례 방식(funeralMethod)·안식처(burialSite)를 읽어
+ * 표준 실내 장례식장이 맞는지, 아니면 다른 공간(수목장 숲·바닷가·성당·자택…)이 맞는지 판정하고
+ * 그 공간을 영어로 묘사한다. 사람마다 원하는 장례식의 결이 다르므로(2026-08-04) 배경도 희망사항을
+ * 따라간다. 결과는 캐스트처럼 rev별 manifest(f.venue)에 캐시된다.
+ * null = 희망사항 없음/판정 실패 → 기존 표준 식장 그대로(안전 폴백).
+ * @returns {Promise<{indoorHall:boolean, setting:string, altar:string|null}|null>}
+ */
+export async function synthesizeFuneralVenue(gclient, wishes, { signal, log = () => {} } = {}) {
+  const method = wishes?.funeralMethod
+  const site = wishes?.burialSite
+  if (!method && !site) return null
+  const prompt =
+    `A Korean person answered questions about the funeral they want for themselves` +
+    ` (treat Korean text as-is):\n` +
+    (method ? `- The funeral method they wished for: "${method}"\n` : '') +
+    (site ? `- Where they wished to be laid to rest: "${site}"\n` : '') +
+    `\nWe are composing a photograph of that funeral ceremony. Decide the VENUE that best honors these wishes:\n` +
+    `- If the wishes fit an ordinary modern Korean funeral hall (장례식장) — e.g. cremation followed by a` +
+    ` columbarium, a standard 3-day funeral, or no clear venue implication — answer indoorHall=true, and in` +
+    ` "setting" describe only small visible touches INSIDE the hall that hint at their wish (a framed landscape` +
+    ` photo of the resting place near the altar, particular flowers or plants, a kept object...).\n` +
+    `- If the wishes clearly imply a DIFFERENT kind of place (a tree burial in a forest / 수목장, ashes scattered` +
+    ` at sea, a natural burial meadow, a church or cathedral, a quiet home funeral...), answer indoorHall=false` +
+    ` and in "setting" describe that ceremony space itself in concrete visual terms: the landscape or` +
+    ` architecture, materials, weather and light, in Korea unless the wish names another country.\n` +
+    `- In "altar": describe the memorial altar arrangement fitting that venue and wish — still recognizably a` +
+    ` Korean memorial altar with a framed portrait, flowers and offerings.\n` +
+    `Everything in ENGLISH, physical and visible details only, no emotions or narration. 1-3 sentences per field.\n` +
+    `Return ONLY JSON: {"indoorHall":true|false,"setting":"...","altar":"..."}`
+  try {
+    const out = await gclient.generateText({ prompt, responseJson: true, signal })
+    // 관용 파싱 — synthesizeFuneralCast와 동일 사유(코드펜스·후행 쉼표 오염)
+    let parsed
+    try {
+      parsed = JSON.parse(out)
+    } catch {
+      const cleaned = out
+        .replace(/^\s*```(?:json)?\s*/i, '')
+        .replace(/\s*```\s*$/, '')
+        .replace(/,\s*([}\]])/g, '$1')
+      parsed = JSON.parse(cleaned)
+    }
+    if (typeof parsed.indoorHall !== 'boolean' || !parsed.setting) return null
+    const venue = {
+      indoorHall: parsed.indoorHall,
+      setting: String(parsed.setting).trim(),
+      altar: parsed.altar ? String(parsed.altar).trim() : null
+    }
+    log(
+      `  [장례식] 배경 합성: ${venue.indoorHall ? '표준 식장 + 희망 힌트' : '맞춤 장소'} — ${venue.setting.slice(0, 100)}`
+    )
+    return venue
+  } catch (err) {
+    log(`  [경고] 장례식 배경 합성 실패(표준 식장으로 폴백): ${err.message}`)
+    return null
+  }
+}
+
+/**
  * Wan2.2 모션 프롬프트 — 캐스트가 있으면 조문객별 움직임 지시(videoAction)를 덧붙여
  * 영상도 개인화한다. base는 config.funeral.motionPrompt(없으면 기본 문구).
  * @param {Array}  [cast]  synthesizeFuneralCast 결과
@@ -541,9 +601,13 @@ export function buildFuneralPrompt(
   hasFaceRef = false,
   hasLayoutRef = false,
   variant = 'present',
-  wishes = null // collectFuneralWishes 결과 — 상주(chiefMourner)의 자리를 장면에 박는다
+  wishes = null, // collectFuneralWishes 결과 — 상주(chiefMourner)의 자리를 장면에 박는다
+  venue = null // synthesizeFuneralVenue 결과 — 희망 장례 방식·안식처에 맞는 배경(null=표준 식장)
 ) {
   const v = normalizeVariant(variant)
+  // 맞춤 장소(수목장 숲·바닷가·성당…) — 표준 실내 식장 묘사를 venue.setting으로 대체한다.
+  // 구도 불변식(정면 중앙 제단+영정, 뒤쪽 조문객, 이음매는 뒤 정중앙)은 그대로 유지.
+  const customVenue = Boolean(venue && !venue.indoorHall)
   const whose = profile.name ? `This is the funeral of ${profile.name}. ` : ''
   // 첨부 번호는 실제 배열 순서를 따라 매긴다(포트레이트가 없으면 구도 사진이 1번이 된다).
   const portraitNo = hasFaceRef ? 1 : 0
@@ -639,8 +703,16 @@ export function buildFuneralPrompt(
   // 4~5m 떨어져 있고 제단·영정은 프레임 세로의 절반도 차지하지 않는다 — 나머지는 텅 빈 바닥,
   // 천장(휘어진 우유빛 천장·매입 다운라이트·환기구), 벽면과 나무문, 복도, 대기 의자·낮은 탁자다.
   // 이 "작은 피사체 + 넓은 배경"이 실내 파노라마의 공간감을 만든다.
-  const scaleAndDepth =
-    `Shot with a true 360 panoramic camera on a tripod at about 1.6 m eye height, in a LARGE, SPACIOUS hall. ` +
+  const scaleAndDepth = customVenue
+    ? `Shot with a true 360 panoramic camera on a tripod at about 1.6 m eye height, in a LARGE, OPEN ceremony space. ` +
+      `THE VENUE — the funeral this person wished for themselves, honor it faithfully: ${venue.setting} ` +
+      `IMPORTANT SCALE: everything is seen from a distance — the camera stands about 4 to 5 meters back from the altar, ` +
+      `so the altar and its portrait occupy only a modest part of the frame, well under half of the image height, ` +
+      `and every person appears SMALL within the wide space. Do not fill the frame with the altar or with people. ` +
+      `The open ground of this place stretches across the entire bottom of the panorama between the camera and everything else, ` +
+      `and its sky or ceiling curves across the entire top of the panorama. ` +
+      `Strong equirectangular geometry: straight edges bow and stretch toward the top and bottom of the frame. `
+    : `Shot with a true 360 panoramic camera on a tripod at about 1.6 m eye height, in a LARGE, SPACIOUS hall. ` +
     `IMPORTANT SCALE: everything is seen from a distance — the camera stands about 4 to 5 meters back from the altar, ` +
     `so the altar and its portrait occupy only a modest part of the frame, well under half of the image height, ` +
     `and every person appears SMALL within the wide space. Do not fill the frame with the altar or with people. ` +
@@ -669,7 +741,9 @@ export function buildFuneralPrompt(
   return (
     refLegend +
     `A 360-degree equirectangular panoramic photograph, seamless horizontal wrap, captured from a single fixed point: ` +
-    `standing at the very center of a Korean funeral hall (jangnyesikjang), between the altar and the mourners — ` +
+    (customVenue
+      ? `standing at the very center of the funeral ceremony this person wished for themselves, between the altar and the mourners — `
+      : `standing at the very center of a Korean funeral hall (jangnyesikjang), between the altar and the mourners — `) +
     `the first-person point of view of the deceased person themself, standing at their own funeral. ` +
     whose +
     (age
@@ -678,25 +752,47 @@ export function buildFuneralPrompt(
         : `They died at the age of ${age}. `
       : '') +
     scaleAndDepth +
-    `IN FRONT of the viewer — the center of the panorama — spreads the traditional Korean funeral altar: ` +
-    `tiers densely banked with white chrysanthemum flowers, burning incense sticks in a brass censer with thin smoke rising, ` +
-    `white candles, offerings of fruit and food, and funeral wreaths (geunjo hwahwan) with black-and-white ribbon banners standing at both sides. ` +
-    `The altar sits in a shallow recessed alcove in the far wall, framed by wooden wall panels, with wall and ceiling ` +
-    `clearly visible above and around it — it does not reach the top of the frame. ` +
+    (customVenue
+      ? `IN FRONT of the viewer — the center of the panorama — stands the memorial altar of this ceremony: ` +
+        (venue.altar
+          ? `${venue.altar} ` +
+            `Burning incense with thin smoke rising, and the framed portrait at its top. `
+          : `tiers banked with white chrysanthemum flowers, burning incense with thin smoke rising, white candles ` +
+            `and offerings, arranged to suit this place. `) +
+        `The altar stands modestly within the open space, with the venue clearly visible above and around it — ` +
+        `it does not reach the top of the frame. `
+      : `IN FRONT of the viewer — the center of the panorama — spreads the traditional Korean funeral altar: ` +
+        `tiers densely banked with white chrysanthemum flowers, burning incense sticks in a brass censer with thin smoke rising, ` +
+        `white candles, offerings of fruit and food, and funeral wreaths (geunjo hwahwan) with black-and-white ribbon banners standing at both sides. ` +
+        `The altar sits in a shallow recessed alcove in the far wall, framed by wooden wall panels, with wall and ceiling ` +
+        `clearly visible above and around it — it does not reach the top of the frame. ` +
+        // 실내 식장 유지 + 희망 힌트(2026-08-04): 배경 합성이 "표준 식장"으로 판정하면 setting은
+        // 희망사항을 암시하는 소품 묘사다 — 제단 주변에 얹는다.
+        (venue?.setting ? `Honoring the funeral they wished for themselves: ${venue.setting} ` : '')) +
     portrait +
     chiefMourner +
     mourners +
     ageContext +
-    `The far left and far right ends of the panorama — the point directly behind the viewer — meet exactly on the plain ` +
-    `entrance doorway of the hall (a simple flat wall and door with no people and no complex detail crossing that joining line), ` +
-    `with the mourners arranged to its left and right, so the wrap is seamless. ` +
+    // 전신 불변식(2026-08-04) — 장면 파노라마와 동일: 상주·조문객 전원의 전신이 잘리지 않게.
+    FULL_BODY_RULE +
+    (customVenue
+      ? `The far left and far right ends of the panorama — the point directly behind the viewer — meet exactly on a plain, ` +
+        `uncluttered stretch of the venue (open ground, a bare wall or empty landscape, with no people and no complex detail ` +
+        `crossing that joining line), with the mourners arranged to its left and right, so the wrap is seamless. `
+      : `The far left and far right ends of the panorama — the point directly behind the viewer — meet exactly on the plain ` +
+        `entrance doorway of the hall (a simple flat wall and door with no people and no complex detail crossing that joining line), ` +
+        `with the mourners arranged to its left and right, so the wrap is seamless. `) +
     // 조명(2026-08-03): 레퍼런스대로 밝은 주광의 현대식 식장이되, 마냥 평평하게 밝지 않도록
     // 음영을 남긴다 — 조명 사이 그늘, 구석·복도의 어둠, 인물 발밑 그림자, 은은한 비네트.
-    `Bright, clean daylight-balanced interior lighting of a modern Korean funeral hall — but NOT flat or evenly lit: ` +
-    `the recessed ceiling lights pool light unevenly so shadow gathers between them, the corners of the hall, the far ` +
-    `corridor and the areas under the cabinetry and chairs fall into soft shade, the mourners cast quiet shadows on the floor, ` +
-    `and the light falls off gently toward the edges of the frame. Warm wood tones against muted whites, thin incense haze in the air, ` +
-    `a subdued and solemn mood despite the brightness. ` +
+    (customVenue
+      ? `Natural light true to this place and its weather — soft and subdued, NOT flat or evenly lit: shadow gathers in ` +
+        `the recesses of the space, the mourners cast quiet shadows on the ground, and the light falls off gently toward ` +
+        `the edges of the frame. Thin incense haze in the air, a subdued and solemn mood. `
+      : `Bright, clean daylight-balanced interior lighting of a modern Korean funeral hall — but NOT flat or evenly lit: ` +
+        `the recessed ceiling lights pool light unevenly so shadow gathers between them, the corners of the hall, the far ` +
+        `corridor and the areas under the cabinetry and chairs fall into soft shade, the mourners cast quiet shadows on the floor, ` +
+        `and the light falls off gently toward the edges of the frame. Warm wood tones against muted whites, thin incense haze in the air, ` +
+        `a subdued and solemn mood despite the brightness. `) +
     // 고인 부재 지시 보강(2026-08-04): 이전 문구("living body is NOT anywhere")를 모델이
     // "고인을 유령처럼 반투명하게 그리라"로 해석해, 흐릿한 반투명 인물·벗어놓은 신발이 생겼다.
     // 유령·반투명·잔상류를 명시적으로 금지하고, 모든 인물은 불투명한 산 사람뿐이라고 못 박는다.
@@ -843,6 +939,15 @@ export async function runFuneralWorkflow({
           hist.cast = f.cast
           await writeManifest(personaDir, manifest, onManifest)
         }
+        // 원하는 장례식(상주·장례 방식·안식처 등) — doc에서 매번 다시 읽는다(결정적이라 캐시 불필요).
+        const wishes = doc ? collectFuneralWishes(doc) : null
+        // 개인화 배경 — 희망 장례 방식·안식처(funeralMethod/burialSite)에 맞는 장소를 합성한다.
+        // 캐스트처럼 rev별 캐시(재시도 시 재사용). 희망 없음/실패 = null → 표준 식장.
+        if (f.venue === undefined) {
+          f.venue = wishes ? await synthesizeFuneralVenue(gclient, wishes, { signal, log }) : null
+          hist.venue = f.venue
+          await writeManifest(personaDir, manifest, onManifest)
+        }
         // 영정 포트레이트 프리패스(pro) — 원본 사진 대신 정식 영정 포트레이트를 레퍼런스로 실어
         // 파노라마(flash)는 얼굴을 새로 그리지 않고 액자에 배치만 하게 한다(ensureFuneralPortrait 주석).
         const portrait = await ensureFuneralPortrait({
@@ -863,17 +968,19 @@ export async function runFuneralWorkflow({
         const sceneRef = portrait || faceRef
         // 레퍼런스는 [영정 포트레이트, 구도 사진] 순서로 싣고, 프롬프트가 그 순서대로 번호를 매겨
         // 역할을 라벨링한다(buildFuneralPrompt 주석) — 순서를 바꾸면 라벨과 어긋난다.
-        const layoutRef = await loadFuneralLayoutRef(fcfg, log)
+        // 맞춤 장소(실내 식장이 아님)면 실측 실내 식장 360 구도 사진은 싣지 않는다 — 프롬프트의
+        // 야외/맞춤 공간 묘사와 정면으로 충돌해 모델이 실내 식장으로 되돌리기 때문.
+        const layoutRef =
+          f.venue && !f.venue.indoorHall ? null : await loadFuneralLayoutRef(fcfg, log)
         const references = [sceneRef, layoutRef].filter(Boolean)
-        // 원하는 장례식(상주 등) — doc에서 매번 다시 읽는다(캐스트와 달리 결정적이라 캐시 불필요).
-        const wishes = doc ? collectFuneralWishes(doc) : null
         const prompt = buildFuneralPrompt(
           profile,
           f.cast,
           Boolean(sceneRef),
           Boolean(layoutRef),
           vkind,
-          wishes
+          wishes,
+          f.venue
         )
         if (!sceneRef) log(`  [경고] 장례식: 레퍼런스 사진 없음 — 영정 얼굴이 임의로 생성된다`)
         const pano = config.panorama || { width: 4096, height: 1024 }
