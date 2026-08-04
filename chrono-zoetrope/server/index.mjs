@@ -38,6 +38,11 @@ import {
 } from '../src/main/session-pointer.js'
 import { readCalibration, writeCalibration } from '../src/main/calibration.js'
 import {
+  pastQuestions,
+  futureQuestions,
+  renderQuestions
+} from '../src/main/config/reflective-questions.mjs'
+import {
   initFirebase,
   ensurePersonaMediaFromFirebase,
   ensureLocalClipsFromFirebase,
@@ -120,7 +125,7 @@ function broadcast(channel, payload) {
   ) {
     const next = pendingPersonaId
     pendingPersonaId = undefined
-    applySessionSelection(next)
+    applySessionSelection(next, pendingExperience)
   }
 }
 
@@ -130,8 +135,15 @@ let sm = null //       상태 기계 (라이브러리 로드 후 생성).
 let library = null //  몽타주 재생 목록.
 let regenerator = null // 현재 페르소나용 영상 캐시 조회기.
 let pendingPersonaId //   세션 진행 중 들어온 참가자 교체 — IDLE 복귀 시 반영 (undefined = 없음).
+let pendingExperience = 'first' // 예약된 교체의 체험 종류 — pendingPersonaId와 함께 반영.
 let reelPhotoPlaylist = [] // reel 전용 3:4 사진(manifest.reelPhotos, 필름스트립용). 없으면 파노라마 rotate 폴백.
 let reelFuturePlaylist = [] // 미래 릴(manifest.reelPhotosFuture) — 2차 전환 때 90세 장례식 뒤에 흐른다.
+// 2차 체험(3차 플로우) 릴 — 유령 대화로 바뀐 마음가짐 기반 분기 미래(manifest.reelPhotosBranched).
+// 1차 릴이 되감기(현재→탄생)라면 이건 순방향(현재→90세)으로 풀려나간다.
+let reelBranchedPlaylist = []
+// 현재 세션의 체험 종류 — 'first'(1차 체험: 과거 회귀 주마등) | 'second'(2차 체험: 분기 미래).
+// admin 세션 지정 버튼이 _session.json의 experience 필드로 내려준다. 유령 대화는 두 체험이 동일.
+let currentExperience = 'first'
 let currentProfile = null // 현재 페르소나의 profile({name,birthDate,id?}) — Firebase 문서 키 계산용.
 
 // 페르소나 하나를 (재)로드: 라이브러리 + 영상 캐시 + 상태 기계를 새로 만든다.
@@ -204,15 +216,20 @@ async function loadPersona(personaId) {
       // 2차 플로우의 미래 릴은 **순방향** — 현재 다음 해부터 90세까지 시간이 앞으로 흐른다.
       // 1차가 되감기(현재→탄생)라면 2차는 그 반대 방향으로 풀려나간다(2026-08-03).
       reelFuturePlaylist = toPlaylist(mf.reelPhotosFuture)
+      // 2차 체험 릴(분기 미래) — 순방향(현재→90세). 없으면 2차 세션 지정 시 1차 릴로 폴백한다.
+      reelBranchedPlaylist = toPlaylist(mf.reelPhotosBranched)
       if (reelPhotoPlaylist.length)
         console.log(`[server] 과거 릴 ${reelPhotoPlaylist.length}장 (필름스트립 모드)`)
       if (reelFuturePlaylist.length)
         console.log(`[server] 미래 릴 ${reelFuturePlaylist.length}장 (2차 전환 시 재생)`)
+      if (reelBranchedPlaylist.length)
+        console.log(`[server] 분기 릴 ${reelBranchedPlaylist.length}장 (2차 체험 세션용)`)
     } catch {
       currentProfile = null
       currentReelSec = 0
       reelPhotoPlaylist = []
       reelFuturePlaylist = []
+      reelBranchedPlaylist = []
     }
     sm = new ZoetropeStateMachine({
       broadcast,
@@ -238,18 +255,22 @@ async function loadPersona(personaId) {
 
 // 연구자가 admin에서 고른 참가자를 런타임에 반영.
 // IDLE(대기)일 때만 즉시 교체하고 페이지를 재부트스트랩(RELOAD). 세션 진행 중이면 IDLE 복귀까지 미룬다.
-async function applySessionSelection(personaId) {
+async function applySessionSelection(personaId, experience = 'first') {
   if (sm && sm.state !== State.IDLE) {
     pendingPersonaId = personaId
+    pendingExperience = experience === 'second' ? 'second' : 'first'
     console.log(
       `[server] 세션 진행 중 — 참가자 교체를 IDLE 복귀 시로 예약: ${personaId ?? '(자동)'}`
     )
     return
   }
+  currentExperience = experience === 'second' ? 'second' : 'first'
   const ok = await loadPersona(personaId)
   if (!ok) return
   // 테스트 경험(사용자 확정): 참가자 선택이 곧바로 reel 데모 시퀀스를 트리거한다.
-  console.log('[server] 세션 참가자 반영 → reel 데모 트리거')
+  console.log(
+    `[server] 세션 참가자 반영 (${currentExperience === 'second' ? '2차 체험: 분기 미래' : '1차 체험'}) → reel 데모 트리거`
+  )
   runReelDemo()
   // 열려 있는 런타임 페이지를 재부트스트랩한다. 몽타주 텍스처(playlist)는 부트스트랩에서 한 번만
   // 로드되므로, reelMode 'rotate'가 새 참가자의 파노라마를 실린더에 감으려면 리로드가 필요하다.
@@ -359,7 +380,12 @@ function funeralMediaUrl(variant = DEMO_FUNERAL_VARIANT) {
   if (!library?.dir) return null
   try {
     const mf = JSON.parse(readFileSync(path.join(library.dir, 'manifest.json'), 'utf8'))
-    const f = variant === 'future' ? mf.funeralFuture : mf.funeral
+    const f =
+      variant === 'branched'
+        ? mf.funeralBranched
+        : variant === 'future'
+          ? mf.funeralFuture
+          : mf.funeral
     if (!f?.video?.file) return null
     const abs = path.join(library.dir, f.video.file)
     return existsSync(abs) ? toMediaUrl(abs) : null
@@ -413,14 +439,21 @@ function runReelDemo(spinupMs = DEMO_SPINUP_MS) {
 // (승인·영상화 전) 꺼져 있으면 곧장 주마등으로 넘어간다 — 전시가 멈추지 않는 게 우선이다.
 function startFuneralPhase() {
   if (!DEMO_FUNERAL_ENABLED) return startReelPhase()
-  const url = funeralMediaUrl()
+  // 2차 체험은 분기 미래의 죽음(90세, branched 장례식). 아직 영상이 없으면 1차 장례식으로 폴백.
+  let variant = currentExperience === 'second' ? 'branched' : DEMO_FUNERAL_VARIANT
+  let url = funeralMediaUrl(variant)
+  if (!url && variant === 'branched') {
+    console.warn('[server] 데모: 분기 장례식 영상 없음 — 1차 장례식으로 폴백')
+    variant = DEMO_FUNERAL_VARIANT
+    url = funeralMediaUrl(variant)
+  }
   if (!url) {
     console.warn('[server] 데모: 장례식 영상 없음 — 주마등으로 바로 진행(admin에서 영상화 필요)')
     return startReelPhase()
   }
-  demo = { phase: 'funeral', startedAt: Date.now(), url, variant: DEMO_FUNERAL_VARIANT }
+  demo = { phase: 'funeral', startedAt: Date.now(), url, variant }
   broadcast(Channels.REEL_DEMO, demoPayload())
-  console.log(`[server] 데모: 장례식 영상 (${DEMO_FUNERAL_VARIANT}) — 종료 시 암전 후 주마등`)
+  console.log(`[server] 데모: 장례식 영상 (${variant}) — 종료 시 암전 후 주마등`)
   // 클라이언트 무응답(죽음·헤드리스·로드 실패) 대비 상한.
   demoTimers.push(
     setTimeout(() => {
@@ -436,11 +469,16 @@ function startReelPhase() {
   // 필름스트립 모드(신규 기본): reel 전용 3:4 사진(파노라마와 별개 플로우)이 있으면 그 사진들을
   // 필름처럼 이어 붙여 연속 회전한다. 전환은 클라이언트 'reel-done'(스트립 1사이클 완료)이 주도하고,
   // deadman·heartbeat는 rotate와 동일하게 재사용한다. 사진이 없는 기존 페르소나는 rotate 폴백.
-  if (DEMO_REEL_MODE === 'rotate' && reelPhotoPlaylist.length > 0) {
-    demo = { phase: 'reel', mode: 'filmstrip', startedAt: Date.now(), photos: reelPhotoPlaylist }
+  // 2차 체험은 분기 미래 릴(현재→90세 순방향). 아직 생성 전이면 1차 릴로 폴백해 전시는 계속된다.
+  const secondReel = currentExperience === 'second'
+  if (secondReel && !reelBranchedPlaylist.length)
+    console.warn('[server] 데모: 분기 릴 없음 — 1차 릴로 폴백(admin에서 분기 미래 생성 필요)')
+  const photos = secondReel && reelBranchedPlaylist.length ? reelBranchedPlaylist : reelPhotoPlaylist
+  if (DEMO_REEL_MODE === 'rotate' && photos.length > 0) {
+    demo = { phase: 'reel', mode: 'filmstrip', startedAt: Date.now(), photos }
     broadcast(Channels.REEL_DEMO, demoPayload())
     console.log(
-      `[server] 데모: reel 필름스트립 (${reelPhotoPlaylist.length}장 — 전환은 클라이언트 스트립 1사이클 완료 시, Q/W 속도 따라감)`
+      `[server] 데모: reel 필름스트립 (${photos.length}장${secondReel && reelBranchedPlaylist.length ? ' · 분기 미래' : ''} — 전환은 클라이언트 스트립 1사이클 완료 시, Q/W 속도 따라감)`
     )
     armReelDeadman()
     return
@@ -775,6 +813,10 @@ async function buildGhostContext() {
   if (promptPath) {
     try {
       systemPrompt = (await fs.readFile(path.resolve(root, promptPath), 'utf8')).trim()
+      // 질문 목록은 reflective-questions.mjs에서 편집한다 — 프롬프트의 자리표시자에 주입
+      systemPrompt = systemPrompt
+        .replace('{{PAST_QUESTIONS}}', renderQuestions(pastQuestions))
+        .replace('{{FUTURE_QUESTIONS}}', renderQuestions(futureQuestions))
     } catch {
       console.warn('[server] 유령 음성: 페르소나 파일 없음 — 기본 프롬프트 없이 진행')
     }
@@ -902,15 +944,16 @@ function persistGhostTranscript() {
     .then(() => upsertGhostTranscript(payload))
     .catch((e) => console.warn(`[server] 대화 기록 저장 실패(다음 턴에 재시도): ${e.message}`))
 }
-// 1차 플로우 단계 상태(2026-08-04 확장) — 장마다 영상 목표 수가 다르다:
-//   1장(과거) = 5개: ① 보고 싶은 시점 A 장면1 → "다른 모습도 보여줄까?" → ② 시점 A 장면2
-//     → "이젠 언제로 가 볼까? ○○ 말고…" → ③ 새 시점 B 장면1 → "다른 모습도 보여줄까?"
-//     → ④ 시점 B 장면2 → "이젠 언제로…" → ⑤ 또 다른 시점 C 장면1 → 2장 전환.
+// 1차 플로우 단계 상태(2026-08-04 확장, 같은 날 5→4로 축소) — 장마다 영상 목표 수가 다르다:
+//   1장(과거) = 4개: ① 보고 싶은 시점 A 장면1 → 선택지("같은 시기 다른 모습? / 다른 시간선?")
+//     → ② 시점 A 장면2(또는 새 시점) → "이젠 언제로 가 볼까? ○○ 말고…"
+//     → ③ 새 시점 B 장면1 → 선택지 → ④ 마지막 장면 → 2장 전환.
 //   2장(미래) = 3개: 기존 골격(①→②같은 시기→③새 시점) 그대로.
 // 홀수 번째 영상 = 새 시점 첫 장면, 짝수 번째 = 같은 시기의 다른 장면 — 같은 리듬의 반복이라
-// ghostStageDirective가 홀짝으로 일반화한다. 질문 개수·전환은 프롬프트만으로는 못 세므로
+// ghostStageDirective가 홀짝으로 일반화한다. 홀수 번째 뒤에는 "같은 시기 / 다른 시간선"
+// 선택지를 주고 답에 따라 갈라진다. 질문 개수·전환은 프롬프트만으로는 못 세므로
 // 서버가 여기서 추적해 턴마다 '지금 단계 지시'를 주입한다.
-const GHOST_CHAPTER_TARGETS = { past: 5, future: 3 }
+const GHOST_CHAPTER_TARGETS = { past: 4, future: 3 }
 let ghostFlow = null
 function resetGhostConversation() {
   ghostHistory = []
@@ -929,7 +972,7 @@ resetGhostConversation()
 
 // 단계별 지시 — Gemini 프롬프트 끝에 주입돼 이번 응답이 해야 할 일을 못박는다.
 // 두 장이 같은 골격(홀수 번째 = 새 시점 · 짝수 번째 = 같은 시기 다른 장면 · 질문 수 동일)을
-// 공유하고, 목표 영상 수(GHOST_CHAPTER_TARGETS: 과거 5 · 미래 3)와 어휘만 다르다:
+// 공유하고, 목표 영상 수(GHOST_CHAPTER_TARGETS: 과거 4 · 미래 3)와 어휘만 다르다:
 //  과거 장 = "돌아가고 싶은 순간 / 그때의 기억", 미래 장 = "보고 싶은 미래 / 아직 살지 않은 모습".
 // 어느 단계에서든 관람객이 스스로 다른 모습을 보고 싶다고 하면 흐름을 끊고 따라간다(jumpNote).
 function ghostStageDirective(allMoments) {
@@ -979,24 +1022,25 @@ function ghostStageDirective(allMoments) {
         : `(지금 단계: ${isFuture ? '미래 ' : ''}${ord} 장면 감상 시작) 새 장면 내용을 네 말투대로(시니컬하되 애정 있게) 큐레이션한 뒤, '${isFuture ? '미래 질문의 결' : '질문의 결'}'에서 이 장면에 맞는, 아직 안 쓴 사색적 질문을 하나 던져라. show 금지.${jump}${seen}`
     if (f.replies === 1)
       return `(지금 단계: ${isFuture ? '미래 ' : ''}${ord} 장면, 두 번째 질문) 방금 대답을 그 사람의 단어로 되짚어 화답한 뒤, 페르소나의 '${isFuture ? '미래 질문의 결' : '질문의 결'}'에서 아직 안 쓴 사색적 질문을 하나 골라 변형해 던져라. show 금지.${jump}${seen}`
+    // 같은 시기(직전 장면의 나이)에 아직 안 본 장면이 남아 있는지 — 없으면 선택지 자체를
+    // 건너뛰고 바로 새 시기를 묻는다(보여줄 수 없는 걸 제안하지 않기 위해).
+    const sameAge = moments
+      .filter((m) => m.age === f.lastAge && !f.seenIds.includes(m.id))
+      .map((m) => m.id)
     if (f.replies === 2)
-      return n % 2 === 1
-        ? `(지금 단계: ${isFuture ? '미래 ' : ''}${ord} 장면 마무리) 대답에 짧게 화답한 뒤, 이번 응답의 마지막 문장을 반드시 "그럼, 이때 쯤 다른 모습도 보여줄까?"로 끝내라. show 금지.${jump}${seen}`
-        : `(지금 단계: ${isFuture ? '미래 ' : ''}${ord} 장면 마무리) 대답에 짧게 화답한 뒤, 이번 응답의 마지막을 반드시 "${askNewAge}"로 끝내라. show 금지.${jump}${seen}`
-    if (n % 2 === 1) {
-      // 홀수 번째 뒤 — 같은 시기의 다른 장면(승낙 시). 남은 장면이 없으면 아무 미방문 장면으로.
-      const sameAge = moments
-        .filter((m) => m.age === f.lastAge && !f.seenIds.includes(m.id))
-        .map((m) => m.id)
-      const pool = sameAge.length
-        ? sameAge
-        : moments.filter((m) => !f.seenIds.includes(m.id)).map((m) => m.id)
+      return n % 2 === 1 && sameAge.length
+        ? `(지금 단계: ${isFuture ? '미래 ' : ''}${ord} 장면 마무리) 대답에 짧게 화답한 뒤, 이번 응답의 마지막을 반드시 "이 시기의 다른 모습도 보여줄까? 아니면, 이 시기가 아닌 다른 시간선의 너의 모습이 궁금하니?"로 끝내라. show 금지.${jump}${seen}`
+        : `(지금 단계: ${isFuture ? '미래 ' : ''}${ord} 장면 마무리) 대답에 짧게 화답한 뒤, 이번 응답의 마지막을 반드시 "${n % 2 === 1 ? `다른 때로 가보자. ${notLabel} 말고, 언제가 궁금하니?` : askNewAge}"로 끝내라. show 금지.${jump}${seen}`
+    if (n % 2 === 1 && sameAge.length) {
+      // 홀수 번째 뒤 — "같은 시기 / 다른 시간선" 선택지의 답 처리.
       return (
-        `(지금 단계: 같은 시기의 다른 장면) ${chapterNote} 사람이 승낙했으면 반드시 show — id는 다음 중 하나만: ${pool.join(', ') || '(남은 장면 없음)'} (exact=true).` +
-        ` 거절했으면 show 없이 "${askNewAge}"를 물어라.${seen}`
+        `(지금 단계: 같은 시기/다른 시간선 선택) ${chapterNote} 방금 "이 시기의 다른 모습 vs 다른 시간선" 선택지를 줬다. ` +
+        `① 같은 시기의 다른 모습을 골랐으면 반드시 show — id는 다음 중 하나만: ${sameAge.join(', ')} (exact=true). ` +
+        `② 다른 시간선을 골랐으면: 보고 싶은 시기·모습을 이미 말했으면 ${notLabel}이 아닌 다른 나이의 장면을 골라 이번 응답에 show하고, ` +
+        `아직 말하지 않았으면 show 없이 "${askNewAge}"를 물어라. ③ 둘 다 싫다고 하면 show 없이 "${askNewAge}"를 물어라.${seen}`
       )
     }
-    // 짝수 번째 뒤 — 새 시점 선택.
+    // 짝수 번째 뒤(또는 홀수 번째지만 같은 시기 장면이 소진된 뒤) — 새 시점 선택.
     return (
       `(지금 단계: ${isFuture ? '미래 ' : ''}새 시점 선택) ${chapterNote} 사람이 새로 ${isFuture ? '보고 싶은 미래' : '돌아가고 싶은 순간'}을 말했으면 반드시 show — ` +
       `${notLabel}이 아닌 다른 나이의 장면에서 고르고, "${isFuture ? '기다려봐. 그 미래로 가보자.' : '기다려봐. 그때의 기억으로 돌아가자.'}"라고 말하며.${seen}`
@@ -1008,8 +1052,10 @@ function ghostStageDirective(allMoments) {
   if (!isFuture)
     // 1장의 끝 — 여기서 체험이 끝나지 않는다. 2장(미래)으로 문을 연다.
     return (
-      `(지금 단계: 1장의 끝 → 2장(미래)으로 전환) 방금 대답에 짧게 화답한 뒤, 이어서 미래의 장을 열어라 — ` +
-      `다음 취지를 네 입말로(서너 문장): "이제 넌, 미래로 갈 거야. 만약 너의 삶이 이대로 지속된다면, 앞으로 넌 이렇게 살게 될 거야." ` +
+      `(지금 단계: 1장의 끝 → 2장(미래)으로 전환) 네 이번 응답이 나가기 전, 화면에선 "이젠, 미래로 갈 거야."라는 ` +
+      `선언과 함께 실타래가 감겨 올라가고 90세 장례식과 미래의 릴(현재→90세)이 먼저 흐른다. 그러니 "미래로 갈 거야" 같은 ` +
+      `예고는 반복하지 말고, 방금 그 미래를 다 본 사람에게 말을 건네듯 다음 취지를 네 입말로(서너 문장): ` +
+      `"만약 너의 삶이 이대로 지속된다면, 앞으로 넌 이렇게 살게 될 거야." ` +
       `그리고 반드시 이렇게 물으며 끝내라: "너, 가장 궁금한 미래가 있어? 지금은 아직 살아보지 못했지만, ` +
       `만약 지금 당장 죽지 않고 미래를 살아갈 수 있다면, 가장 보고싶은 모습이 있어? 내가 보여줄게." show 금지.`
     )
@@ -1165,15 +1211,26 @@ async function ghostBridgeTurn(userText, kind = 'user') {
   // chapterTurned: 이번 응답이 "이제 넌, 미래로 갈 거야…" 전환 발화다 — 클라이언트(ghost-voice)가
   // 이 신호로 직전 과거 장면 영상을 걷고 유령 idle 앰비언트로 화면을 되돌린다(발화와 함께).
   // 2차 플로우(2장·미래)의 진입 연출 — 클라이언트가 이 순서로 재생한다(ghost-voice runBridge):
-  //   직전 과거 장면 걷기 → ① 90세 장례식 영상 → TV 암전 → ② 미래 릴 필름스트립 1사이클
+  //   직전 과거 장면 걷기 → ⓪ 실타래 감아올리기(10배속 가속 — 1차 개막 spinup과 같은 문법)
+  //   → ① 90세 장례식 영상 → TV 암전 → ② 미래 릴 필름스트립 1사이클
   //   → ③ 유령의 전환 발화("이제 넌, 미래로 갈 거야…").
   // 1차가 "현재의 죽음 → 암전 → 주마등(되감기)"으로 열리는 것과 같은 문법이고, 여기선 이대로
   // 살았을 때의 죽음을 먼저 보고 그 뒤 미래가 순방향으로 풀려나간다.
   // 각 재료는 없으면 그 단계만 건너뛴다(장례식 미영상화·미래 릴 미생성이어도 대화는 이어진다).
+  // ⓪ 실타래 감아올리기 — 과거 장이 닫힌 유령 idle에서 실타래가 10배속까지 감아 올라간 뒤
+  //   어둠을 거쳐 90세 장례식으로 넘어간다. 길이는 1차 개막 spinup과 공유(spinupMs).
+  //   say: 모션 직전에 유령이 짧게 못박는 개막 선언(클라이언트가 spinup 전에 말한다).
+  const spinup = chapterTurned
+    ? { ms: DEMO_SPINUP_MS, mul: 10, say: '이젠, 미래로 갈 거야.' }
+    : null
   const funeral =
     chapterTurned && DEMO_FUNERAL_ENABLED
       ? (() => {
           const url = funeralMediaUrl('future')
+          if (!url)
+            console.warn(
+              '[server] 2차 전환: 90세(future) 장례식 영상 없음 — 건너뜀(admin에서 미래 장례식 영상화 필요)'
+            )
           return url
             ? {
                 url,
@@ -1192,7 +1249,7 @@ async function ghostBridgeTurn(userText, kind = 'user') {
           gutterFrac: montageConfig.demo?.filmstripGutterFrac ?? 0.05
         }
       : null
-  return { say: parsed.say, video, end: f.ended, chapterTurned, funeral, futureReel }
+  return { say: parsed.say, video, end: f.ended, chapterTurned, spinup, funeral, futureReel }
 }
 
 // ElevenLabs 순수 TTS — 키는 서버에만. 실패는 throw(라우트가 503 → 브라우저 TTS 폴백).
@@ -1546,6 +1603,7 @@ if (firebaseReady) {
 
 const session = await readSession(libraryRoot)
 const initialPersonaId = session?.personaId ?? montageConfig.personaId ?? null
+currentExperience = session?.experience === 'second' ? 'second' : 'first'
 if (session) console.log(`[server] 세션 참가자: ${session.name || session.personaId}`)
 await loadPersona(initialPersonaId)
 
@@ -1577,8 +1635,10 @@ try {
       // 재생이 다시 트리거된다 — 예전 personaId 동일 가드가 이 재생을 막던 버그를 대체.
       if (sel.selectedAt && sel.selectedAt === lastHandledSelectedAt) return
       lastHandledSelectedAt = sel.selectedAt
-      console.log(`[server] 세션 선택 반영 → ${sel.name || sel.personaId}`)
-      applySessionSelection(sel.personaId)
+      console.log(
+        `[server] 세션 선택 반영 → ${sel.name || sel.personaId} (${sel.experience === 'second' ? '2차 체험' : '1차 체험'})`
+      )
+      applySessionSelection(sel.personaId, sel.experience)
     }, 200)
   })
 } catch (err) {

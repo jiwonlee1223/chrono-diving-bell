@@ -26,6 +26,8 @@ import { Conversation } from '@elevenlabs/client'
 //   서서히 떠오른다(과거 회귀 연출). 첫 한 바퀴 뒤 resolve하고 영상은 loop로 계속 흐른다.
 // clearVideo: (opts?) => Promise — 대화 영상을 걷고 유령 idle 앰비언트로 복귀. 1장(과거)→2장(미래)
 //   전환 발화("이제 넌, 미래로 갈 거야…") 시점에 부른다 — 서버 턴 응답의 chapterTurned 신호.
+// playFutureSpinup: (opts?) => Promise — 2장(미래) 진입의 개막: 유령 idle의 실타래가 10배속까지
+//   감겨 올라가다 어둠으로 저문다(1차 개막 spinup과 같은 문법). clearVideo 직후, 장례식 앞에 부른다.
 // playFutureFuneral: (url, opts?) => Promise — 2장(미래) 진입의 첫 장면(90세 장례식)을 1회 재생하고
 //   TV 꺼지듯 암전시킨다. clearVideo 직후에 부른다.
 // playFutureReel: (payload) => Promise — 그 암전에서 미래 릴(필름스트립)을 흘린다. 1사이클이 끝나면
@@ -37,6 +39,7 @@ export function createGhostVoice({
   getPan,
   playVideo,
   clearVideo,
+  playFutureSpinup,
   playFutureFuneral,
   playFutureReel
 } = {}) {
@@ -297,6 +300,14 @@ export function createGhostVoice({
       // 미래의 순간들로 넘어간다. 영상이 아직 없으면(승인·영상화 전) 서버가 url을 안 주고 건너뛴다.
       if (reply?.chapterTurned) {
         await clearVideo?.()
+        if (stopped) return
+        // ⓪ 개막 선언 — 감아올리기 모션 직전, 유령 idle에서 짧게 못박는다("이젠, 미래로 갈 거야.").
+        if (reply.spinup?.say) await speak(reply.spinup.say)
+        if (stopped) return
+        // ⓪ 실타래 감아올리기(10배속 가속 → 어둠). 이어질 재료(장례식·미래 릴)가 하나도 없으면
+        // 건너뛴다 — 어둠에서 아무것도 떠오르지 못해 화면이 검정에 갇히는 걸 막는다.
+        if (reply.spinup && (reply.funeral?.url || reply.futureReel?.photos?.length))
+          await playFutureSpinup?.(reply.spinup)
         if (stopped) return
         if (reply.funeral?.url) await playFutureFuneral?.(reply.funeral.url, reply.funeral)
         if (stopped) return

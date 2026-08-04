@@ -190,6 +190,7 @@ export function createSfxLayer() {
   }
 
   // Z/X 키 — 재생 중 앰비언스 음량 배율을 곱해 조절한다. 다음에 트는 음원에도 유지된다.
+  // 반환: { trim, gain, playing, slug } — 호출부(HUD)가 현재 값을 표시한다.
   function nudgeVolume(factor) {
     trim = Math.max(TRIM_MIN, Math.min(TRIM_MAX, trim * factor))
     if (current && ctx) {
@@ -203,6 +204,12 @@ export function createSfxLayer() {
       `[sfx] trim ×${trim.toFixed(2)}` +
         (current ? ` → '${current.slug}' 실효 gain ${(current.baseGain * trim).toFixed(3)}` : ' (재생 중인 앰비언스 없음)')
     )
+    return {
+      trim,
+      gain: current ? current.baseGain * trim : null,
+      playing: !!current,
+      slug: current?.slug ?? null
+    }
   }
 
   // 앰비언스를 페이드 아웃으로 걷는다 — 영상이 걷히거나 국면이 바뀔 때.

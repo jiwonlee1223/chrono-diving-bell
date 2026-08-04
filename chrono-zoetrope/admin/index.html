@@ -156,7 +156,8 @@
       .session-label b {
         color: #7de08c;
       }
-      #session-set {
+      #session-set,
+      #session-set2 {
         font-size: 12px;
         font-weight: 600;
         cursor: pointer;
@@ -169,9 +170,24 @@
       #session-set:hover {
         background: rgba(110, 220, 130, 0.14);
       }
-      #session-set:disabled {
+      #session-set:disabled,
+      #session-set2:disabled {
         opacity: 0.45;
         cursor: default;
+      }
+      /* 분기 미래(3차) 장면 섹션 — 2차 버튼과 같은 보라 계열로, 운명적 32장과 시각적으로 구분한다. */
+      .stage.branch h2 {
+        color: #b98cff;
+        border-left: 3px solid rgba(178, 140, 255, 0.5);
+        padding-left: 8px;
+      }
+      /* 2차 체험(분기 미래) — 다른 삶의 색(보라)으로 1차와 시각적으로 구분한다. */
+      #session-set2 {
+        border-color: rgba(178, 140, 255, 0.5);
+        color: #b98cff;
+      }
+      #session-set2:hover {
+        background: rgba(178, 140, 255, 0.14);
       }
       .regenall-ctl {
         display: inline-flex;
@@ -642,8 +658,17 @@
           </span>
           <span class="session-ctl" id="session-ctl">
             <span class="session-label" id="session-label">세션 미설정</span>
-            <button id="session-set" title="이 참가자의 생애를 4창 런타임에서 재생합니다">
-              이 참가자를 세션으로
+            <button
+              id="session-set"
+              title="1차 체험 — 과거 회귀 주마등(장례식→탄생까지 되감는 릴→유령 대화)을 재생합니다"
+            >
+              1차 체험 세션
+            </button>
+            <button
+              id="session-set2"
+              title="2차 체험 — 유령 대화로 바뀐 마음가짐 기반 분기 미래(다른 삶의 장례식·현재→90세 릴)를 재생합니다. 분기 미래 생성이 끝난 참가자만 가능합니다."
+            >
+              2차 체험 세션
             </button>
             <button
               id="session-clear"
@@ -687,6 +712,7 @@
       let personas = [] // 최신 생성순(내림차순) persona 목록 캐시
       let personaFilter = '' // 사이드바 이름 검색어
       let sessionPid = null // 현재 세션 참가자 (4창 런타임이 재생 중인 대상)
+      let sessionExp = 'first' // 현재 세션 체험 종류 — 'first'(1차) | 'second'(2차: 분기 미래)
       let videoState = null // /api/queue의 video: { building:{pid,kind}, queue, job, last }
       let lastVideoAt = 0 // 마지막으로 반영한 영상 작업 완료 시각 (완료 감지→manifest 재로딩)
       let reelPhotoState = null // /api/queue의 reelPhotos: { job, queue, last } — 릴 사진 대기열·잡
@@ -704,6 +730,10 @@
       let lastReelPhotoSig = '' // 잡·대기열 변화 감지용(바뀔 때만 영상 패널 재렌더 — 깜빡임 방지)
       let lastRegenAt = 0 // 마지막으로 반영한 전체 재생성 완료 시각
       let lastRegenDone = -1 // 전체 재생성 진행 중 마지막으로 그린 done 수 (바뀔 때만 그리드 재로딩)
+      // 분기 미래(3차) — 유령 대화 기록 기반 alt 파노라마·분기 릴·분기 장례식 일괄 생성.
+      let transcriptInfo = null // 현재 참가자의 유령 대화 기록 유무({exists,turns}) — 생성 버튼 게이트
+      let branchedJob = null // 진행 중인 분기 미래 잡(currentInfo) — /api/queue의 current가 '#branched'일 때
+      let lastBranchedSig = '' // 분기 잡 변화 감지(바뀔 때만 재렌더/재로딩)
 
       // 생성 시각 → 상대 표기 (사이드바 큐 정렬 근거를 사람이 읽게)
       function timeAgo(iso) {
@@ -832,6 +862,7 @@
           return
         }
         manifest = m
+        loadTranscript() // 유령 대화 기록 유무(분기 미래 버튼 게이트) — 비동기로 채워지면 재렌더
         // 생성은 시작됐지만 첫 장면이 아직 없음(_pending) — 에러가 아니라 대기 상태.
         // 실시간 보기 폴링(pollQueue)이 새 장면이 저장되는 대로 다시 그린다.
         if (m._pending || !m.images?.length) {
@@ -842,6 +873,22 @@
           return
         }
         render()
+      }
+
+      // 유령 대화 기록 유무 조회 — 분기 미래 생성 버튼 게이트. 참가자를 바꾸는 사이 응답이
+      // 늦게 오면 버릴 수 있게 조회 시점의 pid를 잡아 둔다.
+      async function loadTranscript() {
+        const forPid = pid
+        transcriptInfo = null
+        try {
+          const t = await api(`/api/personas/${forPid}/transcript`)
+          if (pid === forPid) {
+            transcriptInfo = t
+            mountVideo()
+          }
+        } catch {
+          /* 게이트만 못 열 뿐 — 참가자 재선택 시 재시도된다 */
+        }
       }
 
       // 성별 표시: 자동 감지값 + 근거 캡션(툴팁). 수정하면 프롬프트가 갱신되고
@@ -864,8 +911,10 @@
       function counts() {
         const total = manifest.images.length
         const failed = manifest.images.filter((im) => im.failed).length
+        const branch = manifest.images.filter((im) => im.branch && !im.failed).length
         $('#counts').innerHTML =
           `총 <b>${total - failed}</b>장` +
+          (branch ? ` · <b style="color:#b98cff">분기 ${branch}</b>` : '') +
           (failed ? ` · <b style="color:#ff8585">실패 ${failed}</b>` : '')
       }
 
@@ -873,15 +922,24 @@
       function renderSessionCtl() {
         const label = $('#session-label')
         const btn = $('#session-set')
+        const btn2 = $('#session-set2')
         const clearBtn = $('#session-clear')
         if (sessionPid) {
           const p = personas.find((x) => x.personaId === sessionPid)
-          label.innerHTML = `세션: <b>${p?.name || sessionPid}</b>`
+          label.innerHTML = `세션: <b>${p?.name || sessionPid}</b> (${sessionExp === 'second' ? '2차 체험' : '1차 체험'})`
         } else {
           label.textContent = '세션 미설정'
         }
-        btn.disabled = !pid || pid === sessionPid
-        btn.textContent = pid && pid === sessionPid ? '현재 세션' : '이 참가자를 세션으로'
+        const isCur = (exp) => pid && pid === sessionPid && sessionExp === exp
+        btn.disabled = !pid || isCur('first')
+        btn.textContent = isCur('first') ? '현재 세션 (1차)' : '1차 체험 세션'
+        // 2차 체험은 분기 미래(3차 플로우) 릴이 생성된 참가자만 — 지금 보고 있는 manifest로 판정한다.
+        const branchedReady = (manifest?.reelPhotosBranched || []).some((e) => !e.failed && e.file)
+        btn2.disabled = !pid || !branchedReady || isCur('second')
+        btn2.textContent = isCur('second') ? '현재 세션 (2차)' : '2차 체험 세션'
+        btn2.title = branchedReady
+          ? '2차 체험 — 분기 미래(다른 삶의 장례식·현재→90세 릴)를 재생합니다'
+          : '분기 미래(3차 플로우) 생성이 아직 없습니다 — 유령 대화 기록으로 분기 미래를 먼저 생성하세요'
         clearBtn.classList.toggle('hidden', !sessionPid) // 세션 있을 때만 '나가기' 노출
       }
 
@@ -890,8 +948,10 @@
         try {
           const s = await api('/api/session')
           sessionPid = s.personaId || null
+          sessionExp = s.experience === 'second' ? 'second' : 'first'
         } catch {
           sessionPid = null // 세션 API가 없는 구버전 서버면 조용히 미설정 처리.
+          sessionExp = 'first'
         }
         renderSessionCtl()
         renderPersonaList()
@@ -954,23 +1014,32 @@
         renderSessionCtl()
         const main = $('#main')
         main.innerHTML = ''
-        // 단계(stageIndex)별로 묶기
+        // 단계(stageIndex)별로 묶기. 분기 미래(branch:true) 장면은 stageIndex가 0부터 다시 시작해
+        // 기존 32장 플랜과 충돌하므로 따로 묶어, 기존 단계들 **뒤에** 자기 섹션(보라 표시)으로 그린다.
         const stages = new Map()
+        const branchStages = new Map()
         manifest.images.forEach((img) => {
-          if (!stages.has(img.stageIndex)) stages.set(img.stageIndex, [])
-          stages.get(img.stageIndex).push(img)
+          const m = img.branch ? branchStages : stages
+          if (!m.has(img.stageIndex)) m.set(img.stageIndex, [])
+          m.get(img.stageIndex).push(img)
         })
-        for (const [si, scenes] of [...stages.entries()].sort((a, b) => a[0] - b[0])) {
+        const addSection = (si, scenes, branch) => {
           const age = scenes[0].age
           const section = document.createElement('section')
-          section.className = 'stage'
-          section.innerHTML = `<h2>단계 ${si} — ${age}살 (${scenes[0].year}${scenes[0].isPast ? '' : ', 미래'})</h2>`
+          section.className = branch ? 'stage branch' : 'stage'
+          section.innerHTML = branch
+            ? `<h2>분기 미래 — ${age}살 (${scenes[0].year})</h2>`
+            : `<h2>단계 ${si} — ${age}살 (${scenes[0].year}${scenes[0].isPast ? '' : ', 미래'})</h2>`
           const row = document.createElement('div')
           row.className = 'row'
           scenes.forEach((s) => row.appendChild(card(s)))
           section.appendChild(row)
           main.appendChild(section)
         }
+        for (const [si, scenes] of [...stages.entries()].sort((a, b) => a[0] - b[0]))
+          addSection(si, scenes, false)
+        for (const [si, scenes] of [...branchStages.entries()].sort((a, b) => a[0] - b[0]))
+          addSection(si, scenes, true)
         main.insertAdjacentHTML('afterbegin', '<div id="reel-slot"></div>')
         mountVideo()
       }
@@ -1098,6 +1167,45 @@
         }
         const reelPhotoBlock = renderReelRow('past') + renderReelRow('future')
 
+        // ── ③-b 분기 미래(3차) 일괄 생성 — 유령 대화 기록을 재료로 alt 파노라마·분기 릴·
+        //     분기 장례식을 덧생성한다(서버 startBranchedFuture). 1차 체험(유령 대화)이 있어야
+        //     재료가 있으므로 대화 기록이 확인된 참가자만 버튼이 열린다. 완료되면 세션 헤더의
+        //     '2차 체험 세션' 버튼이 활성화된다(reelPhotosBranched 게이트).
+        const rb = manifest.reelPhotosBranched || []
+        const rbOk = rb.filter((e) => !e.failed && e.file).length
+        const bMine = branchedJob && (branchedJob.pid === pid || branchedJob.personaId === pid)
+        let bRow
+        if (bMine) {
+          bRow =
+            `<span class="video-label">분기 미래 <b>${branchedJob.done || 0}/${branchedJob.total || '?'}</b> 생성 중…</span>` +
+            `<button data-act="branched-stop" class="stop-btn">중지</button>`
+        } else {
+          const ready = Boolean(transcriptInfo?.exists)
+          const complete = rb.length > 0 && rbOk === rb.length
+          bRow =
+            `<span class="video-label">분기 미래(3차) <b>${rbOk}/${rb.length || '-'}</b>${complete ? ' · 완료' : ''}</span>` +
+            `<button data-act="branched-gen"${ready && !branchedJob ? '' : ' disabled'} title="${
+              !ready
+                ? '1차 체험(유령 대화) 후에 생성할 수 있습니다 — 이 참가자의 대화 기록이 아직 없습니다'
+                : branchedJob
+                  ? '다른 생성이 진행 중입니다 — 끝난 뒤 다시 시도하세요'
+                  : `유령 대화 ${transcriptInfo.turns}턴 기록 확인 — alt 파노라마·분기 릴·분기 장례식을 생성합니다`
+            }">${rb.length ? '분기 미래 다시 생성' : '분기 미래 생성'}</button>`
+        }
+        // 분기 릴 썸네일 — 과거/미래 릴과 같은 표기(실패 장은 ✗나이).
+        const bThumbs = rb.length
+          ? `<div class="video-row" style="flex-wrap:wrap;gap:4px">` +
+            rb
+              .map((e) =>
+                e.failed
+                  ? `<span title="${e.age}살 — 실패" style="width:74px;height:56px;display:inline-flex;align-items:center;justify-content:center;background:#3a1f1f;color:#e07070;border-radius:3px;font-size:11px">✗${e.age}</span>`
+                  : `<img class="reel-thumb" src="/img/${pid}/${e.file}?e=${e.elapsedMs || 0}" data-full="/img/${pid}/${e.file}" data-cap="분기 릴 · ${e.age}살 — ${(e.scene || '').replace(/"/g, '&quot;')}" title="${e.age}살 (클릭=크게)" style="width:74px;height:56px;object-fit:cover;border-radius:3px;cursor:zoom-in" loading="lazy">`
+              )
+              .join('') +
+            `</div>`
+          : ''
+        const branchedBlock = `<div class="video-row">${bRow}</div>${bThumbs}`
+
         // ── ☁ Firebase 정본 상태 (로컬 캐시와 별개) ──
         let fbRow = ''
         const fb = manifest._firebase
@@ -1114,7 +1222,7 @@
           `<section class="video-panel"><div class="video-head"><h2>주마등 영상</h2></div>` +
           `<div class="video-row">${clipRow}</div>` +
           `<div class="video-row">${reelRow}</div>` +
-          `${reelPhotoBlock}${fbRow}${player}</section>`
+          `${reelPhotoBlock}${branchedBlock}${fbRow}${player}</section>`
         )
       }
       // 장례식 패널 — 고인 시선의 한국식 장례식장 4:1 파노라마(Gemini) → Wan2.2 영상.
@@ -1418,6 +1526,27 @@
           '릴 사진 생성 중지 요청 — 진행분은 저장되어 재실행 시 이어집니다',
           '중지 실패'
         )
+      // 분기 미래(3차) 일괄 생성 시작 — 유령 대화 기록 기반(startBranchedFuture). 대기열이 아니라
+      // 메인 생성 잠금(current)을 쓰므로 다른 생성이 돌고 있으면 서버가 400으로 거부한다.
+      async function genBranched(btn) {
+        if (!pid) return
+        if (
+          (manifest?.reelPhotosBranched || []).length &&
+          !confirm(
+            `${manifest?.profile?.name || pid}의 분기 미래(alt 파노라마·분기 릴·분기 장례식)를 다시 생성합니다. 진행할까요?`
+          )
+        )
+          return
+        btn.disabled = true
+        try {
+          await api(`/api/personas/${pid}/branched`, { method: 'POST' })
+          setStatus('분기 미래(3차) 생성 시작 — 완료되면 2차 체험 세션 버튼이 열립니다')
+          pollQueue()
+        } catch (e) {
+          setStatus(`분기 미래 생성 실패: ${e.message}`)
+          btn.disabled = false
+        }
+      }
       // 장례식(고인 시선 파노라마 + Wan 영상) 생성/재생성 — 대기열 잡. force=완료 상태에서 새 rev.
       async function genFuneral(force, variant = 'present') {
         if (!pid) return
@@ -1608,6 +1737,8 @@
         } else if (t.dataset.act === 'reel-photos-gen')
           genReelPhotos(t.dataset.force === '1', t.dataset.variant || 'past')
         else if (t.dataset.act === 'reel-photos-stop') stopReelPhotos()
+        else if (t.dataset.act === 'branched-gen') genBranched(t)
+        else if (t.dataset.act === 'branched-stop') stopGen()
         // 장례식은 두 판이 같이 떠 있어 id 대신 data-act + data-variant로 갈린다.
         else if (t.dataset.act === 'funeral-hist-toggle') {
           const v = t.dataset.variant || 'present'
@@ -1677,27 +1808,34 @@
         }
       })
       // 세션 참가자 지정 — 지금 보고 있는 참가자를 4창 런타임 세션으로 설정.
-      $('#session-set').addEventListener('click', async () => {
+      // experience: 'first'=1차 체험(과거 회귀 주마등) | 'second'=2차 체험(분기 미래 릴·장례식).
+      async function setSession(experience) {
         if (!pid) return
         try {
           const sel = await api('/api/session', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ personaId: pid })
+            body: JSON.stringify({ personaId: pid, experience })
           })
           sessionPid = sel.personaId
-          setStatus(`세션 참가자 → ${sel.name || sel.personaId} (런타임이 IDLE이면 즉시 반영)`)
+          sessionExp = sel.experience === 'second' ? 'second' : 'first'
+          setStatus(
+            `세션 참가자 → ${sel.name || sel.personaId} · ${sessionExp === 'second' ? '2차 체험(분기 미래)' : '1차 체험'} (런타임이 IDLE이면 즉시 반영)`
+          )
           renderSessionCtl()
           renderPersonaList()
         } catch (e) {
           setStatus(`세션 설정 실패: ${e.message}`)
         }
-      })
+      }
+      $('#session-set').addEventListener('click', () => setSession('first'))
+      $('#session-set2').addEventListener('click', () => setSession('second'))
       // 세션 나가기 — 현재 선택 해제. 런타임은 대기(IDLE)로 복귀.
       $('#session-clear').addEventListener('click', async () => {
         try {
           await api('/api/session', { method: 'DELETE' })
           sessionPid = null
+          sessionExp = 'first'
           setStatus('세션 나가기 — 선택 해제 (런타임이 IDLE이면 대기로 복귀)')
           renderSessionCtl()
           renderPersonaList()
@@ -1780,6 +1918,23 @@
                 ? `${rpL} 사진 생성 중지: ${rpl.ok}장까지 (${rpl.name || rpl.pid})`
                 : `${rpL} 사진 생성 완료: 성공 ${rpl.ok}, 실패 ${rpl.err} (${rpl.name || rpl.pid})`
           )
+        }
+
+        // 분기 미래(3차) 잡 — 메인 생성 잠금을 공유하며 current가 '#branched'로 끝난다.
+        // 진행 중엔 done이 바뀔 때만 재렌더, 내 참가자의 잡이 끝나면 manifest 재로딩
+        // (reelPhotosBranched 반영 → 분기 릴 카운트·'2차 체험 세션' 버튼 게이트 갱신).
+        const bj =
+          typeof data.current === 'string' && data.current.endsWith('#branched')
+            ? data.currentInfo
+            : null
+        const bSig = JSON.stringify([bj?.pid, bj?.done])
+        if (bSig !== lastBranchedSig) {
+          const finishedMine =
+            !bj && branchedJob && (branchedJob.pid === pid || branchedJob.personaId === pid)
+          branchedJob = bj
+          lastBranchedSig = bSig
+          if (finishedMine) loadManifest().catch(() => {})
+          else mountVideo()
         }
 
         // 장례식 잡·대기열 진행/완료 반영 — 단계(phase)가 바뀌거나 대기열 구성이 바뀌면 패널 재렌더,

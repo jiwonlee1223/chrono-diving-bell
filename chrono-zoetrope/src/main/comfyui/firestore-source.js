@@ -719,7 +719,12 @@ const RUNTIME_SESSION_COLLECTION = 'runtime'
 const RUNTIME_SESSION_DOC = 'session'
 
 /** 세션 지정/해제를 정본에 기록. sel.personaId=null 이면 '세션 나가기'. selectedAt은 로컬 파일과 동일 값 유지. */
-export async function setRuntimeSession({ personaId = null, name = null, selectedAt = null } = {}) {
+export async function setRuntimeSession({
+  personaId = null,
+  name = null,
+  selectedAt = null,
+  experience = null
+} = {}) {
   if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
   await db
     .collection(RUNTIME_SESSION_COLLECTION)
@@ -727,6 +732,7 @@ export async function setRuntimeSession({ personaId = null, name = null, selecte
     .set({
       personaId,
       name,
+      experience: experience === 'second' ? 'second' : 'first', // 1차 체험 | 2차 체험(분기 미래)
       selectedAt: selectedAt || new Date().toISOString(),
       updatedAt: FieldValue.serverTimestamp()
     })
@@ -738,7 +744,12 @@ export async function fetchRuntimeSession() {
   const snap = await db.collection(RUNTIME_SESSION_COLLECTION).doc(RUNTIME_SESSION_DOC).get()
   if (!snap.exists) return null
   const d = snap.data()
-  return { personaId: d.personaId ?? null, name: d.name ?? null, selectedAt: d.selectedAt ?? null }
+  return {
+    personaId: d.personaId ?? null,
+    name: d.name ?? null,
+    experience: d.experience === 'second' ? 'second' : 'first',
+    selectedAt: d.selectedAt ?? null
+  }
 }
 
 /** 정본 세션 포인터 실시간 구독 — 변경마다 onChange(fetchRuntimeSession과 같은 형태 | null). @returns 해제 함수 */
@@ -753,6 +764,7 @@ export function listenRuntimeSession(onChange) {
         onChange({
           personaId: d.personaId ?? null,
           name: d.name ?? null,
+          experience: d.experience === 'second' ? 'second' : 'first',
           selectedAt: d.selectedAt ?? null
         })
       },

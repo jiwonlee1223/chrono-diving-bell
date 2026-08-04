@@ -12,10 +12,10 @@
 //
 // 실패는 조용히 삼킨다 — 파일 없음·디코드 실패·오디오 컨텍스트 불가면 음악 없이 진행한다(§1 침묵 폴백).
 
-const LEVEL = { idle: 10, agent: 5, user: 5 } // agent: 유령 발화 중 — 최종 gain 0.1 (5/10 × MASTER 0.2)
+const LEVEL = { idle: 10, agent: 5, user: 5 } // agent: 유령 발화 중 — 최종 gain 0.05 (5/10 × MASTER 0.1)
 const CROSSFADE_SEC = 4 //  앞뒤 이음매 crossfade 길이(초)
 const DUCK_RAMP_SEC = 0.5 // 발화/청취 전이 시 볼륨 램프 길이(초)
-const MASTER = 0.2 //        level 10 → gain(MASTER). 설치 현장에서 전체 크기만 조정하고 싶을 때 여기만 만진다.
+const MASTER = 0.1 //        level 10 → gain(MASTER). 설치 현장에서 전체 크기만 조정하고 싶을 때 여기만 만진다.
 //                          (1.0=파일 원음 크기. 목소리가 음악 위로 또렷하게 들리도록 전체를 낮춰 둠.)
 
 const gainForLevel = (level) => (Math.max(0, Math.min(10, level)) / 10) * MASTER
@@ -66,13 +66,14 @@ export function createBgMusic({ src } = {}) {
     g.linearRampToValueAtTime(gainForLevel(targetLevel()) * trim, now + rampSec)
   }
 
-  // A/S 키 — 재생 중 음량 배율을 곱해 조절한다(예: 1.25 = 업, 1/1.25 = 다운).
+  // A/S 키 — 재생 중 음량 배율을 곱해 조절한다(예: 1.5 = 업, 1/1.5 = 다운).
+  // 반환: { trim, gain, playing } — 호출부(HUD)가 현재 값을 표시한다.
   function nudgeVolume(factor) {
     trim = Math.max(TRIM_MIN, Math.min(TRIM_MAX, trim * factor))
     applyLevel(0.1)
-    console.log(
-      `[bg-music] trim ×${trim.toFixed(2)} → 실효 gain ${(gainForLevel(targetLevel()) * trim).toFixed(3)}`
-    )
+    const gain = gainForLevel(targetLevel()) * trim
+    console.log(`[bg-music] trim ×${trim.toFixed(2)} → 실효 gain ${gain.toFixed(3)}`)
+    return { trim, gain, playing: started }
   }
 
   // 한 바퀴 소스를 지금 시각(when)에 예약하고, 자기 몫의 crossfade 페이드를 건다.

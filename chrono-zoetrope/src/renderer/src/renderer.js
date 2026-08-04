@@ -135,6 +135,10 @@ async function main() {
   const SPINUP_MAX = 8 // 실타래 회전 최대 배속.
   const REEL_PLAYBACK_RATE = 3 // 릴(90초)을 3배속 재생 → ~30초.
   let demoPhase = null
+  // ghost 국면(주마등 종료 후) 동안 ZOETROPE 앰비언트 몽타주(현재 시점 사진 플레이리스트)를 막는다 —
+  // 릴이 탄생에서 끝난 직후 현재 사진이 이어 보이면 역행의 종결이 깨진다. 실타래 앰비언트로 대신한다.
+  // 대화 영상(convoVideoActive)·1인칭 진입(IMMERSION 등 다른 상태)은 그대로 보인다.
+  let ghostIdleDark = false
   const threadSpeedMul = makeTween(1) // 실타래 시간 배속(가속 연출).
   let threadClock = 0 //                로컬 적분 실타래 시계(배속 변화에도 위상 점프 없음).
   let lastFrameMs = performance.now()
@@ -444,6 +448,18 @@ async function main() {
     el.addEventListener('error', finish, { once: true })
     el.load()
     return done
+  }
+
+  // 2차 플로우(미래) 진입 연출 ⓪ — 과거 장이 닫힌 유령 idle의 실타래가 다시 감겨 올라간다.
+  // 1차 개막 spinup(세션 지정 직후)과 같은 문법: 배속이 mul(기본 10배)까지 가속되다 정점에서
+  // 어둠으로 저물고, 그 어둠에서 90세 장례식(→ 미래 릴)이 떠오른다. 속도는 어둠 속에서 원복.
+  async function playFutureSpinupIntro({ ms = 10000, mul = 10 } = {}) {
+    teardownVideo()
+    convoVideoActive = false // 실타래 앰비언트가 표면을 갖는다(clearVideo 뒤라 보통 이미 해제 상태)
+    tweenTo(threadSpeedMul, mul, Math.max(0.3, ms / 1000))
+    await new Promise((r) => setTimeout(r, ms))
+    await veil.cover(0.6) // 가속의 정점에서 어둠으로
+    tweenTo(threadSpeedMul, 1, 0.001) // 다음에 실타래가 보일 땐 평상 속도
   }
 
   // 2차 플로우(미래) 진입 연출 — 1장(과거)이 닫히고 미래로 넘어가는 그 자리에서, 90세에 맞는
@@ -810,6 +826,7 @@ async function main() {
   function applyDemoInner(payload, immediate = false) {
     const phase = payload?.phase ?? 'idle'
     const elapsedSec = Math.max(0, (payload?.elapsedMs ?? 0) / 1000)
+    ghostIdleDark = phase === 'ghost' // 유령 idle 배경에서 현재 시점 사진 플레이리스트 차단
     convoVideoActive = false // 국면 전환 시 대화 영상 재생 해제(ghost 대화 tool이 다시 켠다)
     sfx.stop() // 앰비언스는 대화 영상에만 속한다 — 국면이 바뀌면 함께 걷는다
     const dur = (s) => (immediate ? 0.001 : s)
@@ -986,7 +1003,9 @@ async function main() {
     // 대화 tool이 영상을 원본 속도로 loop 재생(첫 바퀴 뒤 resolve). 과거 회귀는 fadeIn 옵션으로 떠오른다.
     playVideo: (url, opts) => playConversationVideo(url, opts),
     clearVideo: (opts) => clearConversationVideo(opts), // 2장(미래) 전환 발화 때 유령 idle로 복귀
-    // 2장(미래) 진입: ① 90세 장례식 → 암전 → ② 미래 릴 1사이클 → (그 뒤 유령의 전환 발화)
+    // 2장(미래) 진입: ⓪ 실타래 감아올리기(10배속) → ① 90세 장례식 → 암전 → ② 미래 릴 1사이클
+    // → (그 뒤 유령의 전환 발화)
+    playFutureSpinup: (opts) => playFutureSpinupIntro(opts),
     playFutureFuneral: (url, opts) => playFutureFuneralIntro(url, opts),
     playFutureReel: (payload) => playFutureReelIntro(payload)
   })
@@ -1029,7 +1048,9 @@ async function main() {
           ? !!montageMaterial
           : demoPhase === 'spinup'
             ? false
-            : montageMaterial && MONTAGE_STATES.has(appState)
+            : ghostIdleDark && appState === 'ZOETROPE'
+              ? false // 주마등(탄생) 직후 유령 idle — 현재 사진 몽타주 대신 실타래 앰비언트
+              : montageMaterial && MONTAGE_STATES.has(appState)
     setSurfaceMaterial(montageActive ? montageMaterial : threadMaterial)
 
     if (montageActive) {
@@ -1253,6 +1274,24 @@ async function main() {
     if (calibrationMode) currentFrame = -1 // 기준 프레임 재적용 유도
   }
 
+  // ---- 음량 조절 HUD — A/S(BGM)·Z/X(SFX) 키를 누르면 현재 배율·실효 gain을 잠깐 띄운다 ----
+  const volHud = document.createElement('div')
+  volHud.style.cssText =
+    'position:fixed;left:50%;bottom:48px;transform:translateX(-50%);padding:8px 14px;' +
+    'background:rgba(0,0,0,.72);color:rgba(0,255,180,.9);font:13px/1.5 monospace;' +
+    'border-radius:6px;pointer-events:none;opacity:0;transition:opacity .25s;z-index:40;white-space:pre;'
+  document.body.appendChild(volHud)
+  let volHudTimer = null
+  function showVolHud(text) {
+    volHud.textContent = text
+    volHud.style.opacity = '1'
+    clearTimeout(volHudTimer)
+    volHudTimer = setTimeout(() => {
+      volHud.style.opacity = '0'
+    }, 1600)
+  }
+  const VOL_STEP = 1.5 // 키 한 번당 음량 배율(약 3.5dB — 귀로 확실히 구별되는 크기)
+
   // ---- 입력 (§8) : Electron main의 before-input-event를 페이지 keydown으로 이관 ----
   //  Enter → 멈춤/진입/재개 (server 상태 기계가 상태별 의미 결정)
   //  V     → 뷰 토글(파노라마 ↔ 실린더)
@@ -1296,16 +1335,32 @@ async function main() {
       nudgeRotateSpeed(1.25) // [debug] reel 회전 빠르게
     } else if (isKey('KeyA', 'a', 'A', 'ㅁ')) {
       e.preventDefault()
-      bgMusic.nudgeVolume(1 / 1.25) // [debug] 배경음악 음량 다운
+      const r = bgMusic.nudgeVolume(1 / VOL_STEP) // [debug] 배경음악 음량 다운
+      showVolHud(
+        `BGM ▼ ×${r.trim.toFixed(2)}  gain ${r.gain.toFixed(3)}${r.playing ? '' : '  (정지 중 — 재생되면 적용)'}`
+      )
     } else if (isKey('KeyS', 's', 'S', 'ㄴ')) {
       e.preventDefault()
-      bgMusic.nudgeVolume(1.25) // [debug] 배경음악 음량 업
+      const r = bgMusic.nudgeVolume(VOL_STEP) // [debug] 배경음악 음량 업
+      showVolHud(
+        `BGM ▲ ×${r.trim.toFixed(2)}  gain ${r.gain.toFixed(3)}${r.playing ? '' : '  (정지 중 — 재생되면 적용)'}`
+      )
     } else if (isKey('KeyZ', 'z', 'Z', 'ㅋ')) {
       e.preventDefault()
-      sfx.nudgeVolume(1 / 1.25) // [debug] 효과음 음량 다운
+      const r = sfx.nudgeVolume(1 / VOL_STEP) // [debug] 효과음 음량 다운
+      showVolHud(
+        r.playing
+          ? `SFX ▼ ×${r.trim.toFixed(2)}  '${r.slug}'  gain ${r.gain.toFixed(3)}`
+          : `SFX ▼ ×${r.trim.toFixed(2)}  (재생 중인 효과음 없음)`
+      )
     } else if (isKey('KeyX', 'x', 'X', 'ㅌ')) {
       e.preventDefault()
-      sfx.nudgeVolume(1.25) // [debug] 효과음 음량 업
+      const r = sfx.nudgeVolume(VOL_STEP) // [debug] 효과음 음량 업
+      showVolHud(
+        r.playing
+          ? `SFX ▲ ×${r.trim.toFixed(2)}  '${r.slug}'  gain ${r.gain.toFixed(3)}`
+          : `SFX ▲ ×${r.trim.toFixed(2)}  (재생 중인 효과음 없음)`
+      )
     } else if (e.key === 'ArrowLeft') {
       e.preventDefault()
       nudgeCalibration(-yawStep, 0)

@@ -38,10 +38,20 @@ export async function readSession(libraryRoot) {
  * 세션 선택 쓰기 (연구자 admin이 호출).
  * selectedAt을 주면 그대로 보존한다 — 런타임이 Firestore 정본(runtime/session)을 로컬로
  * 미러링할 때 정본과 같은 값을 유지해, 감시 경로의 selectedAt 중복 판정이 재트리거를 막게 한다.
- * @param {{ personaId: string, name?: string|null, selectedAt?: string|null }} sel
+ * experience: 'first'(1차 체험: 과거 회귀 주마등, 기본) | 'second'(2차 체험: 분기 미래 —
+ * 유령 대화 기록으로 외삽한 다른 삶의 릴·장례식). 런타임 서버가 이 값으로 데모 플로우를 가른다.
+ * @param {{ personaId: string, name?: string|null, selectedAt?: string|null, experience?: string|null }} sel
  */
-export async function writeSession(libraryRoot, { personaId, name = null, selectedAt = null }) {
-  const selection = { personaId, name, selectedAt: selectedAt || new Date().toISOString() }
+export async function writeSession(
+  libraryRoot,
+  { personaId, name = null, selectedAt = null, experience = null }
+) {
+  const selection = {
+    personaId,
+    name,
+    experience: experience === 'second' ? 'second' : 'first',
+    selectedAt: selectedAt || new Date().toISOString()
+  }
   await writeFile(sessionPath(libraryRoot), JSON.stringify(selection, null, 2))
   return selection
 }

@@ -1406,7 +1406,11 @@ function startBranchedFuture(pid) {
   if (current) throw new Error('다른 생성이 진행 중입니다 — 끝난 뒤 다시 시도하세요')
   const p = profiles.find((x) => x.id === pid)
   if (!p) throw new Error(`프로필 없음: ${pid}`)
-  if (p.branchedStatus === 'generating') throw new Error(`이미 처리 중입니다: ${pid} (분기 미래)`)
+  // branchedStatus 'generating'은 이 프로세스의 current 잠금(위)이 이미 막는다. Firestore의
+  // 'generating'만 남아 있으면(서버 재시작·크래시로 중단된 흔적) 막지 말고 이어서 생성한다 —
+  // 전 단계가 resume 지원(릴 성공분 스킵·aged 캐시·파노라마 성공분 스킵)이라 재실행이 곧 재개다.
+  if (p.branchedStatus === 'generating')
+    logAction(`[안내] 분기 미래: 이전 실행이 중단된 흔적(generating) — 이어서 생성합니다 (${pid})`)
 
   current = `${pid}#branched` // 첫 await 전에 동기적으로 잠가 중복 클릭을 막는다
   stoppedIds.delete(current)
@@ -1765,9 +1769,10 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, (await readSession(LIBRARY)) || { personaId: null })
     }
 
-    // POST /api/session { personaId } → 세션 참가자 설정. 런타임이 IDLE이면 즉시 반영된다.
+    // POST /api/session { personaId, experience? } → 세션 참가자 설정. 런타임이 IDLE이면 즉시 반영된다.
+    // experience: 'first'(1차 체험, 기본) | 'second'(2차 체험 — 분기 미래 릴·장례식. 유령 대화는 동일).
     if (req.method === 'POST' && url.pathname === '/api/session') {
-      const { personaId: pid } = await readBody(req)
+      const { personaId: pid, experience } = await readBody(req)
       if (!pid) return send(res, 400, { error: 'personaId 필요' })
       // 다른 머신에서 로컬이 비어 있으면 정본에서 자동 복원 — 4창 런타임이 재생할 미디어까지 채운다.
       await ensurePersonaLocal(pid).catch(() => {})
@@ -1779,13 +1784,16 @@ const server = http.createServer(async (req, res) => {
       }
       const sel = await writeSession(LIBRARY, {
         personaId: pid,
-        name: manifest.profile?.name || null
+        name: manifest.profile?.name || null,
+        experience
       })
       // 세션 포인터 정본(Firestore 'runtime/session') 미러 — 다른 머신에서 도는 설치 런타임도
       // 이 지정을 따라간다. selectedAt을 로컬과 동일하게 실어 중복 트리거를 막는다(best-effort).
       if (firebaseReady)
         await setRuntimeSession(sel).catch((e) => logAction(`세션 정본 미러 실패: ${e.message}`))
-      logAction(`[세션] 세션 참가자 설정 → ${sel.name || pid}`)
+      logAction(
+        `[세션] 세션 참가자 설정 → ${sel.name || pid} (${sel.experience === 'second' ? '2차 체험' : '1차 체험'})`
+      )
       return send(res, 200, sel)
     }
 
@@ -1995,6 +2003,29 @@ const server = http.createServer(async (req, res) => {
           return send(res, 400, { error: e.message })
         }
         return send(res, 200, { started: true, pid })
+      }
+
+      // GET /api/personas/{pid}/transcript → 유령 대화 기록(ghostTranscripts) 유무.
+      // admin UI가 "분기 미래 생성" 버튼 게이트로 쓴다 — 1차 체험(유령 대화)이 있어야 재료가 있다.
+      if (req.method === 'GET' && parts[3] === 'transcript') {
+        if (!firebaseReady) return send(res, 200, { exists: false, turns: 0 })
+        try {
+          const doc = profiles.find((x) => x.id === pid || personaId(x) === pid)
+          let t = null
+          if (doc) t = await fetchGhostTranscript(doc)
+          else {
+            const m = await readManifest(pid).catch(() => null)
+            if (m?.profile) t = await fetchGhostTranscript(m.profile)
+          }
+          return send(res, 200, {
+            exists: Boolean(t?.turns?.length),
+            turns: t?.turns?.length || 0,
+            flow: t?.flow || null,
+            ended: Boolean(t?.ended)
+          })
+        } catch (err) {
+          return send(res, 400, { error: err.message })
+        }
       }
 
       // POST /api/personas/{pid}/branched → 3차 플로우(분기 미래) 생성 시작.
