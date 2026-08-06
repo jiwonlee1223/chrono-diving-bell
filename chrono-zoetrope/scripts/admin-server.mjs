@@ -56,7 +56,8 @@ import {
   fetchPersonaManifest,
   listAllPersonasFromFirebase,
   setRuntimeSession,
-  fetchGhostTranscript
+  fetchGhostTranscript,
+  fetchExtrapolationRecord
 } from '../src/main/comfyui/firestore-source.js'
 // ComfyUI 서버 output에서 직접 회수하던 복구는 CLI 전용(scripts/recover-comfy-videos.mjs)으로 남기고,
 // admin 버튼은 Firebase 정본 기준 '이어서 생성'(kind: 'resume')으로 대체했다.
@@ -66,6 +67,7 @@ import {
   processBranchedFuture
 } from '../src/main/comfyui/profile-worker.js'
 import { composeScenePromptFor, personaId } from '../src/main/comfyui/prompt-builder.js'
+import { uploadFutureLifeJourney } from '../src/main/comfyui/future-journey.js'
 import {
   buildReelPhotoPlan,
   generateReelPhotos,
@@ -88,7 +90,12 @@ import {
   funeralManifestKey,
   funeralVariantLabel
 } from '../src/main/comfyui/funeral.js'
-import { runGraveWorkflow, GRAVE_MANIFEST_KEY } from '../src/main/comfyui/grave.js'
+import {
+  runGraveWorkflow,
+  GRAVE_MANIFEST_KEY,
+  graveManifestKey,
+  graveVariantLabel
+} from '../src/main/comfyui/grave.js'
 import { readSession, writeSession, clearSession } from '../src/main/session-pointer.js'
 import { VideoRegenerator } from '../src/main/comfyui/video-cache.js'
 import { ReelBuilder } from '../src/main/comfyui/reel-builder.js'
@@ -135,6 +142,15 @@ async function writeManifest(pid, manifest) {
       logAction(`manifest 정본 동기화 실패 (${pid}): ${err.message}`)
     }
   }
+}
+
+// 오래 달린 잡(영상 clips·릴 등)이 시작 때 읽은 stale manifest로 전체 덮어쓰지 않게,
+// 쓰기 직전 디스크 판을 다시 읽어 바꿀 키만 얹는다 — 그 사이 다른 잡이 더한 키(grave 등) 보존.
+async function patchManifest(pid, patch) {
+  const m = await readManifest(pid)
+  Object.assign(m, patch)
+  await writeManifest(pid, m)
+  return m
 }
 
 // ── Firebase 정본 ↔ 로컬 캐시: 사용자 리스트 합집합 + 하이드레이션 ──────────
@@ -830,6 +846,16 @@ async function runFuneralJob(pid, { force = false, stage = 'image', variant = 'p
     textModel: config.gemini.textModel,
     timeoutMs: config.timeoutMs
   })
+  // 분기 장례식이면 조문객 캐스트의 노년 근거인 분기 연대기를 Firebase 외삽 기록에서 되찾는다.
+  let branchNarrative = null
+  if (vkind === 'branched' && firebaseReady && profile) {
+    try {
+      branchNarrative = (await fetchExtrapolationRecord(profile, 'branched'))?.narrative || null
+      if (branchNarrative) logAction('  [Firebase] 분기 연대기 로드 — 조문객 캐스트에 반영')
+    } catch (e) {
+      logAction(`  [경고] 분기 연대기 로드 실패(종전 재료로 진행): ${e.message}`)
+    }
+  }
   const r = await runFuneralWorkflow({
     personaDir,
     gclient,
@@ -837,6 +863,7 @@ async function runFuneralJob(pid, { force = false, stage = 'image', variant = 'p
     stage,
     variant: vkind,
     doc,
+    branchNarrative,
     faceRef,
     force,
     signal: funeralAbort.signal,
@@ -877,24 +904,36 @@ let graveJob = null // { pid, name, stage, phase, startedAt }
 let graveAbort = null
 let graveLast = null // { pid, name, ok, rev, stage, cancelled?, error?, at }
 
-function enqueueGrave(pid, { force = false, stage = 'image' } = {}) {
-  if (graveJob?.pid === pid) throw new Error('이 페르소나의 장지 생성이 이미 진행 중입니다')
-  if (graveQueue.some((q) => q.pid === pid)) throw new Error('이미 대기열에 있습니다')
-  graveQueue.push({ pid, force, stage })
+// variant: 'present'(1차 장지) | 'branched'(2차 체험 — 분기된 삶의 안식처, 1·2·3차 소스 분리 원칙).
+function enqueueGrave(pid, { force = false, stage = 'image', variant = 'present' } = {}) {
+  const v = variant === 'branched' ? 'branched' : 'present'
+  if (graveJob?.pid === pid && (graveJob.variant || 'present') === v)
+    throw new Error(`이 페르소나의 ${graveVariantLabel(v)} 생성이 이미 진행 중입니다`)
+  if (graveQueue.some((q) => q.pid === pid && (q.variant || 'present') === v))
+    throw new Error('이미 대기열에 있습니다')
+  graveQueue.push({ pid, force, stage, variant: v })
   pumpGrave()
   return graveQueue.length
 }
 
 async function pumpGrave() {
   if (graveJob || graveQueue.length === 0) return
-  const { pid, force, stage } = graveQueue.shift()
-  graveJob = { pid, name: pid, stage, phase: stage, startedAt: Date.now() }
+  const { pid, force, stage, variant } = graveQueue.shift()
+  graveJob = { pid, name: pid, stage, phase: stage, variant, startedAt: Date.now() }
   graveAbort = new AbortController()
   try {
-    await runGraveJob(pid, { force, stage })
+    await runGraveJob(pid, { force, stage, variant })
   } catch (e) {
-    graveLast = { pid, name: graveJob?.name || pid, ok: false, stage, error: e.message, at: Date.now() }
-    logAction(`[실패] 장지 생성 실패: ${e.message}`)
+    graveLast = {
+      pid,
+      name: graveJob?.name || pid,
+      ok: false,
+      stage,
+      variant,
+      error: e.message,
+      at: Date.now()
+    }
+    logAction(`[실패] ${graveVariantLabel(variant)} 생성 실패: ${e.message}`)
   } finally {
     graveJob = null
     graveAbort = null
@@ -902,16 +941,27 @@ async function pumpGrave() {
   }
 }
 
-async function runGraveJob(pid, { force = false, stage = 'image' } = {}) {
+async function runGraveJob(pid, { force = false, stage = 'image', variant = 'present' } = {}) {
+  const vlabel = graveVariantLabel(variant)
   await ensurePersonaLocal(pid).catch(() => {})
   const manifest = await readManifest(pid)
   const profile = manifest.profile || {}
   const personaDir = path.join(LIBRARY, pid)
   if (graveJob) graveJob.name = profile.name || pid
   logAction(
-    `[시작] 장지 ${stage === 'video' ? '영상화' : '이미지 생성'} 시작: ${profile.name || pid}${force ? (stage === 'video' ? ' (영상만 재생성)' : ' (새 rev 재생성)') : ''}`
+    `[시작] ${vlabel} ${stage === 'video' ? '영상화' : '이미지 생성'} 시작: ${profile.name || pid}${force ? (stage === 'video' ? ' (영상만 재생성)' : ' (새 rev 재생성)') : ''}`
   )
   const doc = profiles.find((p) => p.id === (profile.id || pid)) || null
+  // 분기 장지: 안식처의 근거인 분기 연대기를 Firebase 외삽 기록에서 되찾는다(장례식과 동일).
+  let branchNarrative = null
+  if (variant === 'branched' && firebaseReady && profile) {
+    try {
+      branchNarrative = (await fetchExtrapolationRecord(profile, 'branched'))?.narrative || null
+      if (branchNarrative) logAction('  [Firebase] 분기 연대기 로드 — 장지 배경에 반영')
+    } catch (e) {
+      logAction(`  [경고] 분기 연대기 로드 실패(종전 재료로 진행): ${e.message}`)
+    }
+  }
   const gclient = new GeminiClient({
     apiKey: await resolveGeminiApiKey(config.gemini),
     model: config.gemini.model,
@@ -923,6 +973,8 @@ async function runGraveJob(pid, { force = false, stage = 'image' } = {}) {
     gclient,
     config,
     stage,
+    variant,
+    branchNarrative,
     doc,
     force,
     signal: graveAbort.signal,
@@ -940,6 +992,7 @@ async function runGraveJob(pid, { force = false, stage = 'image' } = {}) {
     ok: r.ok,
     rev: r.rev,
     stage,
+    variant,
     cancelled: r.cancelled,
     error: r.error || null,
     at: Date.now()
@@ -947,10 +1000,10 @@ async function runGraveJob(pid, { force = false, stage = 'image' } = {}) {
   const what = stage === 'video' ? '영상화' : '이미지 생성'
   logAction(
     r.cancelled
-      ? `[중지] 장지 ${what} 중지: ${graveLast.name} (rev ${r.rev} — 재실행으로 이어짐)`
+      ? `[중지] ${vlabel} ${what} 중지: ${graveLast.name} (rev ${r.rev} — 재실행으로 이어짐)`
       : r.ok
-        ? `[완료] 장지 ${what} 완료: ${graveLast.name} (rev ${r.rev})${stage === 'image' ? ' — 검토·승인 대기' : ' — Firebase 저장 가능'}`
-        : `[실패] 장지 ${what} 실패: ${graveLast.name} — ${r.error}`
+        ? `[완료] ${vlabel} ${what} 완료: ${graveLast.name} (rev ${r.rev})${stage === 'image' ? ' — 검토·승인 대기' : ' — Firebase 저장 가능'}`
+        : `[실패] ${vlabel} ${what} 실패: ${graveLast.name} — ${r.error}`
   )
 }
 
@@ -1085,7 +1138,8 @@ async function pumpVideo() {
         id: im.id,
         absPath: path.join(personaDir, im.file),
         scene: im.scene,
-        age: im.age
+        age: im.age,
+        branch: im.branch // 분기(3차) 장면은 wan.videoBranch 규격으로 생성된다
       }))
     regenerator = new VideoRegenerator({
       host: config.host,
@@ -1105,8 +1159,7 @@ async function pumpVideo() {
         shouldCancel: () => videoCancel
       })
       const done = clips.filter(Boolean).length
-      manifest.clips = { mode, done, total, builtAt: new Date().toISOString() }
-      await writeManifest(pid, manifest)
+      await patchManifest(pid, { clips: { mode, done, total, builtAt: new Date().toISOString() } })
       videoLast = { pid, kind, ok: true, at: Date.now() }
       logAction(`[완료] 영상 생성 완료: ${pid} — ${done}/${total}`)
       // Firebase 'generatedVideos' 컬렉션에 클립 업로드 (이미지와 동일 형식). 실패해도 잡은 성공 유지.
@@ -1153,14 +1206,15 @@ async function pumpVideo() {
         shouldCancel: () => videoCancel
       })
       const done = clips.filter(Boolean).length
-      manifest.clips = {
-        mode,
-        done,
-        total,
-        builtAt: new Date().toISOString(),
-        resumedAt: new Date().toISOString()
-      }
-      await writeManifest(pid, manifest)
+      await patchManifest(pid, {
+        clips: {
+          mode,
+          done,
+          total,
+          builtAt: new Date().toISOString(),
+          resumedAt: new Date().toISOString()
+        }
+      })
       videoLast = { pid, kind, ok: true, at: Date.now() }
       logAction(
         `[완료] 이어서 생성 완료: ${pid} — ${done}/${total} (Firebase 회수 ${fetched} + 신규 ${done - fetched})`
@@ -1242,16 +1296,17 @@ async function pumpVideo() {
         : await builder.concat(clipPaths, outPath, {
             onProgress: (e) => (videoJob = { pid, kind, ...e })
           })
-      manifest.reel = {
-        file: 'reel.mp4',
-        mode,
-        durationSec: meta.durationSec,
-        clipCount: meta.clipCount, // 릴에 실제로 들어간 장면 수(탄생~현재만이면 30보다 적다)
-        birthToCurrentOnly: montage.reel?.birthToCurrentOnly !== false,
-        builtAt: new Date().toISOString(),
-        rev: (manifest.reel?.rev || 0) + 1 // 캐시 버스팅
-      }
-      await writeManifest(pid, manifest)
+      await patchManifest(pid, {
+        reel: {
+          file: 'reel.mp4',
+          mode,
+          durationSec: meta.durationSec,
+          clipCount: meta.clipCount, // 릴에 실제로 들어간 장면 수(탄생~현재만이면 30보다 적다)
+          birthToCurrentOnly: montage.reel?.birthToCurrentOnly !== false,
+          builtAt: new Date().toISOString(),
+          rev: (manifest.reel?.rev || 0) + 1 // 캐시 버스팅
+        }
+      })
       videoLast = { pid, kind, ok: true, durationSec: meta.durationSec, at: Date.now() }
       logAction(`[완료] 릴 완료: ${pid} — ${meta.durationSec.toFixed(1)}s (${meta.clipCount}개)`)
       if (firebaseReady && config.firebase?.uploadGenerated !== false) {
@@ -1882,6 +1937,49 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { started: true, id })
     }
 
+    // POST /api/future-journey/upload { personaId } — 인생그래프 요약 업로드(수동 버튼).
+    // 이미 생성돼 manifest에 있는 미래 릴 두 벌(future=부정미래 / branched=긍정미래)의 이미지
+    // URL + 한국어 title·30자 설명을 futureLifeJourneyGraph에 올린다. 자동 업로드(생성 직후)를
+    // 놓친 기존 참가자나, 캡션을 다시 뽑고 싶을 때 쓴다. 없는 벌은 건너뛴다.
+    if (req.method === 'POST' && url.pathname === '/api/future-journey/upload') {
+      if (!firebaseReady) return send(res, 400, { error: 'Firebase 미연결' })
+      const { personaId: fjPid } = await readBody(req)
+      if (!fjPid) return send(res, 400, { error: 'personaId 필요' })
+      let m
+      try {
+        m = await readManifest(fjPid)
+      } catch {
+        return send(res, 404, { error: `persona 없음: ${fjPid}` })
+      }
+      const gclient = new GeminiClient({
+        apiKey: await resolveGeminiApiKey(config.gemini),
+        model: config.gemini.model,
+        textModel: config.gemini.textModel,
+        timeoutMs: config.timeoutMs
+      })
+      const out = {}
+      for (const variant of ['future', 'branched']) {
+        const key = variant === 'branched' ? 'positive' : 'negative'
+        try {
+          out[key] = await uploadFutureLifeJourney({
+            profile: m.profile,
+            personaId: fjPid,
+            dir: path.join(LIBRARY, fjPid),
+            reelPhotos: m[reelManifestKey(variant)] || [],
+            gclient,
+            variant,
+            log: logAction
+          })
+        } catch (err) {
+          out[key] = { error: String(err.message || err) }
+        }
+      }
+      logAction(
+        `[요약] 인생그래프 요약 업로드(${fjPid}) — 부정 ${out.negative?.count ?? 0}장 / 긍정 ${out.positive?.count ?? 0}장`
+      )
+      return send(res, 200, out)
+    }
+
     // ── 세션 참가자(연구자용 "로그인") ────────────────────────────────
     // 4창 런타임은 이 선택(_session.json)을 읽어 해당 참가자의 생애를 재생한다.
     // 선택은 오직 여기(연구자 admin)에서만 이뤄진다 — 4창에는 선택 화면이 뜨지 않는다.
@@ -2282,66 +2380,74 @@ const server = http.createServer(async (req, res) => {
         }
       }
 
-      // ── 장지(안식처) 파노라마 — funeral과 같은 4단계, variant 없음(1차 전용) ──
-      // ① POST /grave { force } → 이미지 생성 대기열 등록. force=새 rev 재생성(승인 리셋).
+      // ── 장지(안식처) 파노라마 — funeral과 같은 4단계. variant: 'present'(1차) | 'branched'(2차 체험) ──
+      // ① POST /grave { force, variant } → 이미지 생성 대기열 등록. force=새 rev 재생성(승인 리셋).
       if (req.method === 'POST' && parts[3] === 'grave' && parts.length === 4) {
         if (VIEW_ONLY) return send(res, 400, { error: '뷰어 모드에서는 생성 불가' })
-        const { force = false } = await readBody(req).catch(() => ({}))
+        const { force = false, variant = 'present' } = await readBody(req).catch(() => ({}))
         try {
-          const position = enqueueGrave(pid, { force, stage: 'image' })
-          return send(res, 200, { queued: true, pid, force, stage: 'image', position })
+          const position = enqueueGrave(pid, { force, stage: 'image', variant })
+          return send(res, 200, { queued: true, pid, force, stage: 'image', variant, position })
         } catch (e) {
           return send(res, 400, { error: e.message })
         }
       }
 
-      // ② POST /grave/approve → 검토된 이미지를 승인.
+      // ② POST /grave/approve { variant } → 검토된 이미지를 승인.
       if (req.method === 'POST' && parts[3] === 'grave' && parts[4] === 'approve') {
         if (VIEW_ONLY) return send(res, 400, { error: '뷰어 모드에서는 승인 불가' })
+        const { variant = 'present' } = await readBody(req).catch(() => ({}))
         const manifest = await readManifest(pid)
-        const g = manifest[GRAVE_MANIFEST_KEY]
-        if (!g?.image) return send(res, 400, { error: '승인할 장지 이미지가 없습니다' })
+        const g = manifest[graveManifestKey(variant)]
+        if (!g?.image)
+          return send(res, 400, { error: `승인할 ${graveVariantLabel(variant)} 이미지가 없습니다` })
         g.approved = true
         g.approvedAt = new Date().toISOString()
         if (!g.video && g.status !== 'video') g.status = 'review'
         await writeManifest(pid, manifest)
         logAction(
-          `[완료] 장지 이미지 승인: ${manifest.profile?.name || pid} (rev ${g.rev}) — 영상화 가능`
+          `[완료] ${graveVariantLabel(variant)} 이미지 승인: ${manifest.profile?.name || pid} (rev ${g.rev}) — 영상화 가능`
         )
-        return send(res, 200, { approved: true, pid, rev: g.rev })
+        return send(res, 200, { approved: true, pid, variant, rev: g.rev })
       }
 
-      // ③ POST /grave/video { force } → 승인된 이미지를 Wan2.2로 영상화(대기열 등록).
+      // ③ POST /grave/video { force, variant } → 승인된 이미지를 Wan2.2로 영상화(대기열 등록).
       if (req.method === 'POST' && parts[3] === 'grave' && parts[4] === 'video') {
         if (VIEW_ONLY) return send(res, 400, { error: '뷰어 모드에서는 생성 불가' })
-        const { force = false } = await readBody(req).catch(() => ({}))
+        const { force = false, variant = 'present' } = await readBody(req).catch(() => ({}))
         const manifest = await readManifest(pid)
-        const g = manifest[GRAVE_MANIFEST_KEY]
-        if (!g?.image) return send(res, 400, { error: '장지 이미지가 없습니다 — 먼저 생성하세요' })
+        const g = manifest[graveManifestKey(variant)]
+        if (!g?.image)
+          return send(res, 400, {
+            error: `${graveVariantLabel(variant)} 이미지가 없습니다 — 먼저 생성하세요`
+          })
         if (!g.approved)
           return send(res, 400, { error: '이미지 승인이 필요합니다 — 먼저 승인하세요' })
         try {
-          const position = enqueueGrave(pid, { stage: 'video', force })
-          return send(res, 200, { queued: true, pid, stage: 'video', force, position })
+          const position = enqueueGrave(pid, { stage: 'video', force, variant })
+          return send(res, 200, { queued: true, pid, stage: 'video', force, variant, position })
         } catch (e) {
           return send(res, 400, { error: e.message })
         }
       }
 
-      // ④ POST /grave/upload → 완료된 이미지+영상을 Firebase(generatedFunerals.grave)에 저장.
+      // ④ POST /grave/upload { variant } → 완료된 이미지+영상을 Firebase(generatedFunerals)에 저장.
       if (req.method === 'POST' && parts[3] === 'grave' && parts[4] === 'upload') {
         if (VIEW_ONLY) return send(res, 400, { error: '뷰어 모드에서는 저장 불가' })
         if (!firebaseReady) return send(res, 400, { error: 'Firebase 미연결' })
+        const { variant = 'present' } = await readBody(req).catch(() => ({}))
         const manifest = await readManifest(pid)
-        const g = manifest[GRAVE_MANIFEST_KEY]
-        if (!g?.image) return send(res, 400, { error: '저장할 장지 이미지가 없습니다' })
+        const g = manifest[graveManifestKey(variant)]
+        if (!g?.image)
+          return send(res, 400, { error: `저장할 ${graveVariantLabel(variant)} 이미지가 없습니다` })
         if (!g.video) return send(res, 400, { error: '영상화가 끝나야 저장할 수 있습니다' })
         try {
           const up = await uploadPersonaGrave({
             profile: manifest.profile,
             personaId: manifest.personaId || pid,
             dir: path.join(LIBRARY, pid),
-            grave: g
+            grave: g,
+            variant
           })
           g.firebase = {
             uploadedAt: new Date().toISOString(),
@@ -2351,9 +2457,9 @@ const server = http.createServer(async (req, res) => {
           }
           await writeManifest(pid, manifest)
           logAction(
-            `[Firebase] 장지 저장: ${manifest.profile?.name || pid} (rev ${up.rev}) → 'generatedFunerals'/${up.key}`
+            `[Firebase] ${graveVariantLabel(variant)} 저장: ${manifest.profile?.name || pid} (rev ${up.rev}) → 'generatedFunerals'/${up.key}`
           )
-          return send(res, 200, { uploaded: true, pid, ...up })
+          return send(res, 200, { uploaded: true, pid, variant, ...up })
         } catch (e) {
           return send(res, 500, { error: `Firebase 저장 실패: ${e.message}` })
         }

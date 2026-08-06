@@ -12,12 +12,13 @@
 //
 // 실패는 조용히 삼킨다 — 파일 없음·디코드 실패·오디오 컨텍스트 불가면 음악 없이 진행한다(§1 침묵 폴백).
 
-const LEVEL = { idle: 10, agent: 5, user: 5 } // agent: 유령 발화 중 — 최종 gain 0.075 (5/10 × MASTER 0.15)
+const LEVEL = { idle: 10, agent: 5, user: 5 } // agent: 유령 발화 중 — 최종 gain 1.0 (5/10 × MASTER 2.0)
 const CROSSFADE_SEC = 4 //  앞뒤 이음매 crossfade 길이(초)
 const STOP_FADE_SEC = 1.5 // stop() 시 페이드아웃 길이(초) — 배경음은 뚝 끊지 않는다
 const DUCK_RAMP_SEC = 0.5 // 발화/청취 전이 시 볼륨 램프 길이(초)
-const MASTER = 0.25 //       level 10 → gain(MASTER). 설치 현장에서 전체 크기만 조정하고 싶을 때 여기만 만진다.
-//                          (1.0=파일 원음 크기. 목소리가 음악 위로 또렷하게 들리도록 전체를 낮춰 둠.)
+const MASTER = 2.0 //        level 10 → gain(MASTER). 설치 현장에서 전체 크기만 조정하고 싶을 때 여기만 만진다.
+//                          (1.0=파일 원음 크기. 2.0=원음의 2배 증폭 — 소스가 백색소음이라 버티지만,
+//                           피크가 0dB를 넘으면 클리핑(지직거림)이 생길 수 있다. 들리면 낮출 것.)
 
 const gainForLevel = (level) => (Math.max(0, Math.min(10, level)) / 10) * MASTER
 const TRIM_MIN = 0.05 // 무음 직전까지만 — 완전 0이면 켜져 있는지 알 수 없다

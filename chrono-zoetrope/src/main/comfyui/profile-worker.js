@@ -18,16 +18,22 @@ import {
   REEL_VARIANTS,
   reelVariantLabel
 } from './reel-photos.js'
+import { uploadFutureLifeJourney } from './future-journey.js'
 import {
   buildLifeGraphPlan,
   buildBranchedPlan,
   collectSessionPhotoURLs,
   collectStagePhotoURLs,
   synthesizeAgeScenes,
-  synthesizeBranchedScenes
+  synthesizeBranchedScenes,
+  extrapolationAges,
+  buildFutureNarrativePrompt,
+  branchedAges,
+  buildBranchedNarrativePrompt
 } from './life-graph-plan.js'
 import { GeminiClient, resolveGeminiApiKey } from './gemini-client.js'
 import { runFuneralWorkflow, FUNERAL_VARIANTS, funeralVariantLabel } from './funeral.js'
+import { runGraveWorkflow } from './grave.js'
 import {
   claimProfile,
   downloadPhotos,
@@ -37,6 +43,7 @@ import {
   setLifeGraphSessionStatus,
   upsertPersonaManifest,
   upsertPersonaScenePlan,
+  upsertExtrapolationRecord,
   uploadPersonaPanoramas,
   uploadPersonaReelPhotos,
   fetchGhostTranscript,
@@ -127,6 +134,23 @@ async function generateReelPhotosBestEffort({
         log(`  [Firebase] ${label} 사진 ${up.count}장 업로드`)
       } catch (err) {
         log(`  [경고] ${label} 사진 Firebase 업로드 실패(무시): ${err.message}`)
+      }
+      // 미래 릴(2차 future=부정미래 / 3차 branched=긍정미래)은 노출용 요약 정본
+      // (futureLifeJourneyGraph — 이미지 URL + 한국어 title·30자 설명)도 함께 올린다. best-effort.
+      if (variant === 'future' || variant === 'branched') {
+        try {
+          await uploadFutureLifeJourney({
+            profile,
+            personaId: pid,
+            dir: personaDir,
+            reelPhotos: r.reelPhotos,
+            gclient,
+            variant,
+            log
+          })
+        } catch (err) {
+          log(`  [경고] ${label} 인생그래프 요약 업로드 실패(무시): ${err.message}`)
+        }
       }
     }
   } catch (err) {
@@ -420,8 +444,32 @@ export async function processLifeGraphSession(
       textModel: config.gemini?.textModel,
       timeoutMs: config.timeoutMs
     })
-    const ageScenes = await synthesizeAgeScenes(synthClient, profile, sessionPoints)
+    const synthTrace = {} // 합성 과정 기록(연대기·실제 장면 프롬프트) — 외삽 기록에 담는다
+    const ageScenes = await synthesizeAgeScenes(synthClient, profile, sessionPoints, {
+      trace: synthTrace
+    })
     log(`  나이별 장면 합성 완료: ${Object.keys(ageScenes).length}개 나이 (LLM), 나머지는 폴백`)
+
+    // 2차(운명) 외삽 기록 — 연대기·프롬프트·결과 장면을 Firebase에 남긴다(3차 분기와 비교용).
+    {
+      const futureAges = extrapolationAges(profile, sessionPoints)
+      if (synthTrace.futureScenePrompt)
+        await saveExtrapolationRecord(
+          profile,
+          pid,
+          'future',
+          {
+            ages: futureAges,
+            narrative: synthTrace.futureNarrative || null,
+            narrativePrompt: buildFutureNarrativePrompt(profile, sessionPoints, futureAges),
+            scenePrompt: synthTrace.futureScenePrompt,
+            scenes: Object.fromEntries(
+              futureAges.filter((a) => ageScenes[a]).map((a) => [a, ageScenes[a]])
+            )
+          },
+          log
+        )
+    }
 
     // pro 모델 클라이언트 — reel 사진(3:4)과 aged 앵커 포트레이트(3:4)가 공유한다.
     const proGclient = new GeminiClient({
@@ -571,6 +619,18 @@ export async function processLifeGraphSession(
   }
 }
 
+// 외삽 기록 — 어떤 연대기·프롬프트로 어떤 미래 장면이 나왔는지 Firebase('extrapolationRecords')에
+// 남긴다(kind: 'future'=2차 운명 외삽, 'branched'=3차 분기 외삽). 콘솔에서 같은 사람의 두 문서를
+// 나란히 열면 두 미래가 무엇이 어떻게 다른지 비교된다. best-effort — 실패해도 생성은 계속된다.
+async function saveExtrapolationRecord(profile, personaId, kind, record, log = noop) {
+  try {
+    const { key } = await upsertExtrapolationRecord({ profile, personaId, kind, record })
+    log(`  [Firebase] 외삽 기록 저장: extrapolationRecords/${key}`)
+  } catch (err) {
+    log(`  [경고] 외삽 기록 저장 실패(무시): ${err.message}`)
+  }
+}
+
 /**
  * 3차 플로우(분기 미래) 생성 — 1·2차 라이브러리가 이미 있는 참가자에 대해, 유령 대화 기록
  * (ghostTranscripts)을 재료로 "체험으로 마음가짐이 바뀌어 다른 삶을 살았을 때"의 미래를
@@ -619,17 +679,40 @@ export async function processBranchedFuture(
       textModel: config.gemini?.textModel,
       timeoutMs: config.timeoutMs
     })
+    const synthTrace = {} // 합성 과정 기록(연대기·실제 장면 프롬프트) — 외삽 기록에 담는다
     const branchedScenes = await synthesizeBranchedScenes(
       synthClient,
       profile,
       sessionPoints,
-      transcript.turns
+      transcript.turns,
+      { trace: synthTrace }
     )
     if (!Object.keys(branchedScenes).length)
       throw new Error('분기 장면 합성 결과가 비었다 — 현재 나이를 구할 수 없거나 대화가 빈약함')
     const branchedPlan = buildBranchedPlan(profile, branchedScenes)
     log(
       `  분기 장면 합성 완료: ${Object.keys(branchedScenes).length}개 나이, ${branchedPlan.length}장 플랜`
+    )
+
+    // 3차(분기) 외삽 기록 — 연대기·프롬프트·결과를 Firebase에 남긴다(2차 운명 외삽과 비교용).
+    await saveExtrapolationRecord(
+      profile,
+      pid,
+      'branched',
+      {
+        transcriptTurnCount: transcript.turns.length,
+        ages: branchedAges(profile),
+        narrative: synthTrace.branchedNarrative || null,
+        narrativePrompt: buildBranchedNarrativePrompt(
+          profile,
+          sessionPoints,
+          transcript.turns,
+          branchedAges(profile)
+        ),
+        scenePrompt: synthTrace.branchedScenePrompt || null,
+        scenes: branchedScenes
+      },
+      log
     )
 
     // 플랜을 별도 문서(__branched)로 Firebase에 남긴다 — 32장 플랜 기록을 덮지 않는다. best-effort.
@@ -764,6 +847,8 @@ export async function processBranchedFuture(
         stage: 'image',
         variant: 'branched',
         doc: profile,
+        branchNarrative: synthTrace.branchedNarrative || null, // 조문객 캐스트가 분기된 삶을 근거로
+
         faceRef: faceRef.buffer,
         signal,
         log,
@@ -773,6 +858,27 @@ export async function processBranchedFuture(
       else if (!r.cancelled) log(`  [경고] 분기 장례식 이미지 실패(무시): ${r.error}`)
     } catch (err) {
       log(`  [경고] 분기 장례식 이미지 실패(무시): ${err.message}`)
+    }
+
+    // 7) 분기 장지(안식처) — 분기 연대기를 근거로 1차 장지와 다른 안식처. 이미지 단계까지,
+    // 승인·영상화는 admin에서(장례식과 같은 게이트). best-effort.
+    try {
+      const r = await runGraveWorkflow({
+        personaDir,
+        gclient: proGclient,
+        config,
+        stage: 'image',
+        variant: 'branched',
+        branchNarrative: synthTrace.branchedNarrative || null,
+        doc: profile,
+        signal,
+        log,
+        onManifest: (m) => upsertPersonaManifest(m)
+      })
+      if (r.ok) log(`  [장지] 분기 장지 이미지 완료 (rev ${r.rev}) — admin 승인 후 영상화`)
+      else if (!r.cancelled) log(`  [경고] 분기 장지 이미지 실패(무시): ${r.error}`)
+    } catch (err) {
+      log(`  [경고] 분기 장지 이미지 실패(무시): ${err.message}`)
     }
 
     await updateProfileFields(pid, {

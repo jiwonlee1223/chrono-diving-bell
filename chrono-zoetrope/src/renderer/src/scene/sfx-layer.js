@@ -7,10 +7,10 @@
 //   play(slug, {gain}) → 키워드 매칭을 거치지 않고 특정 음원을 직접 지정(장례식 국면의 조문객
 //   웅성거림처럼, 장면 텍스트가 아니라 국면 자체가 음원을 정하는 경우).
 //
-// 볼륨: BGM(MASTER 0.6)을 덮지 않게 낮은 게인(SFX_GAIN)으로 깐다 — 배경의 배경.
+// 볼륨: BGM(MASTER 1.0)을 덮지 않게 한 겹 낮은 게인(SFX_GAIN)으로 깐다 — 배경의 배경.
 // 실패는 조용히 삼킨다 — 파일 없음·디코드 실패·컨텍스트 불가면 앰비언스 없이 진행한다.
 
-const SFX_GAIN = 0.22 //     level: BGM보다 한 겹 아래(배경의 배경)
+const SFX_GAIN = 0.5 //      level: BGM보다 한 겹 아래(배경의 배경)
 const FADE_IN_SEC = 2.0
 const FADE_OUT_SEC = 1.2
 const LOOP_CROSSFADE_SEC = 2 // 루프 이음매 crossfade(bg-music과 같은 방식)

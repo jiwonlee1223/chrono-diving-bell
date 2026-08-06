@@ -35,6 +35,9 @@ export const COLLECTION_MANIFESTS = 'personaManifests'
 // 생성 예정 장면 30개의 묘사 — 이미지가 나오기 **전에** 무엇이 그려질지 확인하는 자리.
 // manifest는 생성이 끝나야 채워지므로, 플랜이 확정된 시점에 이쪽을 먼저 쓴다.
 export const COLLECTION_SCENE_PLANS = 'panoramaPrompts'
+// 외삽 기록 — 2차(운명, kind 'future')·3차(분기, kind 'branched') 외삽의 연대기·프롬프트·결과
+// 장면을 그대로 남긴다. 두 문서를 나란히 열면 같은 사람의 두 미래가 어떻게 갈렸는지 비교된다.
+export const COLLECTION_EXTRAPOLATIONS = 'extrapolationRecords'
 
 /**
  * Admin SDK 초기화. 서비스 계정 키 출처는 세 가지(우선순위 순):
@@ -341,16 +344,27 @@ export async function uploadPersonaFuneral({
  * admin "Firebase 저장" 버튼 전용. 1차 플로우 전용이라 variant 개념이 없다.
  * @param {object} p { profile, personaId, dir, grave: manifest.grave, bucket? }
  */
-export async function uploadPersonaGrave({ profile, personaId, dir, grave, bucket }) {
+// variant 'branched'(2차 체험 — 분기된 삶의 안식처)는 Storage 경로·문서 필드(graveBranched)를
+// 1차(grave)와 분리해 저장한다 — 1·2·3차 소스가 뒤섞이지 않게.
+export async function uploadPersonaGrave({
+  profile,
+  personaId,
+  dir,
+  grave,
+  variant = 'present',
+  bucket
+}) {
   if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
   if (!grave?.image?.file) throw new Error('업로드할 장지 이미지가 없다')
   const bkt = getStorage(app).bucket(bucket || defaultBucket)
   const key = panoramaDocKey(profile)
   const rev = grave.rev
+  const prefix = variant === 'branched' ? 'grave-branched' : 'grave'
+  const field = variant === 'branched' ? 'graveBranched' : 'grave'
   const img = await uploadFileToStorage(
     bkt,
     path.join(dir, grave.image.file),
-    `generated-funerals/${key}/grave-r${rev}.png`,
+    `generated-funerals/${key}/${prefix}-r${rev}.png`,
     'image/png'
   )
   let vid = null
@@ -358,7 +372,7 @@ export async function uploadPersonaGrave({ profile, personaId, dir, grave, bucke
     vid = await uploadFileToStorage(
       bkt,
       path.join(dir, grave.video.file),
-      `generated-funerals/${key}/grave-r${rev}.mp4`,
+      `generated-funerals/${key}/${prefix}-r${rev}.mp4`,
       'video/mp4'
     )
   }
@@ -371,7 +385,7 @@ export async function uploadPersonaGrave({ profile, personaId, dir, grave, bucke
         birthDate: profile.birthDate || null,
         personaId,
         bucket: bkt.name,
-        grave: {
+        [field]: {
           rev,
           image: { url: img.url, storagePath: img.storagePath },
           video: vid ? { url: vid.url, storagePath: vid.storagePath } : null,
@@ -470,6 +484,58 @@ export async function uploadPersonaReelPhotos({
 export async function fetchPersonaReelPhotos(profile) {
   if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
   const snap = await db.collection(COLLECTION_REEL_IMAGES).doc(panoramaDocKey(profile)).get()
+  return snap.exists ? snap.data() : null
+}
+
+// 미래 인생그래프 요약 — 미래 릴 이미지(URL) + 한국어 title·30자 상황 설명을 노출 단이 바로
+// 읽을 수 있게 담는 정본. 문서 키는 다른 정본과 동일(이름_생년월일6자, 사용자별 1문서)이고,
+// 그 안에서 negative(부정미래 — 2차 'future' 릴)/positive(긍정미래 — 3차 'branched' 릴)
+// 두 필드로 갈린다. 바이트는 올리지 않는다 — generatedReelImage에 이미 올라간 Storage URL을 가리킨다.
+export const COLLECTION_FUTURE_JOURNEY = 'futureLifeJourneyGraph'
+
+/** 릴 variant → futureLifeJourneyGraph 분기 필드명. 2차(future)=부정미래, 3차(branched)=긍정미래. */
+export function futureJourneyBranchKey(variant) {
+  return variant === 'branched' ? 'positive' : 'negative'
+}
+
+/**
+ * 한 분기(부정/긍정)의 요약 목록을 futureLifeJourneyGraph에 기록한다. merge라 다른 분기는 남는다.
+ * @param {object} p
+ * @param {object} p.profile   { name, birthDate }
+ * @param {string} p.personaId
+ * @param {'future'|'branched'} p.variant  릴 variant — negative/positive로 매핑된다
+ * @param {Array<{id:string, age:number, year:number, title:string, description:string, imageURL:string, storagePath?:string}>} p.items
+ * @returns {Promise<{key:string, branch:string, count:number}>}
+ */
+export async function upsertFutureLifeJourney({ profile, personaId, variant, items }) {
+  if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  const key = panoramaDocKey(profile)
+  const branch = futureJourneyBranchKey(variant)
+  await db
+    .collection(COLLECTION_FUTURE_JOURNEY)
+    .doc(key)
+    .set(
+      {
+        name: profile.name || null,
+        birthDate: profile.birthDate || null,
+        personaId,
+        [branch]: {
+          variant,
+          count: items.length,
+          items,
+          updatedAt: new Date().toISOString()
+        },
+        updatedAt: FieldValue.serverTimestamp()
+      },
+      { merge: true }
+    )
+  return { key, branch, count: items.length }
+}
+
+/** futureLifeJourneyGraph 문서 조회. 없으면 null. */
+export async function fetchFutureLifeJourney(profile) {
+  if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  const snap = await db.collection(COLLECTION_FUTURE_JOURNEY).doc(panoramaDocKey(profile)).get()
   return snap.exists ? snap.data() : null
 }
 
@@ -707,6 +773,45 @@ export async function upsertPersonaScenePlan({
       { merge: true }
     )
   return { key, count: scenes.length }
+}
+
+/**
+ * 외삽 기록을 'extrapolationRecords/{docKey}__{kind}'에 남긴다 — kind: 'future'(2차 운명) |
+ * 'branched'(3차 분기). 연대기(1단계 서사)·실제 프롬프트·결과 장면이 그대로 담기므로
+ * 콘솔에서 두 문서를 비교하면 같은 사람의 두 미래가 무엇이 어떻게 다른지 보인다. best-effort로
+ * 부르는 쪽에서 감싼다(기록 실패가 생성을 멈추지 않게).
+ * @param {object} p { profile:{name,birthDate,id?}, personaId, kind, record:{ages,narrative,narrativePrompt,scenePrompt,scenes,...} }
+ */
+export async function upsertExtrapolationRecord({ profile, personaId, kind, record = {} }) {
+  if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  const key = `${panoramaDocKey(profile)}__${kind}`
+  await db
+    .collection(COLLECTION_EXTRAPOLATIONS)
+    .doc(key)
+    .set(
+      {
+        name: profile.name || null,
+        birthDate: profile.birthDate || null,
+        personaId: personaId || null,
+        profileDocId: profile.id || null,
+        kind,
+        ...record,
+        updatedAt: FieldValue.serverTimestamp()
+      },
+      { merge: true }
+    )
+  return { key }
+}
+
+/** 외삽 기록 조회 — 'extrapolationRecords/{docKey}__{kind}'. 없으면 null.
+ * admin에서 분기 장례식을 재생성할 때 연대기(narrative)를 여기서 되찾는다. */
+export async function fetchExtrapolationRecord(profile, kind) {
+  if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  const snap = await db
+    .collection(COLLECTION_EXTRAPOLATIONS)
+    .doc(`${panoramaDocKey(profile)}__${kind}`)
+    .get()
+  return snap.exists ? snap.data() : null
 }
 
 export async function upsertPersonaManifest(manifest) {

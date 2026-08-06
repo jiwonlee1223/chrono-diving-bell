@@ -58,7 +58,8 @@ export async function loadMontageLibrary({ rootDir, personaId = null }) {
       absPath: join(dir, im.file),
       age: im.age,
       year: im.year,
-      scene: im.scene ?? ''
+      scene: im.scene ?? '',
+      branch: !!im.branch // 분기(3차 플로우) 장면 표식 — 이 필드가 빠지면 서버의 분기/운명 필터가 전부 무력화된다
     }))
     .filter((im) => existsSync(im.absPath))
     .sort((a, b) => {

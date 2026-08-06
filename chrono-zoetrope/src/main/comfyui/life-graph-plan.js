@@ -70,6 +70,9 @@ const STAGE_LABELS_EN = {
 // scene 2 = 그 시기의 특정한 하루(사건). 같은 재료에서 비슷한 변주 2개가 나오는 걸 막는 장치라
 // SCENES_PER_AGE를 바꾸면 두 프롬프트의 역할 문구도 같이 고쳐야 한다.
 export const SCENES_PER_AGE = 2
+// 3차(분기 미래)는 시기당 **한 장면**만 만든다(2026-08-05 사용자 확정) — 분기 체험(3차 플로우)에서는
+// "같은 시기의 다른 모습" 선택지가 없다. 대화 카탈로그도 나이당 장면 하나라 그 분기가 자연히 닫힌다.
+export const BRANCH_SCENES_PER_AGE = 1
 
 // 나이별 장면 생성 기준 — 3세부터 90세까지를 15등분한 나이 격자(× SCENES_PER_AGE = 30장).
 // 3 + i×(87/14), i=0..14 를 반올림한 값이다.
@@ -272,6 +275,30 @@ function ageOfStageId(stageId) {
   return m ? Number(m[1]) : null
 }
 
+// ── myLife 스키마 두 벌(2026-08-06) ──────────────────────────────────────────
+// 예전: 맵 하나 { motto, bucketList }. 새 스키마: 회차별 배열 [{ motto, bucketList, createdAt }]
+// — 체험(유령 대화) 뒤 crafter가 새 항목을 **추가**한다(덮어쓰지 않음). 최초 작성분은
+// createdAt이 null일 수 있다. 저장 위치도 세션 맵 안(first.myLife)일 수도, profiles 문서
+// 최상위(profile.myLife)일 수도 있어 읽는 쪽이 둘 다 본다.
+
+/**
+ * myLife에서 항목 하나를 고른다. 배열이면 createdAt 문자열 정렬로 first(체험 전 원본) 또는
+ * latest(체험 후 갱신본)를 택한다 — createdAt null(빈 문자열 취급)이 자연히 맨 앞에 온다.
+ * @param {object|Array|null} myLife
+ * @param {'first'|'latest'} [which='latest']
+ * @returns {{motto?:string, bucketList?:string}|null}
+ */
+export function pickMyLifeEntry(myLife, which = 'latest') {
+  if (!myLife) return null
+  if (!Array.isArray(myLife)) return myLife
+  const arr = myLife.filter(Boolean)
+  if (!arr.length) return null
+  const sorted = [...arr].sort((a, b) =>
+    String(a?.createdAt || '').localeCompare(String(b?.createdAt || ''))
+  )
+  return which === 'first' ? sorted[0] : sorted[sorted.length - 1]
+}
+
 /**
  * selections 항목 하나가 가리키는 점의 실제 나이. 점 배열 스키마는 { stageId, index }가
  * 배열 속 점 하나를 가리키므로 그 점의 age를 쓰고, 아니면 stageId의 숫자로 폴백.
@@ -293,7 +320,11 @@ function selectionAge(sessionPoints, sel) {
  *   marks — 나이 → 그 나이에 찍힌 선택(influential/best/worst)들. 해당 나이의 "사건" 장면이 이걸 딛는다.
  *   lines — 사람 전체를 설명하는 영어 불릿(직업·모토·버킷리스트·묘비명·마지막 편지). 원문은 한국어 그대로.
  */
-export function collectSessionContext(profile = {}, sessionPoints = {}) {
+export function collectSessionContext(
+  profile = {},
+  sessionPoints = {},
+  { myLifePick = 'latest' } = {}
+) {
   const marks = {}
   for (const kind of ['influential', 'best', 'worst']) {
     const s = sessionPoints.selections?.[kind]
@@ -311,9 +342,11 @@ export function collectSessionContext(profile = {}, sessionPoints = {}) {
   const lines = []
   const job = profile.job || profile.occupation
   if (job) lines.push(`- Occupation: ${job}`)
-  const motto = sessionPoints.myLife?.motto?.trim()
+  // myLife는 세션 맵 안(예전) 또는 profiles 문서 최상위(새 스키마) — 있는 쪽을 읽는다.
+  const myLifeEntry = pickMyLifeEntry(sessionPoints.myLife ?? profile.myLife, myLifePick)
+  const motto = myLifeEntry?.motto?.trim()
   if (motto) lines.push(`- Their life motto (their own words, Korean): "${motto}"`)
-  const bucketList = sessionPoints.myLife?.bucketList?.trim()
+  const bucketList = myLifeEntry?.bucketList?.trim()
   if (bucketList) lines.push(`- Their bucket list (their own words, Korean): "${bucketList}"`)
   const epitaph = sessionPoints.funeral?.epitaph?.trim()
   if (epitaph) lines.push(`- The epitaph they imagined for their own grave (Korean): "${epitaph}"`)
@@ -477,7 +510,7 @@ export function scenesTooSimilar(a, b) {
  * @param {number[]} expectedAges 응답에 반드시 있어야 하는 나이 키 목록
  * @returns {Record<number, string[]>}  { [age]: [장면1, 장면2] } — 길이는 SCENES_PER_AGE
  */
-export function parseSynthesizedScenes(raw, expectedAges) {
+export function parseSynthesizedScenes(raw, expectedAges, perAge = SCENES_PER_AGE) {
   let text = String(raw ?? '').trim()
   text = text
     .replace(/^```(?:json)?\s*/i, '')
@@ -500,13 +533,13 @@ export function parseSynthesizedScenes(raw, expectedAges) {
     const arr = data[String(age)]
     if (
       !Array.isArray(arr) ||
-      arr.length !== SCENES_PER_AGE ||
+      arr.length !== perAge ||
       arr.some((s) => typeof s !== 'string' || !s.trim())
     ) {
       // 키가 통째로 없을 때 JSON.stringify(undefined)는 "undefined"라 원인 파악이 안 된다 —
       // 모델이 실제로 무슨 키를 줬는지 함께 보여준다.
       throw new Error(
-        `장면 합성 응답에 나이 ${age}의 장면 ${SCENES_PER_AGE}개가 없음 (받은 값: ${JSON.stringify(arr) ?? 'undefined'}` +
+        `장면 합성 응답에 나이 ${age}의 장면 ${perAge}개가 없음 (받은 값: ${JSON.stringify(arr) ?? 'undefined'}` +
           `, 응답 키: ${JSON.stringify(Object.keys(data))}, 요구 키: ${JSON.stringify(expectedAges.map(String))})`
       )
     }
@@ -536,7 +569,7 @@ export function parseSynthesizedScenes(raw, expectedAges) {
  * @returns {Promise<Record<number, string[]>>}  글이 있던 단계의 나이만 포함 — 나머지는
  *   buildLifeGraphPlan이 fallbackScenesForAge로 채운다.
  */
-async function runSynthesis(gclient, prompt, ages, attempts) {
+async function runSynthesis(gclient, prompt, ages, attempts, perAge = SCENES_PER_AGE) {
   // 글이 있는 단계는 폴백으로 대체하지 않는 게 설계 의도라(§1), 형식 이탈은 폴백이 아니라
   // 재요청으로 푼다. 실패한 이유를 다음 시도의 프롬프트에 붙여 같은 실수를 반복하지 않게 한다.
   let lastErr
@@ -546,7 +579,7 @@ async function runSynthesis(gclient, prompt, ages, attempts) {
       : ''
     try {
       const raw = await gclient.generateText({ prompt: prompt + repair, responseJson: true })
-      return parseSynthesizedScenes(raw, ages)
+      return parseSynthesizedScenes(raw, ages, perAge)
     } catch (err) {
       lastErr = err
       console.warn(`[life-graph-plan] 장면 합성 ${attempt}/${attempts} 실패: ${err.message}`)
@@ -583,12 +616,19 @@ export function extrapolationAges(profile, sessionPoints = {}) {
  *
  * 예측의 근거 배합(사용자 확정, 2026-08-03) — 프롬프트에 가중치를 명시해 한 갈래로 쏠리지 않게 한다:
  *   50% 인구통계 — 비슷한 배경(출생연도·성별·직업·지역)의 사람들이 실제로 밟는 삶의 궤적
- *   30% 본인이 쓴 미래 — 이 사람이 직접 답한 앞으로의 변화·계획
+ *   30% 본인이 쓴 미래 — 단, **어긋난 형태로**(아래 방향성 참조)
  *   10% 사주 — 생년월일의 대운(10년 주기)·소운 흐름
  *   10% 예기치 못함 — 계획대로 흐르지 않는 전환(삶은 예측대로 가지 않는다)
  * 그 위에 프로필·과거·현재를 얹어 "누구의 미래든 같은 노년"이 아니라 이 사람의 미래가 되게 한다.
+ *
+ * 방향성 변경(사용자 확정, 2026-08-05): 2차 미래는 **희망·버킷리스트가 이뤄지지 않은 미래**다 —
+ * 어딘가 문제가 생겨 계획이 미뤄지고, 좌절되고, 조용히 접히는 궤적. 3차(분기 미래)가 "원하는
+ * 대로 잘 풀린 미래"를 맡으면서 두 미래가 대비를 이룬다. §1 경계는 유지 — 성공·실패를 서술로
+ * **판정하지 않고**, 이뤄지지 않았다는 사실만 카메라가 볼 수 있는 사건으로 보여준다.
  */
-export function buildFutureExtrapolationPrompt(profile, sessionPoints, futureAges) {
+// 운명(2차) 외삽의 공용 재료 블록 — 연대기(1단계)와 장면 분해(2단계) 프롬프트가 공유한다.
+// 근거가 하나도 없으면 null(폴백으로 둔다).
+function futureExtrapolationMaterials(profile, sessionPoints, futureAges) {
   if (!futureAges?.length) return null
   const pastNotes = []
   const futureNotes = []
@@ -605,11 +645,11 @@ export function buildFutureExtrapolationPrompt(profile, sessionPoints, futureAge
     )
   }
   // 부가 데이터(버킷리스트·모토·묘비명·마지막 편지) — 미래 외삽의 "본인이 쓴 미래" 재료를 두껍게 한다.
-  const ctx = collectSessionContext(profile, sessionPoints)
+  // 2차(부정미래)는 **체험 전 원본** myLife를 딛는다 — "그때 품었던 소망이 이뤄지지 않은" 궤적이므로,
+  // 체험 후 새로 쓴 갱신본(latest)이 아니라 첫 작성분(first)이 재료다.
+  const ctx = collectSessionContext(profile, sessionPoints, { myLifePick: 'first' })
   if (pastNotes.length === 0 && futureNotes.length === 0 && ctx.lines.length === 0) return null // 근거가 없으면 폴백으로 둔다
   const cur = currentAgeOf(profile)
-  const sceneArray = Array.from({ length: SCENES_PER_AGE }, (_, i) => `"scene ${i + 1}"`).join(', ')
-  const keys = futureAges.map(String)
   const who = [
     profile.name ? `Name: ${profile.name}` : null,
     profile.birthDate ? `Born: ${profile.birthDate}` : null,
@@ -619,10 +659,7 @@ export function buildFutureExtrapolationPrompt(profile, sessionPoints, futureAge
   ]
     .filter(Boolean)
     .join(' · ')
-
-  return (
-    `A person has recorded their own life. Extrapolate how this particular life continues, and describe` +
-    ` what could be seen at ages ${futureAges.join(', ')}.\n\n` +
+  const materials =
     `### The person\n${who}\n\n` +
     (pastNotes.length
       ? `### What they wrote about their life so far (Korean, verbatim)\n${pastNotes.join('\n')}\n\n`
@@ -632,25 +669,83 @@ export function buildFutureExtrapolationPrompt(profile, sessionPoints, futureAge
       : '') +
     (ctx.lines.length
       ? `### What else they wrote about themselves in this session (Korean, verbatim)\n` +
-        `Their motto and bucket list say where they hope to go; the epitaph and farewell letters say` +
+        `Their motto and bucket list say where they hoped to go; the epitaph and farewell letters say` +
         ` who and what they hold dearest — the people named there should still appear, older, in these` +
         ` future scenes:\n${ctx.lines.join('\n')}\n\n`
       : '') +
+    `### The direction of this future\n` +
+    `This is the future in which their hopes do NOT arrive. Somewhere along the way something goes` +
+    ` wrong — quietly, plausibly — and the plans, wishes and bucket-list items they wrote above are` +
+    ` postponed, derailed, or silently shelved. Show this ONLY as visible facts and events (a saved-for` +
+    ` trip replaced by a hospital corridor, an instrument still in its case, a shop that never opened);` +
+    ` never narrate disappointment, never state that they failed. The life must remain ordinary and` +
+    ` believable — not tragedy or spectacle, just a life that bent away from what they wanted.\n\n` +
     `### How to weigh your prediction\n` +
     `Blend these four sources in roughly these proportions. Do not let any single one dominate:\n` +
     `- 50% — DEMOGRAPHIC TRAJECTORY: what actually tends to happen to people of this birth cohort,` +
     ` gender, occupation and social background as they age, in their society. Ordinary statistical life:` +
     ` typical work arcs, family patterns, housing, health, retirement, how social circles thin or shift.\n` +
-    `- 30% — THEIR OWN STATED FUTURE: the changes and plans they described above, including their` +
-    ` bucket list and motto. Honour them; let some bucket-list items actually happen at plausible ages,` +
-    ` partly come true, partly bend as real plans do.\n` +
+    `- 30% — THEIR OWN STATED FUTURE, UNFULFILLED: the changes, plans, bucket list and motto they` +
+    ` described above — present in the life, but not realized. Let them surface as traces: a plan` +
+    ` deferred year after year, an item prepared for but never used, a hoped-for move that quietly` +
+    ` stops being mentioned. Their wishes shape what is visibly missing.\n` +
     `- 10% — SAJU (사주): read the flow of their 대운 (ten-year luck cycles) and 소운 from their birth date` +
-    ` above, and let that colour the timing and texture of the periods — when things open up, when they` +
+    ` above, and let that colour the timing and texture of the periods — when things close down, when they` +
     ` turn inward. Keep this as an undercurrent that shapes tone, never as a stated prophecy.\n` +
-    `- 10% — THE UNFORESEEN: life does not follow plans. Let at least one of these ages carry a turn` +
-    ` nobody planned — an unexpected move, a relationship or work that was not on the map, something` +
-    ` beginning late. It should still look like a life, not a spectacle.\n\n` +
+    `- 10% — THE UNFORESEEN: life does not follow plans. Choose exactly ONE of these ages to carry the` +
+    ` single turn that knocked things off course — a health event, a family obligation, work that` +
+    ` consumed the years, money that went elsewhere. Every other age shows NO new misfortune — only` +
+    ` ordinary life and the quiet traces of plans that never arrived, downstream of that one turn.` +
+    ` It should still look like a life, not a spectacle.\n\n`
+  return { materials, cur }
+}
+
+/**
+ * 1단계 — 운명 미래의 **생애 연대기** 프롬프트(2026-08-05). 장면을 그리기 전에 먼저 삶 자체를
+ * 쓴다: 나이별로 무슨 일이 있었는지(일·집·관계·건강·장소의 구체적 사건). 2단계(장면 분해)가
+ * 이 연대기를 그대로 따르므로, 나이들 사이의 인과·연속성이 한 서사에서 나온다.
+ */
+export function buildFutureNarrativePrompt(profile, sessionPoints, futureAges) {
+  const m = futureExtrapolationMaterials(profile, sessionPoints, futureAges)
+  if (!m) return null
+  return (
+    `A person has recorded their own life. Before any imagery, write the LIFE ITSELF: extrapolate how` +
+    ` this particular life continues from age ${m.cur} to 90.\n\n` +
+    m.materials +
+    `### Your task\n` +
+    `Write a compact chronicle of this person's future as concrete EVENTS — what changes in work, home,` +
+    ` relationships, health and place; what begins, what ends, what returns. One short paragraph per age` +
+    ` (${futureAges.join(', ')}), each flowing from the previous one — a single continuous life.\n` +
+    `- Factual in tone ("moves to ...", "closes the shop", "a first grandchild arrives"). Do NOT narrate` +
+    ` emotion or meaning, do not judge success or failure.\n` +
+    `- Do not describe death or a deathbed.\n\n` +
+    `Return plain text only, one line per age, exactly this shape:\n` +
+    `AGE <age>: <two or three sentences>`
+  )
+}
+
+/**
+ * 2단계 — 연대기를 나이별 **장면**으로 분해하는 프롬프트. narrative(1단계 결과)가 있으면 장면은
+ * 그 연대기의 사건을 그대로 그린다(이미지 생성 프롬프트의 재료). 없으면(1단계 실패) 종전처럼
+ * 재료에서 바로 장면을 뽑는 단일 단계로 동작한다 — 하위 호환.
+ */
+export function buildFutureExtrapolationPrompt(profile, sessionPoints, futureAges, narrative = '') {
+  const m = futureExtrapolationMaterials(profile, sessionPoints, futureAges)
+  if (!m) return null
+  const sceneArray = Array.from({ length: SCENES_PER_AGE }, (_, i) => `"scene ${i + 1}"`).join(', ')
+  const keys = futureAges.map(String)
+  return (
+    `A person has recorded their own life. Extrapolate how this particular life continues, and describe` +
+    ` what could be seen at ages ${futureAges.join(', ')}.\n\n` +
+    m.materials +
+    (narrative
+      ? `### The life chronicle to depict (already decided — follow it faithfully)\n${narrative}\n\n`
+      : '') +
     `### Rules for the scenes\n` +
+    (narrative
+      ? `- Every scene must depict a concrete moment from the chronicle above for that age — do not` +
+        ` invent events that contradict it, only stage what it says as visible moments.\n`
+      : '') +
     `- Continue THIS life, not a generic one: carry forward the places, relationships, work and habits` +
     ` that actually appear above, and let them age — the same people grow older, a craft deepens,` +
     ` a place is revisited or left behind, new ordinary things enter.\n` +
@@ -666,14 +761,32 @@ export function buildFutureExtrapolationPrompt(profile, sessionPoints, futureAge
   )
 }
 
-export async function synthesizeAgeScenes(gclient, profile, sessionPoints, { attempts = 3 } = {}) {
+export async function synthesizeAgeScenes(
+  gclient,
+  profile,
+  sessionPoints,
+  { attempts = 3, trace = null } = {}
+) {
   const { prompt, ages } = buildSynthesisPrompt(profile, sessionPoints)
   const past = prompt ? await runSynthesis(gclient, prompt, ages, attempts) : {}
 
   // 2차 합성 — 사용자가 안 채운 미래 나이를 과거 기록에서 이어 만든다(위 주석의 예외).
+  // 2단계(2026-08-05): ① 생애 연대기(사건 서사)를 먼저 쓰고 → ② 그걸 나이별 장면으로 분해한다.
+  // ①이 실패하면 종전처럼 재료에서 바로 장면을 뽑는다(단일 단계 폴백).
   // best-effort: 실패하면 그 나이들만 폴백 장면으로 남고 생성은 계속된다(1차 결과는 지키는 게 우선).
   const futureAges = extrapolationAges(profile, sessionPoints)
-  const futurePrompt = buildFutureExtrapolationPrompt(profile, sessionPoints, futureAges)
+  let narrative = ''
+  const narrativePrompt = buildFutureNarrativePrompt(profile, sessionPoints, futureAges)
+  if (narrativePrompt) {
+    try {
+      narrative = String(await gclient.generateText({ prompt: narrativePrompt })).trim()
+    } catch (err) {
+      console.warn(`[life-graph-plan] 미래 연대기 합성 실패(장면 직행 폴백): ${err.message}`)
+    }
+  }
+  if (trace) trace.futureNarrative = narrative || null
+  const futurePrompt = buildFutureExtrapolationPrompt(profile, sessionPoints, futureAges, narrative)
+  if (trace) trace.futureScenePrompt = futurePrompt || null
   if (!futurePrompt) return past
   try {
     const future = await runSynthesis(gclient, futurePrompt, futureAges, attempts)
@@ -686,10 +799,11 @@ export async function synthesizeAgeScenes(gclient, profile, sessionPoints, { att
 
 // ── 3차 플로우: 분기된 미래(branched) 외삽 ──────────────────────────────────────
 //
-// 2차 외삽(buildFutureExtrapolationPrompt)이 "이대로 살았을 때의 운명적 미래"라면, 3차는
-// 유령과의 대화 기록(ghostTranscripts)을 재료로 "이 체험으로 마음가짐이 바뀌어 다른 선택을
-// 하며 살았을 때"의 대안적 미래를 만든다. 좋고 나쁨의 필터가 아니라 **분기**가 핵심이다 —
-// 관람객은 같은 형식의 두 생애(2차 운명 vs 3차 분기)를 나란히 보게 된다.
+// 2차 외삽(buildFutureExtrapolationPrompt)이 "희망이 이뤄지지 않은 미래"라면, 3차는
+// 유령과의 대화 기록(ghostTranscripts)을 재료로 "원하는 대로 잘 풀린 미래"를 만든다
+// (사용자 확정, 2026-08-05 — 종전의 '좋고 나쁨 없는 분기' 컨셉을 대체). 대화에서 드러난
+// 소망·후회·버킷리스트가 실제로 이뤄지는 궤적이되, 성공을 서술로 판정하지 않고 이뤄졌다는
+// 사실만 장면으로 보여준다. 관람객은 같은 형식의 두 생애(2차 vs 3차)를 나란히 보게 된다.
 //
 // §1과의 관계: 2차와 같은 의식적 예외다. 단, 3차는 근거가 한 겹 더 있다 — 관람객이 유령에게
 // 실제로 말한 문장들(후회·망설임·새로 발견한 욕망)에서만 변화의 단서를 읽고, 대화에 없는
@@ -722,12 +836,8 @@ function formatTranscriptTurns(turns) {
  * @param {Array}  transcriptTurns ghostTranscripts 문서의 turns
  * @param {number[]} futureAges    branchedAges() 결과
  */
-export function buildBranchedExtrapolationPrompt(
-  profile,
-  sessionPoints,
-  transcriptTurns,
-  futureAges
-) {
+// 분기(3차) 외삽의 공용 재료 블록 — 연대기(1단계)와 장면 분해(2단계) 프롬프트가 공유한다.
+function branchedExtrapolationMaterials(profile, sessionPoints, transcriptTurns, futureAges) {
   if (!futureAges?.length || !transcriptTurns?.length) return null
   const transcript = formatTranscriptTurns(transcriptTurns)
   if (!transcript) return null
@@ -740,10 +850,12 @@ export function buildBranchedExtrapolationPrompt(
     const t = r.point?.text?.trim()
     if (t) pastNotes.push(`- age ${r.point?.age ?? ageOfStageId(r.key) ?? age}: "${t}"`)
   }
+  // 3차(긍정미래)는 최신 myLife를 딛는다(pickMyLifeEntry 기본값 'latest') — 체험 뒤 crafter가
+  // 새로 추가한 항목이 있으면 그것이 "지금 원하는 것"의 가장 또렷한 진술이다.
   const ctx = collectSessionContext(profile, sessionPoints)
+  const myLifeRaw = sessionPoints.myLife ?? profile.myLife
+  const myLifeRenewed = Array.isArray(myLifeRaw) && myLifeRaw.filter(Boolean).length > 1
   const cur = currentAgeOf(profile)
-  const sceneArray = Array.from({ length: SCENES_PER_AGE }, (_, i) => `"scene ${i + 1}"`).join(', ')
-  const keys = futureAges.map(String)
   const who = [
     profile.name ? `Name: ${profile.name}` : null,
     profile.birthDate ? `Born: ${profile.birthDate}` : null,
@@ -753,16 +865,7 @@ export function buildBranchedExtrapolationPrompt(
   ]
     .filter(Boolean)
     .join(' · ')
-
-  return (
-    `A person has just been through an immersive experience: guided by a ghost-like voice, they` +
-    ` revisited moments of their past, then watched an AI-extrapolated version of the future that` +
-    ` would follow if their life simply kept its current course. Below is the full conversation.\n\n` +
-    `Your task: read what THEY actually said — regrets voiced, hesitations, things they lingered on,` +
-    ` wishes that surfaced — and infer how this experience shifted their outlook. Then extrapolate a` +
-    ` DIFFERENT life: the one they would live if, starting today at age ${cur}, they acted on that` +
-    ` shifted outlook and made different choices. Describe what could be seen at ages` +
-    ` ${futureAges.join(', ')}.\n\n` +
+  const materials =
     `### The person\n${who}\n\n` +
     (pastNotes.length
       ? `### What they wrote about their life so far (Korean, verbatim)\n${pastNotes.join('\n')}\n\n`
@@ -775,30 +878,106 @@ export function buildBranchedExtrapolationPrompt(
     `- Ground every change in something the visitor actually said in the conversation above — a moment` +
     ` they wanted to return to, a regret, a wish, a hesitation before an answer. Do NOT invent a change` +
     ` of heart that has no trace in their words.\n` +
-    `- This is a DIFFERENT life, not a perfect one: keep demographic realism (work, money, family,` +
-    ` health, aging in their society). Different choices carry their own ordinary costs and textures.` +
-    ` No wish-fulfillment montage, no spectacle.\n` +
+    `- This is the life in which things WORK OUT: the wishes, hopes and bucket-list items that surfaced` +
+    ` in their words (and in what they wrote) actually come to pass, each at a plausible age. Regrets` +
+    ` voiced to the ghost become the choices they finally made; shelved dreams get picked back up and` +
+    ` carried through. Show fulfillment ONLY as visible facts and events — the trip taken, the door of` +
+    ` the shop finally open, the person still at the table — never narrate happiness or declare success.\n` +
+    (myLifeRenewed
+      ? `- Their life motto and bucket list quoted above are the version they REWROTE right after this` +
+        ` experience — treat them, together with the conversation, as the clearest statement of what` +
+        ` they now want. The diverged life must visibly realize those bucket-list items, each at a` +
+        ` plausible age.\n`
+      : '') +
+    `- Keep demographic realism: ordinary work, money, family, health and aging in their society. The` +
+    ` life goes well, but it stays a believable everyday life, not a fantasy — quiet arrival, not` +
+    ` spectacle.\n` +
     `- Keep continuity of facts: the same places, people and skills from their past may reappear —` +
-    ` but bent by the new choices (a shelved dream picked back up, a relationship tended differently,` +
+    ` but carried where they hoped (a shelved dream picked back up, a relationship tended and kept,` +
     ` a place finally left or returned to).\n` +
-    `- Do not depict death or a deathbed — the final scene of this life is fixed elsewhere.\n\n` +
+    `- Do not depict death or a deathbed — the final scene of this life is fixed elsewhere.\n\n`
+  return { materials, cur }
+}
+
+/** 1단계 — 분기된 삶의 **생애 연대기** 프롬프트: 대화에서 읽은 바뀐 마음가짐으로 다른 선택을
+ * 하며 살았을 때, 나이별로 무슨 일이 있었는지를 사건으로 쓴다. 2단계가 이 연대기를 그대로 그린다. */
+export function buildBranchedNarrativePrompt(profile, sessionPoints, transcriptTurns, futureAges) {
+  const m = branchedExtrapolationMaterials(profile, sessionPoints, transcriptTurns, futureAges)
+  if (!m) return null
+  return (
+    `A person has just been through an immersive experience: guided by a ghost-like voice, they` +
+    ` revisited moments of their past, then watched an AI-extrapolated version of the future that` +
+    ` would follow if their life simply kept its current course. Below is the full conversation.\n\n` +
+    `Your task: read what THEY actually said — regrets voiced, hesitations, things they lingered on,` +
+    ` wishes that surfaced — and infer what they truly want. Before any imagery, write the FULFILLED` +
+    ` LIFE ITSELF: the one in which, starting today at age ${m.cur}, they act on those wishes and` +
+    ` things genuinely work out — the hoped-for turns actually arrive.\n\n` +
+    m.materials +
+    `### Your task\n` +
+    `Write a compact chronicle of the diverged future as concrete EVENTS — what changes in work, home,` +
+    ` relationships, health and place; what begins, what ends, what returns. One short paragraph per age` +
+    ` (${futureAges.join(', ')}), each flowing from the previous one — a single continuous life.\n` +
+    `- Factual in tone ("quits and moves to ...", "reopens the shelved dream as ..."). Do NOT narrate` +
+    ` emotion or meaning, do not judge success or failure.\n` +
+    `- Do not describe death or a deathbed.\n\n` +
+    `Return plain text only, one line per age, exactly this shape:\n` +
+    `AGE <age>: <two or three sentences>`
+  )
+}
+
+/** 2단계 — 분기 연대기를 나이별 장면(이미지 생성 프롬프트 재료)으로 분해. narrative가 없으면
+ * 종전처럼 단일 단계로 동작한다(하위 호환). */
+export function buildBranchedExtrapolationPrompt(
+  profile,
+  sessionPoints,
+  transcriptTurns,
+  futureAges,
+  narrative = ''
+) {
+  const m = branchedExtrapolationMaterials(profile, sessionPoints, transcriptTurns, futureAges)
+  if (!m) return null
+  // 분기 미래는 나이당 한 장면 — 3차 플로우에는 "같은 시기의 다른 모습" 선택지가 없다.
+  const sceneArray = Array.from(
+    { length: BRANCH_SCENES_PER_AGE },
+    (_, i) => `"scene ${i + 1}"`
+  ).join(', ')
+  const keys = futureAges.map(String)
+  return (
+    `A person has just been through an immersive experience: guided by a ghost-like voice, they` +
+    ` revisited moments of their past, then watched an AI-extrapolated version of the future that` +
+    ` would follow if their life simply kept its current course. Below is the full conversation.\n\n` +
+    `Your task: read what THEY actually said — regrets voiced, hesitations, things they lingered on,` +
+    ` wishes that surfaced — and infer what they truly want. Then extrapolate the FULFILLED life:` +
+    ` the one in which, starting today at age ${m.cur}, they act on those wishes and things genuinely` +
+    ` work out — the hoped-for turns actually arrive. Describe what could be seen at ages` +
+    ` ${futureAges.join(', ')}.\n\n` +
+    m.materials +
+    (narrative
+      ? `### The diverged life chronicle to depict (already decided — follow it faithfully)\n${narrative}\n\n`
+      : '') +
     `### Rules for the scenes\n` +
+    (narrative
+      ? `- Every scene must depict a concrete moment from the chronicle above for that age — do not` +
+        ` invent events that contradict it, only stage what it says as visible moments.\n`
+      : '') +
     `- Describe only what a camera could see: places, light, objects, actions, who is present.` +
     ` Never narrate emotion, meaning, success or failure.\n` +
-    `- ${SCENE_ROLE_RULES.replaceAll('\n', '\n- ')}\n` +
+    `- ONE scene per age: the single moment that best carries what this period of the diverged life` +
+    ` looks like — a recurring, representative moment of that period's daily texture (not a` +
+    ` once-in-a-lifetime spectacle). Across ages, vary location, activity, and who is present.\n` +
     `- This person is Korean and, by default, every scene takes place in South Korea — ground scenes in` +
     ` Korean specifics unless the conversation or notes above explicitly place a period in another` +
     ` country, in which case name that place in the sentence.\n` +
     `- Be specific and physical. No captions, no lettering, no text of any kind in the scene.\n` +
     `- Each scene: one English present-participle phrase, the same style as: ` +
     `"repotting seedlings on a sunlit balcony rail, soil scattered on yesterday's newspaper".\n\n` +
-    `Return ONLY JSON, exactly these keys, ${SCENES_PER_AGE} scenes each:\n` +
+    `Return ONLY JSON, exactly these keys, ${BRANCH_SCENES_PER_AGE} scene(s) each:\n` +
     `{${keys.map((k) => `"${k}": [${sceneArray}]`).join(', ')}}`
   )
 }
 
 /**
- * 3차 합성 실행 — 대화 기록 기반 분기 미래 장면을 나이별 SCENES_PER_AGE개씩 만든다.
+ * 3차 합성 실행 — 대화 기록 기반 분기 미래 장면을 나이별 BRANCH_SCENES_PER_AGE개씩 만든다.
  * 근거가 없으면(빈 대화·현재 나이 불명) 빈 객체를 반환한다 — 호출자가 재료 부족을 판단한다.
  */
 export async function synthesizeBranchedScenes(
@@ -806,12 +985,35 @@ export async function synthesizeBranchedScenes(
   profile,
   sessionPoints,
   transcriptTurns,
-  { attempts = 3 } = {}
+  { attempts = 3, trace = null } = {}
 ) {
   const ages = branchedAges(profile)
-  const prompt = buildBranchedExtrapolationPrompt(profile, sessionPoints, transcriptTurns, ages)
+  // 2단계(2026-08-05): ① 분기된 삶의 연대기를 먼저 쓰고 → ② 나이별 장면으로 분해한다.
+  let narrative = ''
+  const narrativePrompt = buildBranchedNarrativePrompt(
+    profile,
+    sessionPoints,
+    transcriptTurns,
+    ages
+  )
+  if (narrativePrompt) {
+    try {
+      narrative = String(await gclient.generateText({ prompt: narrativePrompt })).trim()
+    } catch (err) {
+      console.warn(`[life-graph-plan] 분기 연대기 합성 실패(장면 직행 폴백): ${err.message}`)
+    }
+  }
+  if (trace) trace.branchedNarrative = narrative || null
+  const prompt = buildBranchedExtrapolationPrompt(
+    profile,
+    sessionPoints,
+    transcriptTurns,
+    ages,
+    narrative
+  )
+  if (trace) trace.branchedScenePrompt = prompt || null
   if (!prompt) return {}
-  return runSynthesis(gclient, prompt, ages, attempts)
+  return runSynthesis(gclient, prompt, ages, attempts, BRANCH_SCENES_PER_AGE)
 }
 
 /**
@@ -836,14 +1038,14 @@ export function buildBranchedPlan(profile, branchedScenes = {}) {
       fallbackScenesForAge(
         age,
         `${profile.name}|${profile.birthDate}|branched|${age}`,
-        SCENES_PER_AGE
+        BRANCH_SCENES_PER_AGE
       )
-    if (!scenes || scenes.length !== SCENES_PER_AGE)
+    if (!scenes || scenes.length !== BRANCH_SCENES_PER_AGE)
       throw new Error(`분기 나이 ${age}의 장면 데이터가 없음 (합성 결과 누락 또는 폴백 실패)`)
     const isFinalAge = age === ages[ages.length - 1]
     scenes.forEach((scene, i) => {
       const sceneIndex = i + 1
-      const isFinal = isFinalAge && sceneIndex === SCENES_PER_AGE
+      const isFinal = isFinalAge && sceneIndex === BRANCH_SCENES_PER_AGE
       plan.push({
         stageIndex,
         sceneIndex,

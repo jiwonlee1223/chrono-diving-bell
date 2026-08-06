@@ -178,15 +178,18 @@ async function main() {
     bgMusic = next
   }
 
-  // spinup(입장 의례) 전용 원샷 — 실타래가 10초간 감겨 올라가는 동안 치는 천둥. 국면 길이와
-  // 파일 길이가 같아 loop 없이 1회 재생하고, 다른 국면으로 나가면 즉시 끊는다. 실패는 무음 진행.
+  // spinup(입장 의례) 전용 — 실타래가 감겨 올라가는 동안 치는 천둥. **크로스페이드 루프**:
+  // 한 바퀴가 끝나기 전에 다음 바퀴가 겹쳐 들어와 서로 페이드되며 이어진다 — 경계에서 소리가
+  // 뚝 끊기거나 점프하지 않는다(국면이 파일 길이보다 길어도 계속). stop()은 페이드아웃으로 저문다.
+  // 실패는 무음 진행.
   // bg-music과 같은 Web Audio 경로 — HTMLAudio는 자동재생 정책에 막히면 조용히 실패하지만,
   // 이 방식은 suspended여도 첫 클릭/키 입력에서 컨텍스트가 재개되며 소리가 붙는다.
   const spinupSfx = (() => {
+    const XFADE_SEC = 1.5 //     루프 경계의 크로스페이드 길이(각 바퀴의 머리·꼬리 페이드가 겹친다)
     const STOP_FADE_SEC = 1.2 // 국면 전환으로 끊길 때의 페이드아웃 — 배경음처럼 뚝 끊지 않는다
     let ctx = null
     let buffer = null // 디코드된 버퍼(1회 로드 후 재사용)
-    let source = null // 재생 중인 { src, gain }
+    let session = null // 재생 세션 { master, layers: [{src,gain}], timer }
     async function ensureLoaded() {
       if (buffer) return true
       try {
@@ -214,40 +217,78 @@ async function main() {
         window.addEventListener('pointerdown', resume, { once: true })
         window.addEventListener('keydown', resume, { once: true })
       }
-      const gain = ctx.createGain()
-      gain.connect(ctx.destination)
-      const src = ctx.createBufferSource()
-      src.buffer = buffer
-      src.connect(gain)
-      const offset = Math.min(Math.max(0, seekSec), buffer.duration) // 새로고침 재개 — 경과 시간만큼 건너뛴다
-      src.start(ctx.currentTime, offset)
-      const layer = { src, gain }
-      src.onended = () => {
-        if (source === layer) source = null
+      const master = ctx.createGain() // stop() 페이드아웃용 — 겹친 바퀴들을 한꺼번에 저물게 한다
+      master.connect(ctx.destination)
+      const mySession = { master, layers: [], timer: 0 }
+      session = mySession
+      const dur = buffer.duration
+      // 한 바퀴를 when부터 offset 지점에서 재생 — 머리·꼬리에 XFADE 페이드를 걸고,
+      // 꼬리 페이드가 시작되는 시각에 다음 바퀴를 겹쳐 예약한다(크로스페이드).
+      const scheduleCycle = (when, offset) => {
+        if (session !== mySession) return
+        const gain = ctx.createGain()
+        gain.connect(master)
+        const remain = dur - offset
+        const fade = Math.min(XFADE_SEC, remain / 2) // 짧은 잔여 구간에서도 머리·꼬리가 안 겹치게
+        gain.gain.setValueAtTime(0, when)
+        gain.gain.linearRampToValueAtTime(1, when + fade)
+        gain.gain.setValueAtTime(1, when + remain - fade)
+        gain.gain.linearRampToValueAtTime(0, when + remain)
+        const src = ctx.createBufferSource()
+        src.buffer = buffer
+        src.connect(gain)
+        src.start(when, offset)
+        const layer = { src, gain }
+        mySession.layers.push(layer)
+        src.onended = () => {
+          const i = mySession.layers.indexOf(layer)
+          if (i >= 0) mySession.layers.splice(i, 1)
+          try {
+            gain.disconnect()
+          } catch {
+            /* 무시 */
+          }
+        }
+        // 다음 바퀴 — 꼬리 페이드 시작 시각에 머리 페이드가 겹치도록. setTimeout은 예약만
+        // 트리거하고 실제 타이밍은 AudioContext 시계(when)가 정하므로 지터가 없다.
+        const nextWhen = when + remain - fade
+        mySession.timer = setTimeout(
+          () => scheduleCycle(nextWhen, 0),
+          Math.max(0, (nextWhen - ctx.currentTime - 0.5) * 1000)
+        )
+      }
+      const offset = Math.max(0, seekSec) % dur // 새로고침 재개 — loop 위상으로 사영
+      scheduleCycle(ctx.currentTime, offset)
+      console.log('[spinup-sfx] 천둥 크로스페이드 루프 시작' + (offset ? ` (offset ${offset.toFixed(1)}s)` : ''))
+    }
+    // 페이드아웃으로 멈춘다 — 국면 전환으로 끊길 때도 천둥이 뚝 끊기지 않는다.
+    function stop() {
+      if (!session) return
+      const { master, layers, timer } = session
+      session = null
+      clearTimeout(timer)
+      const now = ctx.currentTime
+      const g = master.gain
+      g.cancelScheduledValues(now)
+      g.setValueAtTime(g.value, now)
+      g.linearRampToValueAtTime(0, now + STOP_FADE_SEC)
+      for (const { src } of layers) {
         try {
-          gain.disconnect()
+          src.stop(now + STOP_FADE_SEC + 0.05)
         } catch {
           /* 무시 */
         }
       }
-      source = layer
-      console.log('[spinup-sfx] 천둥 재생 시작' + (offset ? ` (offset ${offset.toFixed(1)}s)` : ''))
-    }
-    // 페이드아웃으로 멈춘다 — 국면 전환으로 끊길 때도 천둥이 뚝 끊기지 않는다.
-    function stop() {
-      if (!source) return
-      const { src, gain } = source
-      source = null
-      const now = ctx.currentTime
-      const g = gain.gain
-      g.cancelScheduledValues(now)
-      g.setValueAtTime(g.value, now)
-      g.linearRampToValueAtTime(0, now + STOP_FADE_SEC)
-      try {
-        src.stop(now + STOP_FADE_SEC + 0.05)
-      } catch {
-        /* 무시 */
-      }
+      setTimeout(
+        () => {
+          try {
+            master.disconnect()
+          } catch {
+            /* 무시 */
+          }
+        },
+        (STOP_FADE_SEC + 0.2) * 1000
+      )
     }
     return { play, stop }
   })()
@@ -259,7 +300,7 @@ async function main() {
   // 장례식 국면의 앰비언스 — 조문객들의 낮은 웅성거림(resources/sfx/에 그대로 있는 파일명).
   // 장면 텍스트 매칭이 아니라 국면 자체가 정하는 소리라 sfx.play()로 직접 지정한다.
   const FUNERAL_SFX_SLUG = 'Crowd Talking'
-  const FUNERAL_SFX_GAIN = 0.2
+  const FUNERAL_SFX_GAIN = 0.4
   // 장례식 장면을 머무는 시간(ms). Wan 클립 자체는 ~5초라 이 시간까지 loop로 돈다.
   // 서버가 국면 payload로 실제 값을 내려주면 그걸 쓰고, 없으면 이 기본값.
   const FUNERAL_SCENE_MS = 15000
@@ -469,9 +510,11 @@ async function main() {
 
   // ---- 장례식 영상(주마등 앞) — 고인 시선의 장례식장 파노라마 클립을 등속 재생 ----
   // 장면 길이는 sceneMs(기본 15초)로 잡는다. Wan 클립 자체는 ~5초라 그 길이에 닿을 때까지
-  // loop로 돌린다(향·촛불·조문객의 미세한 움직임뿐이라 이음매가 거의 보이지 않는다).
-  // 잘린 프레임에서 끊기지 않도록, 목표 시간에 가장 가까운 **정수 바퀴** 지점에서 끝낸다
-  // (5.06초 클립이면 3바퀴 = 15.2초). 그 지점에서 TV가 꺼지듯 암전시키고 서버에 알린다
+  // **핑퐁 루프**(정→역→정…)로 돌린다 — 처음으로 점프하는 일반 loop와 달리 방향만 뒤집혀
+  // 이음매가 아예 없다. Chromium은 음수 playbackRate를 지원하지 않아, 역방향 구간은 rAF로
+  // currentTime을 직접 되감는다(클립이 짧고 preload='auto'라 역방향 시킹도 부드럽다).
+  // 잘린 프레임에서 끊기지 않도록, 목표 시간에 가장 가까운 **정수 반주기**(편도 재생) 지점,
+  // 즉 클립의 처음 또는 끝 프레임에서 끝낸다. 그 지점에서 TV가 꺼지듯 암전시키고 서버에 알린다
   // → 서버가 주마등(역순) 국면을 방송한다.
   // 로드 실패·재생 실패로 canplaythrough가 영영 안 오는 경우를 대비해 상한 타이머를 함께 건다
   // (서버에도 폴백이 있지만, 여기서 끝내야 TV 암전 연출까지 정상적으로 들어간다).
@@ -483,10 +526,12 @@ async function main() {
   ) {
     let settled = false
     let resolveDone
+    let pingpongRaf = 0
     const done = new Promise((r) => (resolveDone = r))
     const finish = async () => {
       if (settled) return done
       settled = true
+      cancelAnimationFrame(pingpongRaf)
       await tvOff({ totalMs: blackoutMs })
       teardownVideo()
       if (convo) convoVideoActive = false
@@ -500,7 +545,7 @@ async function main() {
     if (!url || !montageMaterial) return finish()
     videoEl = document.createElement('video')
     videoEl.muted = true
-    videoEl.loop = true // 클립(~5초)이 짧아 sceneMs에 닿을 때까지 돈다
+    videoEl.loop = false // 핑퐁 루프 — ended 시 역방향 되감기로 전환(아래 startPingpong)
     videoEl.playsInline = true
     videoEl.preload = 'auto'
     videoEl.crossOrigin = 'anonymous'
@@ -516,16 +561,61 @@ async function main() {
         setMontageVideo(montageMaterial, videoTexture)
         videoMix.v = videoMix.from = videoMix.to = 1
         const durSec = isFinite(el.duration) && el.duration > 0 ? el.duration : 0
-        // 목표 시간에 가장 가까운 정수 바퀴로 장면 길이를 확정한다 — 이음매에서 끝나므로
-        // 마지막 바퀴가 중간에 잘리지 않는다. 길이를 못 읽으면 sceneMs를 그대로 쓴다.
-        const cycles = durSec ? Math.max(1, Math.round(sceneMs / 1000 / durSec)) : 0
-        const totalMs = cycles ? cycles * durSec * 1000 : sceneMs
-        // 새로고침 재개 — 이미 지난 만큼은 건너뛰고 남은 시간만 튼다(등속이라 경과=재생 위치).
-        if (seekSec > 0 && durSec) el.currentTime = (seekSec % durSec) + 0
+        // 서버가 pingpong 변환본(<이름>.pp.mp4 — 정→역이 한 파일에 이어 붙음)을 준 경우:
+        // 네이티브 loop만으로 이음매 없는 왕복이 된다. rAF 역방향 시킹(끊길 수 있음)은 원본
+        // 폴백일 때만 쓴다.
+        const isPP = /\.pp\.mp4(\?|$)/i.test(el.currentSrc || el.src)
+        // 목표 시간에 가장 가까운 정수 **반주기**(편도)로 장면 길이를 확정한다 — 핑퐁의
+        // 반환점(처음/끝 프레임)에서 끝나므로 움직임이 중간에 잘리지 않는다.
+        // (pp 변환본은 파일 한 바퀴가 왕복 한 사이클이라 정수 사이클로 잡는다.)
+        // 길이를 못 읽으면 sceneMs를 그대로 쓴다.
+        const halves = durSec ? Math.max(1, Math.round(sceneMs / 1000 / durSec)) : 0
+        const totalMs = halves ? halves * durSec * 1000 : sceneMs
+        let reversing = false
+        if (isPP) {
+          el.loop = true
+          // 새로고침 재개 — 파일 자체가 왕복이라 경과 시간을 그냥 사영한다.
+          if (seekSec > 0 && durSec) el.currentTime = seekSec % durSec
+        } else {
+          // 핑퐁 드라이버 — 정방향은 네이티브 재생, 끝에 닿으면 rAF로 currentTime을 되감고,
+          // 처음에 닿으면 다시 정방향 재생으로 복귀한다.
+          const startReverse = () => {
+            reversing = true
+            el.pause()
+            let lastMs = performance.now()
+            const step = (nowMs) => {
+              if (settled || videoEl !== el) return
+              const dt = (nowMs - lastMs) / 1000
+              lastMs = nowMs
+              const t = el.currentTime - dt
+              if (t <= 0) {
+                el.currentTime = 0
+                reversing = false
+                el.play().catch(finish)
+                return
+              }
+              el.currentTime = t
+              pingpongRaf = requestAnimationFrame(step)
+            }
+            pingpongRaf = requestAnimationFrame(step)
+          }
+          el.addEventListener('ended', () => {
+            if (!settled && !reversing) startReverse()
+          })
+          // 새로고침 재개 — 경과 시간을 핑퐁 삼각파에 사영해 위치·방향을 복원한다.
+          if (seekSec > 0 && durSec) {
+            const p = seekSec % (2 * durSec)
+            if (p <= durSec) el.currentTime = p
+            else {
+              el.currentTime = 2 * durSec - p
+              startReverse()
+            }
+          }
+        }
         const remainMs = Math.max(500, totalMs - Math.max(0, seekSec) * 1000)
         clearTimeout(guard)
         guard = setTimeout(finish, remainMs)
-        el.play().catch(finish)
+        if (!reversing) el.play().catch(finish)
       },
       { once: true }
     )
@@ -589,6 +679,29 @@ async function main() {
       const capSec = (payload.secPerTurn || 24) * (payload.photos.length + 2)
       setTimeout(finish, capSec * 1000)
     })
+  }
+
+  // 2차 체험 입장 의례의 릴 분기(지지직) — 데모 reel 국면(filmstrip)에서 payload.forkFrom(1차의
+  // 미래 릴)이 오면: 그 릴이 잠시 흐르다 빠른 명멸과 함께 끊기고, 그 검정 밑에서 분기 릴(payload.photos)로
+  // 갈아끼운다 — "새로운 미래의 갈래가 생성되었다". 이후는 평소 필름스트립과 동일(1사이클 완료 시
+  // reel-done → ghost 국면). 국면이 도중에 바뀌면(run 토큰 불일치) 조용히 중단한다.
+  let reelForkRun = 0
+  async function runReelFork(payload) {
+    const run = ++reelForkRun
+    startFilmstrip({ ...payload, photos: payload.forkFrom, holdLastSec: 0, elapsedMs: 0 })
+    // 기존 릴은 반 사이클쯤만 — 이미 본 미래다. 다 돌기를 기다리지 않는다.
+    const glitchAfterSec = Math.min(12, (payload.secPerTurn || 24) * 0.5)
+    await new Promise((r) => setTimeout(r, glitchAfterSec * 1000))
+    if (run !== reelForkRun || demoPhase !== 'reel') return
+    // 지지직 — 검정과 릴을 빠르게 명멸시키는 스트로브. 마지막은 검정으로 닫고 그 밑에서 갈아끼운다.
+    for (let i = 0; i < 5; i++) {
+      await veil.cover(0.05)
+      await veil.uncover(0.05)
+    }
+    if (run !== reelForkRun || demoPhase !== 'reel') return
+    await veil.cover(0.08)
+    startFilmstrip({ ...payload, elapsedMs: 0 }) // 분기 릴 — 기본 경로(1사이클 후 reel-done)
+    veil.uncover(0.9)
   }
 
   // 유령 대화 영상 하나를 원본 속도로 loop 재생(ghost 대화 client tool이 호출). Promise 반환 —
@@ -677,6 +790,8 @@ async function main() {
   // 실타래가 반대 방향으로 가속한다(감겨 올라가던 모션의 역재생). 정점에서 어둠으로 저물고,
   // 베일은 걷지 않는다 — 1차 체험 전체가 여기서 닫힌다(다음 세션은 admin이 다시 연다).
   async function playFinaleOutro({ ms = 10000, mul = 10 } = {}) {
+    // 물리 돔: 피날레 안무 — 역감기 모션과 함께 'f' 7초 후 정지(서버가 안무 송신, best-effort).
+    fetch('/api/dome-finale', { method: 'POST' }).catch(() => {})
     ghost.hide() // 종결 발화가 끝났다 — 유령은 먼저 떠난다(닫힘 연출엔 실타래만 남는다)
     await clearConversationVideo() // 마지막 장면이 저물고 실타래 idle이 떠오른다
     spinupSfx.play()
@@ -691,7 +806,7 @@ async function main() {
   // 다음 이미지로 크로스페이드). uYaw 합성(설치 캘리브레이션 + 회전)은 frame()이 한다(cal이 그때
   // 정의돼 있어 TDZ 회피). 크로스페이드는 uTexVideo 슬롯을 다음 이미지로 재사용해 uVideoMix로 섞는다.
   let rotate = null // { indices, secPerTurn, crossSec, startMs, idx, shownIdx, xfadeStartMs } | null
-  let rotateSpeedMul = 1 // [debug] reel 회전(surround) 속도 배수. q/w로 실시간 조절. 1 = montage.json rotateSecPerTurn 기준.
+  let rotateSpeedMul = 1 / 1.25 ** 2 // reel 회전(surround) 속도 배수. q 2회 상당(×0.64)을 기본값으로 고정. q/w로 실시간 조절 가능(1 = montage.json rotateSecPerTurn 기준).
   // [debug] 회전 속도를 factor배 하되 startMs를 재기준해 위상 점프 없이 바꾼다.
   //  현재 실효 secPerTurn(= rotateSecPerTurn / 배수)을 콘솔에 찍어 montage.json에 옮겨 적을 수 있게 한다.
   function nudgeRotateSpeed(factor) {
@@ -903,21 +1018,21 @@ async function main() {
     )
   }
 
-  // ── 필름스트립 한 장씩 등장(2026-08-04) ──────────────────────────────────
-  // 스트립은 빈 필름으로 시작하고, 각 장은 자기 중심이 정면(방위 0)에 오기 APPEAR_LEAD_TURNS
-  // 바퀴 앞서 페이드인한다 — 주마등이 역순(현재→탄생)이므로 사진도 역순으로 하나씩 나타난다.
-  // 새로고침 재개(elapsed 큰 turns)면 이미 지난 장들이 첫 프레임에 일괄 페이드인해 따라잡는다.
-  const APPEAR_LEAD_TURNS = 0.22
-  const APPEAR_FADE_SEC = 1.2
+  // ── 필름스트립 휘리릭 순차 등장(2026-08-05) ──────────────────────────────
+  // 스트립은 빈 필름으로 시작하고, 시작과 함께 사진들이 스트립 순서대로 짧은 시차를 두고
+  // 빠르게 연달아 페이드인한다(역순 주마등이면 사진도 역순으로 휘리릭). 스크롤 위상과 무관한
+  // 시간 기반이라, 12장 기준 약 12×STAGGER초 만에 릴 전체가 채워진 뒤 평소처럼 흘러간다.
+  // 새로고침 재개(startMs가 과거)면 지난 장들이 첫 프레임에 일괄 페이드인해 따라잡는다.
+  const APPEAR_STAGGER_SEC = 0.18 // 장과 장 사이 등장 시차 — 키우면 차분해지고 줄이면 더 촤르륵
+  const APPEAR_FADE_SEC = 0.45 //   한 장의 페이드인 길이(짧게 — 휘리릭의 체감 속도)
   function updateFilmstripReveal(fs, turns, nowMs) {
     const s = fs.strip
     if (!s?.frames?.length) return
     let dirty = false
-    for (const f of s.frames) {
+    for (let i = 0; i < s.frames.length; i++) {
+      const f = s.frames[i]
       if (f.done) continue
-      // mod 없이 원시값 — cal.yaw로 음수가 돼도 max(0)으로 즉시 등장(첫 장 현재 사진).
-      const appearAt = Math.max(0, f.centerFrac * fs.stripTurns - cal.yaw - APPEAR_LEAD_TURNS)
-      if (turns < appearAt) continue
+      if (nowMs < fs.startMs + i * APPEAR_STAGGER_SEC * 1000) continue
       if (!f.fadeStartMs) f.fadeStartMs = nowMs
       const a = Math.min(1, (nowMs - f.fadeStartMs) / 1000 / APPEAR_FADE_SEC)
       // 프레임 영역을 베이스로 되돌린 뒤 알파로 다시 그린다 — 누적 없는 정확한 페이드인.
@@ -1004,7 +1119,8 @@ async function main() {
     convoVideoActive = false // 국면 전환 시 대화 영상 재생 해제(ghost 대화 tool이 다시 켠다)
     sfx.stop() // 앰비언스는 대화 영상에만 속한다 — 국면이 바뀌면 함께 걷는다
     spinupSfx.stop() // 천둥은 spinup에만 속한다 — 국면이 바뀌면 끊는다(spinup 진입 시 다시 튼다)
-    switchBgMusic(pastMusic) // 국면 방송은 1차(과거) 플로우 — 배경음을 수중 백색소음으로 복귀
+    // 배경음은 체험 차수를 따른다 — 1차(과거)=수중, 2차(분기 미래)=우주 백색소음.
+    switchBgMusic(payload?.experience === 'second' ? futureMusic : pastMusic)
     const dur = (s) => (immediate ? 0.001 : s)
     if (phase === 'spinup') {
       demoPhase = 'spinup'
@@ -1016,7 +1132,7 @@ async function main() {
       teardownVideo()
       tweenTo(videoMix, 0, dur(0.2))
       tweenTo(blur, 0, dur(0.2))
-      spinupSfx.play(elapsedSec) // 감겨 올라가는 10초 동안 천둥(thunder_10s.m4a) 1회
+      spinupSfx.play(elapsedSec) // 감겨 올라가는 동안 천둥(thunder_10s.m4a) — 페이드인 후 loop
       const total = (payload?.spinupMs ?? 10000) / 1000
       threadSpeedMul.v = 1 + (SPINUP_MAX - 1) * Math.min(1, elapsedSec / total) // 재개 시 진행률 반영
       tweenTo(threadSpeedMul, SPINUP_MAX, Math.max(0.3, total - elapsedSec))
@@ -1039,7 +1155,7 @@ async function main() {
       })
     } else if (phase === 'grave') {
       // 장지(안식처) — 장례식 다음, 묻힌 곳의 파노라마 영상(1차 전용). 재생 문법은 장례식과
-      // 동일(등속·loop·정수 바퀴·TV 암전)하고, 완료 신호만 grave-done으로 보낸다.
+      // 동일(등속·핑퐁 루프·정수 반주기·TV 암전)하고, 완료 신호만 grave-done으로 보낸다.
       demoPhase = 'grave'
       rotate = null
       stopFilmstrip()
@@ -1060,7 +1176,10 @@ async function main() {
       bgMusic.start() // 주마등(reel)에도 같은 배경음(수중 백색소음)을 깐다
       if (payload?.mode === 'filmstrip') {
         rotate = null
-        startFilmstrip(payload) // reel 전용 3:4 사진 스트립을 필름처럼 연속 스크롤
+        // 2차 체험 릴 분기(지지직): 새 시작이고 forkFrom(1차 미래 릴)이 오면 분기 연출을 거친다.
+        // 재개(elapsed 큼)면 분기 연출은 이미 지났다 — 곧장 분기 릴로.
+        if (payload?.forkFrom?.length && elapsedSec < 1) runReelFork(payload)
+        else startFilmstrip(payload) // reel 전용 3:4 사진 스트립을 필름처럼 연속 스크롤
       } else if (payload?.mode === 'rotate') {
         stopFilmstrip()
         startRotate(payload) // Gemini 파노라마 이미지를 천천히 회전시키며 순회
@@ -1191,7 +1310,10 @@ async function main() {
       ghost.setGlow?.(on ? 1 : 0)
       bgMusic.setAgentSpeaking(on) // 유령 발화 중 배경음악 level 3.
     },
-    onListening: (on) => bgMusic.setUserListening(on), // 사용자 청취 중 배경음악 level 5.
+    onListening: (on) => {
+      ghost.setFrozen?.(on) // 듣는 동안 유령이 그 자리에 멎는다(귀 기울이는 몸짓).
+      bgMusic.setUserListening(on) // 사용자 청취 중 배경음악 level 5.
+    },
     getPan: () => ghost.getPan?.() ?? 0, // 유령 위치 따라 목소리를 좌우로(입체감).
     // 대화 tool이 영상을 원본 속도로 loop 재생(첫 바퀴 뒤 resolve). 과거 회귀는 fadeIn 옵션으로 떠오른다.
     playVideo: (url, opts) => playConversationVideo(url, opts),
@@ -1498,6 +1620,75 @@ async function main() {
   }
   const VOL_STEP = 1.5 // 키 한 번당 음량 배율(약 3.5dB — 귀로 확실히 구별되는 크기)
 
+  // ---- 돔 비상 정지 (희미한 트리거) -------------------------------------
+  // 좌하단 구석의 희미한 ■ 버튼(평소 거의 안 보임, 호버 시 또렷) 더블클릭, 또는 ESC 키.
+  // 서버가 물리 돔(ESP32) 안무를 끊고 즉시 정지 명령을 보낸다. 체험 흐름은 계속된다.
+  function domeEmergencyStop() {
+    fetch('/api/dome-stop', { method: 'POST' }).catch(() => {})
+    console.warn('[dome] 비상 정지 전송')
+    // 발동 피드백 — 버튼이 잠깐 붉게 밝아졌다 가라앉는다.
+    domeStopBtn.style.opacity = '0.9'
+    domeStopBtn.style.color = '#c0392b'
+    setTimeout(() => {
+      domeStopBtn.style.opacity = ''
+      domeStopBtn.style.color = ''
+    }, 1200)
+  }
+  const domeStopBtn = document.createElement('div')
+  domeStopBtn.textContent = '■'
+  domeStopBtn.title = '돔 비상 정지 (더블클릭 / ESC)'
+  domeStopBtn.style.cssText =
+    'position:fixed;left:0;bottom:0;width:64px;height:64px;z-index:9999;' +
+    'display:flex;align-items:center;justify-content:center;' +
+    'color:#888;font-size:20px;opacity:0.12;cursor:default;user-select:none;' +
+    'transition:opacity .25s,color .25s'
+  domeStopBtn.addEventListener('mouseenter', () => (domeStopBtn.style.opacity = '0.6'))
+  domeStopBtn.addEventListener('mouseleave', () => (domeStopBtn.style.opacity = ''))
+  domeStopBtn.addEventListener('dblclick', domeEmergencyStop)
+  document.body.appendChild(domeStopBtn)
+
+  // ---- 돔 수동 제어 바 (하단 중앙, 희미) ---------------------------------
+  // ◀=되감기(b) · ■=정지(s) · ▶=감기(f). 클릭 즉시 송신 — 진행 중 안무는 서버가 끊는다.
+  let domeLastCmdAt = null // 직전 수동 명령 시각 — 시연 타이밍을 콘솔에 찍는다(안무 이식용)
+  function domeManualCmd(c, btn) {
+    fetch('/api/dome-cmd', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ c })
+    }).catch(() => {})
+    const now = performance.now()
+    // 직전 명령이 이만큼 지속됐다는 뜻 — steps의 ms로 그대로 옮기면 된다.
+    console.log(
+      `[dome] '${c}'${domeLastCmdAt !== null ? `  (직전 명령 지속 ${Math.round(now - domeLastCmdAt)}ms)` : '  (시연 시작)'}`
+    )
+    domeLastCmdAt = now
+    btn.style.color = '#1d9e75' // 눌림 피드백
+    setTimeout(() => (btn.style.color = ''), 400)
+  }
+  const domeBar = document.createElement('div')
+  domeBar.style.cssText =
+    'position:fixed;left:50%;bottom:0;transform:translateX(-50%);z-index:9999;' +
+    'display:flex;gap:6px;padding:8px 14px;opacity:0.12;transition:opacity .25s;user-select:none'
+  domeBar.addEventListener('mouseenter', () => (domeBar.style.opacity = '0.7'))
+  domeBar.addEventListener('mouseleave', () => (domeBar.style.opacity = '0.12'))
+  for (const [label, c, tip] of [
+    ['◀', 'b', '돔 되감기 (b)'],
+    ['■', 's', '돔 정지 (s)'],
+    ['▶', 'f', '돔 감기 (f)'],
+    ['⌂', 'h', 'main mode 복귀 (h)']
+  ]) {
+    const btn = document.createElement('div')
+    btn.textContent = label
+    btn.title = tip
+    btn.style.cssText =
+      'width:44px;height:44px;display:flex;align-items:center;justify-content:center;' +
+      'color:#888;font-size:18px;cursor:pointer;border:1px solid #555;border-radius:8px;' +
+      'transition:color .2s'
+    btn.addEventListener('click', () => domeManualCmd(c, btn))
+    domeBar.appendChild(btn)
+  }
+  document.body.appendChild(domeBar)
+
   // ---- 입력 (§8) : Electron main의 before-input-event를 페이지 keydown으로 이관 ----
   //  Enter → 멈춤/진입/재개 (server 상태 기계가 상태별 의미 결정)
   //  V     → 뷰 토글(파노라마 ↔ 실린더)
@@ -1515,7 +1706,11 @@ async function main() {
     // 물리 키 매칭 — e.code(레이아웃 무관) 우선, 한글 IME가 code 없이 자모(e.key='ㅁ' 등)만
     // 줄 때를 대비해 key 값(영문 대소문자 + 두벌식 자모)도 함께 본다.
     const isKey = (code, ...keys) => e.code === code || keys.includes(e.key)
-    if (e.key === 'Enter') {
+    if (e.key === 'Escape') {
+      // 돔 비상 정지(숨은 트리거) — 물리 돔 안무 중단 + 즉시 정지. 체험 흐름은 계속된다.
+      e.preventDefault()
+      domeEmergencyStop()
+    } else if (e.key === 'Enter') {
       e.preventDefault()
       window.zoetrope.sendInput?.('stopEnter')
     } else if (isKey('KeyV', 'v', 'V', 'ㅍ')) {

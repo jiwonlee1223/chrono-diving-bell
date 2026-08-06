@@ -119,10 +119,16 @@ export function createGhost({ getStrip, zIndex = 31 } = {}) {
   layer.appendChild(el)
   document.body.appendChild(layer)
 
-  const t0 = performance.now()
   let facing = 1 // +1: 오른쪽 향함, -1: 왼쪽. 이동 방향으로 부드럽게 수렴.
   let prevCx = null
   let raf = 0
+  // 정지(경청) — 사용자의 말을 듣는 동안 배회·바운스가 멈춘다(귀 기울이는 몸짓).
+  // 모든 움직임이 시간 t의 함수이므로, t 자체의 흐름 속도를 0으로 램프해 그 자리에서
+  // 부드럽게 멎게 한다(위치 점프 없음). 해제되면 같은 자리에서 다시 흘러간다.
+  let motionT = 0 //     움직임 전용 시계(초) — freeze 동안 흐름이 멎는다.
+  let prevNow = null
+  let speed = 1 //       시계 배속 0(정지)~1(평소). 매 프레임 speedTarget으로 수렴.
+  let speedTarget = 1
   let pan = 0 // 유령의 좌우 위치 -1(왼쪽)~+1(오른쪽) — 목소리 스테레오 패닝에 쓴다(매 프레임 갱신).
 
   // 가시성 램프 — 기본 숨김. show()/hide()로 ~2.5s 부드럽게 나타나고 사라진다.
@@ -153,7 +159,12 @@ export function createGhost({ getStrip, zIndex = 31 } = {}) {
   }
 
   function tick(now) {
-    const t = (now - t0) / 1000
+    if (prevNow === null) prevNow = now
+    const dt = Math.min(0.1, (now - prevNow) / 1000) // 탭 복귀 등 큰 프레임 갭은 잘라낸다
+    prevNow = now
+    speed += (speedTarget - speed) * 0.06 // 정지/재개 모두 부드럽게
+    motionT += dt * speed
+    const t = motionT
     const strip = (getStrip && getStrip()) || fallbackStrip()
     if (!strip.w || !strip.h) {
       raf = requestAnimationFrame(tick)
@@ -212,6 +223,9 @@ export function createGhost({ getStrip, zIndex = 31 } = {}) {
     setGlow: (level) => {
       glowTarget = Math.max(0, Math.min(1, level || 0))
     }, // 음성 speaking 상태 → 발광 부스트(유령이 말하는 걸 시각으로).
+    setFrozen: (on) => {
+      speedTarget = on ? 0 : 1
+    }, // 사용자 발화 청취 중 true → 그 자리에서 부드럽게 멎는다(귀 기울이는 몸짓).
     getPan: () => pan, // 유령의 현재 좌우 위치 -1~+1 — 목소리(TTS) 스테레오 패닝용.
     dispose() {
       cancelAnimationFrame(raf)

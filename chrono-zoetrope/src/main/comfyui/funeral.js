@@ -352,12 +352,16 @@ export function collectFuneralWishes(doc = {}) {
 export async function synthesizeFuneralCast(
   gclient,
   doc,
-  { age = null, variant = 'present', signal, log = () => {} } = {}
+  { age = null, variant = 'present', branchNarrative = null, signal, log = () => {} } = {}
 ) {
   const v = normalizeVariant(variant)
-  const texts = collectFuneralSourceTexts(doc, v)
+  // 분기(3차) 장례식 + 연대기: 노년의 근거는 [future] 점(운명 미래)이 아니라 **분기 연대기**다 —
+  // 운명 미래 텍스트로 조문객을 뽑으면 미래 장례식과 같은 그림이 된다. 과거 점만 남기고
+  // 연대기를 1순위 재료로 얹는다. 연대기가 없으면(구세대 데이터) 종전 동작(미래판과 동일).
+  const useNarrative = v === 'branched' && String(branchNarrative || '').trim()
+  const texts = collectFuneralSourceTexts(doc, useNarrative ? 'present' : v)
   const wishes = collectFuneralWishes(doc)
-  if (texts.length === 0 && !wishes) return null
+  if (texts.length === 0 && !wishes && !useNarrative) return null
   // 나이 지시를 명단 단계에 넣는다 — "노모"·"은퇴한 동료"처럼 나이가 관계에 박혀 있어서,
   // 이미지 프롬프트에서 나중에 나이만 보정하려 해도 관계 자체가 이미 어긋나 있다.
   const ageLine = !age
@@ -385,8 +389,11 @@ export async function synthesizeFuneralCast(
         ` (translated or in Korean; treat Korean text as-is):`
   const timeFrame =
     v !== 'present'
-      ? `\n\nThis person did NOT die now — they went on living the life described above, including the [future]` +
-        ` entries, and died of old age at ${FUTURE_DEATH_AGE}. We are composing the scene of their Korean funeral` +
+      ? `\n\nThis person did NOT die now — they went on living${
+          useNarrative
+            ? ` a DIVERGED later life, described in the chronicle below (an immersive experience shifted their outlook and they made different choices)`
+            : ` the life described above, including the [future] entries`
+        }, and died of old age at ${FUTURE_DEATH_AGE}. We are composing the scene of their Korean funeral` +
         ` (장례식장) many decades from now, seen from the deceased's own viewpoint standing at the center of the` +
         ` hall — their memorial portrait and altar in front of them, the mourners behind them.` +
         ` Everyone who is still there has aged along with them: friends and colleagues from the notes are now` +
@@ -422,13 +429,19 @@ export async function synthesizeFuneralCast(
       ` composing the mourners (use them as grounding material, not as emotions to narrate):\n` +
       wishLines.join('\n')
     : ''
+  // 분기 연대기 블록 — 노년 관계(자녀·이웃·새 일로 만난 사람들)의 1순위 근거.
+  const narrativeBlock = useNarrative
+    ? `\n\nTHE DIVERGED LIFE CHRONICLE (what actually happened after the present day — your PRIMARY source` +
+      ` for later-life relationships and circumstances):\n${String(branchNarrative).trim()}`
+    : ''
   const prompt =
     intro +
     (texts.length ? `\n\n` + texts.map((t, i) => `[${i + 1}] ${t}`).join('\n') : `\n\n(no notes)`) +
+    narrativeBlock +
     wishBlock +
     timeFrame +
-    ` From the notes above, infer 4 to 6 mourners who would realistically attend — ONLY people or kinds of people` +
-    ` actually implied by the notes (family members, old friends, colleagues, students, teammates, neighbors...).` +
+    ` From the ${useNarrative ? 'notes and the diverged chronicle' : 'notes'} above, infer 4 to 6 mourners who would realistically attend — ONLY people or kinds of people` +
+    ` actually implied by ${useNarrative ? 'them' : 'the notes'} (family members, old friends, colleagues, students, teammates, neighbors...).` +
     ` Do not invent relationships the notes give no basis for. Do not use real personal names; describe each` +
     ` mourner by relationship and appearance.` +
     ageLine +
@@ -807,6 +820,14 @@ async function readManifest(personaDir) {
   return JSON.parse(await fs.readFile(path.join(personaDir, 'manifest.json'), 'utf-8'))
 }
 async function writeManifest(personaDir, manifest, onManifest) {
+  // read-merge-write(2026-08-05): 이 잡이 도는 동안 다른 잡이 디스크에 더한 키(grave 등)를
+  // 지우지 않게, 디스크에만 있는 키를 흡수한 뒤 쓴다(이 잡이 쥔 키는 in-memory가 이긴다).
+  try {
+    const disk = JSON.parse(await fs.readFile(path.join(personaDir, 'manifest.json'), 'utf-8'))
+    for (const k of Object.keys(disk)) if (!(k in manifest)) manifest[k] = disk[k]
+  } catch {
+    /* 디스크 판 없음/깨짐 — in-memory 그대로 */
+  }
   await fs.writeFile(path.join(personaDir, 'manifest.json'), JSON.stringify(manifest, null, 2))
   if (onManifest) await onManifest(manifest)
 }
@@ -841,6 +862,7 @@ export async function runFuneralWorkflow({
   stage = 'image',
   variant = 'present',
   doc = null,
+  branchNarrative = null, // 분기(3차) 장례식: 대화 기반 분기 연대기 — 조문객 캐스트의 노년 근거
   faceRef = null,
   force = false,
   signal,
@@ -934,7 +956,13 @@ export async function runFuneralWorkflow({
         const age = resolveDeceasedAge(profile, vkind)
         if (f.cast === undefined || f.cast === null) {
           f.cast = doc
-            ? await synthesizeFuneralCast(gclient, doc, { age, variant: vkind, signal, log })
+            ? await synthesizeFuneralCast(gclient, doc, {
+                age,
+                variant: vkind,
+                branchNarrative,
+                signal,
+                log
+              })
             : null
           hist.cast = f.cast
           await writeManifest(personaDir, manifest, onManifest)

@@ -50,12 +50,13 @@ import {
   fetchProfileDoc,
   fetchRuntimeSession,
   listenRuntimeSession,
-  upsertGhostTranscript
+  upsertGhostTranscript,
+  fetchExtrapolationRecord
 } from '../src/main/comfyui/firestore-source.js'
 import { GeminiClient, resolveGeminiApiKey } from '../src/main/comfyui/gemini-client.js'
 import { ensurePingpongClip, pingpongPathFor } from '../src/main/comfyui/pingpong.js'
 import { AGES, resolveAgePoint } from '../src/main/comfyui/life-graph-plan.js'
-import { initDome, domeCmd } from './dome-serial.mjs'
+import { initDome, domeCue } from './dome-serial.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -84,7 +85,10 @@ let calibration = await readCalibration(libraryRoot)
 
 // 돔(ESP32 스테퍼) 시리얼 — 국면 전환마다 dome.cues 매핑대로 한 글자 명령을 보낸다(best-effort).
 // 포트는 montage.json dome.port(예: "COM6"), --dome COM6 인자로 덮어쓸 수 있다.
+// 국면→돔 안무 매핑. cues=1차 체험, cuesSecond=2차 체험 오버라이드(없는 국면 키는 1차 것 사용).
 const DOME_CUES = montageConfig.dome?.cues ?? {}
+const DOME_CUES_SECOND = { ...DOME_CUES, ...(montageConfig.dome?.cuesSecond ?? {}) }
+let domeManualLog = [] // 수동 제어(◀■▶) 타이밍 기록 — /api/dome-record가 안무 초안으로 변환
 initDome({
   path: argOf('--dome', montageConfig.dome?.port),
   baudRate: montageConfig.dome?.baudRate ?? 115200
@@ -119,7 +123,10 @@ const sseClients = new Set() // 각 원소 = http.ServerResponse (열린 SSE 스
 
 function broadcast(channel, payload) {
   // 돔 큐: 1차 흐름 국면(idle/spinup/funeral/reel/ghost)이 바뀔 때 매핑된 명령을 ESP32로.
-  if (channel === Channels.REEL_DEMO && DOME_CUES[payload?.phase]) domeCmd(DOME_CUES[payload.phase])
+  if (channel === Channels.REEL_DEMO && payload?.phase) {
+    const cues = currentExperience === 'second' ? DOME_CUES_SECOND : DOME_CUES
+    domeCue(cues[payload.phase])
+  }
   const frame = `data: ${JSON.stringify({ channel, payload })}\n\n`
   for (const res of sseClients) {
     try {
@@ -156,6 +163,23 @@ let reelBranchedPlaylist = []
 // admin 세션 지정 버튼이 _session.json의 experience 필드로 내려준다. 유령 대화는 두 체험이 동일.
 let currentExperience = 'first'
 let currentProfile = null // 현재 페르소나의 profile({name,birthDate,id?}) — Firebase 문서 키 계산용.
+// 부정미래(2차 운명 외삽) 연대기 캐시 — extrapolationRecords(kind 'future')의 narrative.
+// 유령이 미래 장면(2장)을 보여줄 때 화면 밖 사정(미뤄진 계획·어긋난 지점)을 대화로 흘리는 재료.
+// 페르소나당 한 번만 읽는다(대화 턴마다 buildGhostContext가 돌기 때문). Firestore에서 이 문서의
+// narrative 텍스트를 손보면 이미지 재생성 없이 그 사람의 대화 톤(부정성 수위)만 바뀐다.
+let futureNarrativeCache = { pid: null, text: null }
+async function futureNarrativeFor(pid) {
+  if (!firebaseReady || !currentProfile || !pid) return null
+  if (futureNarrativeCache.pid === pid) return futureNarrativeCache.text
+  let text = null
+  try {
+    text = (await fetchExtrapolationRecord(currentProfile, 'future'))?.narrative || null
+  } catch {
+    /* 없거나 실패해도 대화는 그대로 진행 — 장면 카탈로그만으로 동작한다 */
+  }
+  futureNarrativeCache = { pid, text }
+  return text
+}
 
 // 페르소나 하나를 (재)로드: 라이브러리 + 영상 캐시 + 상태 기계를 새로 만든다.
 // personaId=null 이면 library-loader가 가장 최근 것을 자동 선택. 실패 시 이전 상태를 유지.
@@ -304,6 +328,8 @@ function toggleDevPreview() {
 // 런타임 페이지를 새로고침하면 클라이언트가 현재 국면(진행 중인 reel 위치까지)을 이어받는다.
 // 타이머는 서버에 있으므로 클라이언트가 없거나 새로고침돼도 진행이 계속된다. 중단은 leaveSession(admin)만.
 const DEMO_SPINUP_MS = montageConfig.demo?.spinupMs ?? 10000
+// 1차 체험 개막만 spinup을 2배로(2026-08-05) — 2차 개막(runReelDemo의 second)·유령 2장 브리지는 spinupMs 유지.
+const DEMO_SPINUP_FIRST_MS = montageConfig.demo?.spinupFirstMs ?? DEMO_SPINUP_MS * 2
 const DEMO_PLAYBACK_RATE = montageConfig.demo?.reelPlaybackRate ?? 3
 // reel 국면 형태: 'rotate'=Gemini 파노라마 이미지를 천천히 회전(바퀴당 secPerTurn, 한 바퀴마다 다음 이미지 크로스페이드)
 //                'video'=사전 합성 reel.mp4를 배속 재생. 기본 rotate.
@@ -395,15 +421,17 @@ const DEMO_GRAVE_BLACKOUT_MS = montageConfig.demo?.graveBlackoutMs ?? DEMO_FUNER
 const DEMO_GRAVE_SCENE_MS = montageConfig.demo?.graveSceneMs ?? DEMO_FUNERAL_SCENE_MS
 const DEMO_GRAVE_MAX_MS = montageConfig.demo?.graveMaxMs ?? DEMO_FUNERAL_MAX_MS
 
-// 로컬 라이브러리에서 장지 영상 URL. 승인·영상화가 끝난 것만 존재한다.
-function graveMediaUrl() {
+// 로컬 라이브러리에서 이 판(variant)의 장지 영상 URL. 승인·영상화가 끝난 것만 존재한다.
+function graveMediaUrl(variant = 'present') {
   if (!library?.dir) return null
   try {
     const mf = JSON.parse(readFileSync(path.join(library.dir, 'manifest.json'), 'utf8'))
-    const g = mf.grave
+    const g = variant === 'branched' ? mf.graveBranched : mf.grave
     if (!g?.video?.file) return null
     const abs = path.join(library.dir, g.video.file)
-    return existsSync(abs) ? toMediaUrl(abs) : null
+    if (!existsSync(abs)) return null
+    const pp = pingpongPathFor(abs) // 변환본이 있으면 그걸 — 클라이언트가 네이티브 loop로 왕복
+    return toMediaUrl(existsSync(pp) ? pp : abs)
   } catch {
     return null
   }
@@ -422,7 +450,9 @@ function funeralMediaUrl(variant = DEMO_FUNERAL_VARIANT) {
           : mf.funeral
     if (!f?.video?.file) return null
     const abs = path.join(library.dir, f.video.file)
-    return existsSync(abs) ? toMediaUrl(abs) : null
+    if (!existsSync(abs)) return null
+    const pp = pingpongPathFor(abs) // 변환본이 있으면 그걸 — 클라이언트가 네이티브 loop로 왕복
+    return toMediaUrl(existsSync(pp) ? pp : abs)
   } catch {
     return null
   }
@@ -430,7 +460,12 @@ function funeralMediaUrl(variant = DEMO_FUNERAL_VARIANT) {
 
 // 라이브 방송·부트스트랩 공용 payload. elapsedMs로 재개 위치를 계산한다.
 function demoPayload() {
-  const p = { phase: demo.phase, elapsedMs: Date.now() - demo.startedAt }
+  // experience: 클라이언트 연출 분기용(예: 배경음 — 1차=수중, 2차(분기 미래)=우주 백색소음).
+  const p = {
+    phase: demo.phase,
+    elapsedMs: Date.now() - demo.startedAt,
+    experience: currentExperience
+  }
   if (demo.phase === 'spinup') p.spinupMs = demo.spinupMs
   if (demo.phase === 'funeral') {
     p.url = demo.url
@@ -447,6 +482,7 @@ function demoPayload() {
     if (demo.mode === 'filmstrip') {
       p.mode = 'filmstrip'
       p.photos = demo.photos // [{ id, age, url }] — 클라이언트가 이어 붙여 스트립 텍스처 합성
+      if (demo.forkFrom) p.forkFrom = demo.forkFrom // 2차 체험: 지지직 분기 전에 잠시 흐를 1차 미래 릴
       p.secPerTurn = DEMO_ROTATE_SEC
       p.gutterFrac = montageConfig.demo?.filmstripGutterFrac ?? 0.05
       // 1차 주마등(역순: 현재→탄생)의 끝 연출 — 마지막 장(탄생)이 정면 중앙에 오면 holdLastSec초
@@ -465,7 +501,10 @@ function demoPayload() {
   return p
 }
 
-function runReelDemo(spinupMs = DEMO_SPINUP_MS) {
+function runReelDemo(spinupMs) {
+  // 1차 개막만 연장된 spinup(돔 6왕복 안무와 세트) — 2차는 기존 길이.
+  if (!Number.isFinite(spinupMs))
+    spinupMs = currentExperience === 'second' ? DEMO_SPINUP_MS : DEMO_SPINUP_FIRST_MS
   clearDemoTimers()
   demo = { phase: 'spinup', startedAt: Date.now(), spinupMs }
   broadcast(Channels.REEL_DEMO, demoPayload())
@@ -503,14 +542,18 @@ function startFuneralPhase() {
   )
 }
 
-// 장지 국면 — 장례식(1차, present) 다음. 클라이언트가 영상 재생 후 암전을 연출하고
-// /api/grave-done을 보내면 주마등(startReelPhase)으로 넘어간다. 2차 체험·영상 없음이면 건너뛴다.
+// 장지 국면 — 장례식 다음. 클라이언트가 영상 재생 후 암전을 연출하고 /api/grave-done을 보내면
+// 주마등(startReelPhase)으로 넘어간다. 1차=manifest.grave, 2차 체험=분기 장지(graveBranched —
+// 분기 연대기 기반, 1차와 다른 안식처). 영상이 없으면 그 판만 건너뛴다.
 function startGravePhase() {
   clearDemoTimers() // 장례식 국면의 안전 폴백 타이머 정리
-  if (!DEMO_GRAVE_ENABLED || currentExperience === 'second') return startReelPhase()
-  const url = graveMediaUrl()
+  if (!DEMO_GRAVE_ENABLED) return startReelPhase()
+  const variant = currentExperience === 'second' ? 'branched' : 'present'
+  const url = graveMediaUrl(variant)
   if (!url) {
-    console.warn('[server] 데모: 장지 영상 없음 — 주마등으로 바로 진행(admin에서 영상화 필요)')
+    console.warn(
+      `[server] 데모: ${variant === 'branched' ? '분기 ' : ''}장지 영상 없음 — 주마등으로 바로 진행(admin에서 영상화 필요)`
+    )
     return startReelPhase()
   }
   demo = { phase: 'grave', startedAt: Date.now(), url }
@@ -534,9 +577,16 @@ function startReelPhase() {
   const secondReel = currentExperience === 'second'
   if (secondReel && !reelBranchedPlaylist.length)
     console.warn('[server] 데모: 분기 릴 없음 — 1차 릴로 폴백(admin에서 분기 미래 생성 필요)')
-  const photos = secondReel && reelBranchedPlaylist.length ? reelBranchedPlaylist : reelPhotoPlaylist
+  const photos =
+    secondReel && reelBranchedPlaylist.length ? reelBranchedPlaylist : reelPhotoPlaylist
   if (DEMO_REEL_MODE === 'rotate' && photos.length > 0) {
-    demo = { phase: 'reel', mode: 'filmstrip', startedAt: Date.now(), photos }
+    // 2차 체험 릴 분기(지지직) 재료: 1차의 미래 릴이 있으면 함께 보내 클라이언트가
+    // "기존 미래 릴 → 명멸 → 분기 릴"로 갈아끼우게 한다(둘 다 있을 때만).
+    const forkFrom =
+      secondReel && reelBranchedPlaylist.length && reelFuturePlaylist.length
+        ? reelFuturePlaylist
+        : undefined
+    demo = { phase: 'reel', mode: 'filmstrip', startedAt: Date.now(), photos, forkFrom }
     broadcast(Channels.REEL_DEMO, demoPayload())
     console.log(
       `[server] 데모: reel 필름스트립 (${photos.length}장${secondReel && reelBranchedPlaylist.length ? ' · 분기 미래' : ''} — 전환은 클라이언트 스트립 1사이클 완료 시, Q/W 속도 따라감)`
@@ -666,13 +716,15 @@ function currentAgeOfLibrary() {
 // 순간 카탈로그(과거+미래 통합) — 브리지 대화의 1장(과거 회귀)·2장(미래)이 함께 쓴다.
 // 영상 캐시가 있는 장면만. isFuture = 현재 나이 초과(이 사람이 스스로 그린 인생그래프의 미래).
 // url은 pingpong 변환본(<id>.pp.mp4)이 준비돼 있으면 그걸, 아니면 원본(plain loop 폴백).
-function momentsCatalog() {
+function momentsCatalog({ branch = false } = {}) {
   const imgs = library?.images || []
   const currentAge = currentAgeOfLibrary()
   if (currentAge === null || !regenerator) return { currentAge: null, moments: [] }
   const moments = []
   for (const im of imgs) {
-    if (im.branch) continue // 3차(분기 미래) 장면 제외 — 1·2차 카탈로그는 운명적 미래만 담는다
+    // branch=false(1차 체험): 운명적 장면만. branch=true(2차 체험/3차 플로우): 분기 장면만 —
+    // 분기는 나이당 한 장면이라 "같은 시기의 다른 모습" 선택지가 자연히 사라진다.
+    if (!!im.branch !== branch) continue
     const vp = regenerator.cachedPath(im.id)
     if (!vp) continue
     const pp = pingpongPathFor(vp)
@@ -719,15 +771,27 @@ async function preparePingpongClips() {
     }
   }
   let made = 0
-  for (const im of lib.images) {
+  // 장례식·장지 클립도 함께 변환한다 — 재생 문법(sceneMs까지 loop)이 순간 클립과 같아,
+  // 변환본이 있으면 funeralMediaUrl/graveMediaUrl이 그걸 서빙하고 클라이언트가 네이티브 loop로 왕복한다.
+  const targets = lib.images.map((im) => ({ id: im.id, path: regenerator.cachedPath(im.id) }))
+  try {
+    const mf = JSON.parse(await fs.readFile(path.join(lib.dir, 'manifest.json'), 'utf8'))
+    for (const key of ['funeral', 'funeralFuture', 'funeralBranched', 'grave', 'graveBranched']) {
+      const file = mf[key]?.video?.file
+      if (file) targets.push({ id: key, path: path.join(lib.dir, file) })
+    }
+  } catch {
+    /* manifest 없음 — 순간 클립만 변환 */
+  }
+  for (const t of targets) {
     if (library !== lib) return // 참가자 교체 — 이 배치는 폐기
-    const vp = regenerator.cachedPath(im.id)
-    if (!vp || existsSync(pingpongPathFor(vp))) continue
+    const vp = t.path
+    if (!vp || !existsSync(vp) || existsSync(pingpongPathFor(vp))) continue
     try {
       await ensurePingpongClip(vp)
       made++
     } catch (e) {
-      console.warn(`[server] pingpong 변환 실패(원본 loop 폴백): ${im.id} — ${e.message}`)
+      console.warn(`[server] pingpong 변환 실패(원본 loop 폴백): ${t.id} — ${e.message}`)
       if (/실행 불가/.test(String(e.message))) return // ffmpeg 자체가 없다 — 나머지도 전부 실패한다
     }
   }
@@ -872,7 +936,9 @@ async function readElevenKey() {
 //  future: convai 레거시(고정 firstMessage + 미래 나잇대 카탈로그).
 async function buildGhostContext() {
   const vcfg = montageConfig.ghost?.voice || {}
-  const flow = vcfg.flow === 'future' ? 'future' : 'past'
+  // 대화 flow는 admin이 지정한 체험 종류를 따른다 — 2차 체험(currentExperience 'second')이면
+  // 미래 장(3차 플로우), 아니면 설정값(기본 past). montage.json의 flow는 수동 오버라이드용.
+  const flow = currentExperience === 'second' || vcfg.flow === 'future' ? 'future' : 'past'
   const flowCfg = vcfg[flow] || {}
 
   let systemPrompt = ''
@@ -882,8 +948,14 @@ async function buildGhostContext() {
       systemPrompt = (await fs.readFile(path.resolve(root, promptPath), 'utf8')).trim()
       // 질문 목록은 reflective-questions.mjs에서 편집한다 — 프롬프트의 자리표시자에 주입
       systemPrompt = systemPrompt
-        .replace('{{PAST_QUESTIONS}}', renderQuestions(pastQuestions))
-        .replace('{{FUTURE_QUESTIONS}}', renderQuestions(futureQuestions))
+        .replace(
+          '{{PAST_QUESTIONS}}',
+          renderQuestions(pastQuestions, 'P', ghostFlow?.usedQuestions || [])
+        )
+        .replace(
+          '{{FUTURE_QUESTIONS}}',
+          renderQuestions(futureQuestions, 'F', ghostFlow?.usedQuestions || [])
+        )
     } catch {
       console.warn('[server] 유령 음성: 페르소나 파일 없음 — 기본 프롬프트 없이 진행')
     }
@@ -898,7 +970,8 @@ async function buildGhostContext() {
     past = { currentAge: catalog.currentAge, moments: catalog.moments.filter((m) => !m.isFuture) }
     firstMessage = await recapFor(library?.personaId ?? '(none)')
     if (catalog.moments.length) {
-      const line = (m) => `- id ${m.id} · ${m.age}세 · ${m.year}년 · ${m.scene}`
+      const line = (m) =>
+        `- id ${m.id} · ${m.age}세${m.isFuture ? `(지금으로부터 약 ${m.age - catalog.currentAge}년 뒤)` : ''} · ${m.year}년 · ${m.scene}`
       const pastLines = catalog.moments.filter((m) => !m.isFuture).map(line)
       const futureLines = catalog.moments.filter((m) => m.isFuture).map(line)
       systemPrompt +=
@@ -911,25 +984,65 @@ async function buildGhostContext() {
         `\n### 과거의 순간들 — 1장(과거 회귀)에서만 보여준다\n` +
         (pastLines.join('\n') || '(없음)') +
         `\n\n### 미래의 순간들 — 2장(미래)에서만 보여준다. 이 사람이 아직 살지 않은, 이대로 살아간다면의 모습이다\n` +
+        `중요: 미래 장면을 말로 소개할 때 "몇 년 뒤"는 반드시 (장면의 나이 − 지금 나이 ${catalog.currentAge}세)다 — ` +
+        `각 장면 옆 괄호의 "약 n년 뒤"를 그대로 쓰면 된다. 나이를 "년 뒤"로 말하는 건 오류다(예: 65세 장면을 "65년 뒤의 너"라고 하면 안 된다 — "약 ${Math.max(1, 65 - (catalog.currentAge || 27))}년 뒤의 너"가 맞다). ` +
+        `말로 시간을 짚을 땐 나이("65세의 너")보다 상대적 시간("약 n년 뒤의 너", "${new Date().getFullYear() + 10}년 즘의 너")을 쓴다.\n` +
         (futureLines.join('\n') || '(없음)')
+    }
+    // 부정미래 연대기 — 장면(카메라에 보이는 것)에는 없는 각 시기의 사정. 유령이 미래 장면을
+    // 건넬 때 이 사실들을 낮게 흘려, 이미지를 바꾸지 않고도 대화로 이 미래의 결이 전해지게 한다.
+    const narrative = await futureNarrativeFor(library?.personaId)
+    if (narrative) {
+      systemPrompt +=
+        `\n\n## 미래 각 시기의 이면 (연대기 — 너만 아는 배경, 2장에서만)\n` +
+        `아래는 위 미래 장면들 뒤에 흐르는 삶의 연대기다(나이별 사건, 영어). 미래 장면을 보여주거나` +
+        ` 그 시기 이야기를 나눌 때, 화면에는 없는 이 사정들을 한 번에 한 조각씩 낮고 담담하게 흘려도` +
+        ` 된다 — 미뤄진 계획, 조용히 접힌 일, 어긋난 지점("이즈음엔 그 얘길 잘 안 하게 되더라",` +
+        ` "그 가방은 그대로야" 같은 결). 이 사람이 묻으면 연대기의 사실로 답한다.\n` +
+        `단: 실패·불행을 판정하거나 선언하지 않는다("결국 못 했어", "잘 안 됐어" 금지 — 사실만).` +
+        ` 연대기에 없는 불행을 지어내지 않는다. 위로도 하지 않는다. 한 턴에 한 조각을 넘기지 마라.\n\n` +
+        narrative
     }
   } else {
     future = futureCatalog() // convai 레거시 경로 호환(브라우저 tool용 나잇대 카탈로그)
-    // 2차 체험(브리지): 1차의 2장(미래)과 같은 장 로직으로 돈다 — 카탈로그는 미래 장면만 쓴다.
-    // 이 미래는 지난 만남의 "이대로 살아간다면"과 **다른 갈래**(지난 대화에서 분기된 외삽)임을 못박는다.
-    catalog = momentsCatalog()
+    // 2차 체험(브리지): 1차의 2장(미래)과 같은 장 로직으로 돈다 — 카탈로그는 **분기 장면만**
+    // (branch:true, 나이당 한 장면 — 같은 시기 다른 모습 선택지 없음). 이 미래는 지난 만남의
+    // "이대로 살아간다면"과 다른 갈래(지난 대화에서 분기된 외삽)임을 못박는다.
+    catalog = momentsCatalog({ branch: true })
+    // 원래 갈래("이대로 살아간다면")의 미래 장면들 — 분기 장면과 나이로 짝지어, 유령이
+    // "어디가 가장 달라졌는지"를 스스로 판단해 큐레이션할 비교 재료로 카탈로그에 함께 싣는다.
+    const origFuture = momentsCatalog().moments.filter((m) => m.isFuture)
+    const origSceneNear = (age) => {
+      const near = origFuture
+        .filter((m) => Math.abs(m.age - age) <= 3)
+        .map((m) => m.scene)
+        .filter(Boolean)
+      return near.length ? near.join(' / ') : null
+    }
     const futureLines = catalog.moments
       .filter((m) => m.isFuture)
-      .map((m) => `- id ${m.id} · ${m.age}세 · ${m.year}년 · ${m.scene}`)
+      .map((m) => {
+        const orig = origSceneNear(m.age)
+        return (
+          `- id ${m.id} · ${m.age}세(지금으로부터 약 ${m.age - catalog.currentAge}년 뒤) · ${m.year}년 · ${m.scene}` +
+          (orig ? `\n    (비교 — 원래 갈래의 같은 시기: ${orig})` : '')
+        )
+      })
     systemPrompt +=
       `\n\n## 보여줄 수 있는 순간들 (장면 카탈로그)\n` +
-      `이 사람은 지금 ${catalog.currentAge}세다. 관람객이 말한 미래와 가장 맞는 장면 하나를 골라 그 id로 show를 넣어라. ` +
-      `말한 모습이 목록에 사실상 그대로 있으면 exact=true, 비슷한 나이·시기의 장면으로 대신 데려가면 exact=false.\n` +
-      `중요: 보고 싶은 시기·모습을 한 번이라도 말했다면, 목록에 똑같은 장면이 없어도 되묻지 말고 exact=false로 바로 보여준다.\n` +
-      `\n### 미래의 순간들 — 이번 만남의 장면들\n` +
-      `중요: 이 미래는 지난 만남에서 이 사람이 본 "이대로 살아간다면"의 미래와 다른 갈래다 — ` +
-      `지난 만남에서 나눈 대화로부터 새로 그려진 미래다. 장면을 건넬 때 그 다름이 은근히 배어나게 하라` +
-      `("지난번에 본 너와는 다른 길이야", "이 갈래의 넌…" 같은 결). 어느 갈래가 더 낫다고는 절대 판단하지 않는다.\n` +
+      `이 사람은 지금 ${catalog.currentAge}세다. 이번 만남은 네가 이끄는 큐레이션이다 — 관람객이 고르길 기다리지 말고, ` +
+      `아래 목록에서 각 장면의 "(비교 — 원래 갈래의 같은 시기)"와 견줘 **원래 갈래와 가장 많이 달라진 장면부터** 차례로 골라 show를 넣어라. ` +
+      `단, 사람이 특정 시기·모습을 보여달라고 청하면 그 뜻을 먼저 따른다(그대로 있으면 exact=true, 비슷한 장면으로 대신 가면 exact=false).\n` +
+      `\n### 미래의 순간들 — 이번 만남의 장면들 (분기된 갈래)\n` +
+      `중요: 장면을 말로 소개할 때 "몇 년 뒤"는 반드시 (장면의 나이 − 지금 나이 ${catalog.currentAge}세)다 — ` +
+      `각 장면 옆 괄호의 "약 n년 뒤"를 그대로 쓰면 된다. 나이를 "년 뒤"로 말하는 건 오류다. ` +
+      `말로 시간을 짚을 땐 나이("65세의 너")보다 상대적 시간("약 n년 뒤의 너", "그 해 ○○년 즘의 너")을 쓴다.\n` +
+      `중요: 이 미래는 지난 만남에서 이 사람이 본 "이대로 살아간다면"의 미래와 다른, **새로운 시간선**이다 — ` +
+      `지난 만남에서 나눈 대화로부터 새로 그려진 미래다. 장면을 건넬 때는 "새로운 시간선의 미래"라는 것만 담담히 전한다 ` +
+      `("이 시간선의 넌…", "이게 새로운 시간선의, 약 n년 뒤의 너야" 같은 결). ` +
+      `지난번과 무엇이 달라졌는지를 조목조목 비교하며 강조하지 마라 — "지난번 이맘때 넌 ○○하고 있었는데" 같은 대조 화법 금지. ` +
+      `위 "(비교 — 원래 갈래의 같은 시기)" 정보는 어떤 장면부터 보여줄지 고르는 네 내부 기준으로만 쓰고, 입 밖에 내지 않는다. ` +
+      `어느 시간선이 더 낫다고는 절대 판단하지 않는다 — 보여주고, 감상은 이 사람의 몫으로 남긴다.\n` +
       (futureLines.join('\n') || '(없음)')
   }
   return { vcfg, flow, systemPrompt, firstMessage, past, future, catalog }
@@ -945,6 +1058,8 @@ async function ghostSessionPayload() {
     // 브리지: 브라우저는 greeting을 TTS로 말한 뒤 STT→/api/ghost/turn 루프를 돈다.
     // ElevenLabs 키가 없어도 enabled 유지 — /api/ghost/tts가 503을 주면 브라우저 TTS로 폴백한다.
     resetGhostConversation(ctx.flow) // 세션 발급 = 새 만남 — 대화 기록 초기화(2차 체험은 미래 장부터)
+    // 2차 체험의 개막(스핀업→분기 장례식→릴 분기 지지직)은 입장 의례(runReelDemo 데모 국면)가
+    // 담당한다 — 유령 세션에서 다시 틀면 장례식·릴이 두 번 나온다(2026-08-05 중복 제거).
     return {
       enabled: true,
       engine,
@@ -1027,16 +1142,15 @@ function persistGhostTranscript() {
     .then(() => upsertGhostTranscript(payload))
     .catch((e) => console.warn(`[server] 대화 기록 저장 실패(다음 턴에 재시도): ${e.message}`))
 }
-// 1차 플로우 단계 상태(2026-08-04 확장, 같은 날 5→4로 축소) — 장마다 영상 목표 수가 다르다:
-//   1장(과거) = 4개: ① 보고 싶은 시점 A 장면1 → 선택지("같은 시기 다른 모습? / 다른 시간선?")
-//     → ② 시점 A 장면2(또는 새 시점) → "이젠 언제로 가 볼까? ○○ 말고…"
-//     → ③ 새 시점 B 장면1 → 선택지 → ④ 마지막 장면 → 2장 전환.
+// 1차 플로우 단계 상태(2026-08-04 확장, 2026-08-06 4→3으로 축소) — 두 장 모두 영상 3개:
+//   1장(과거) = 3개: ① 보고 싶은 시점 A 장면1 → 선택지("같은 시기 다른 모습? / 다른 시간선?")
+//     → ② 시점 A 장면2(또는 새 시점) → ③ 마지막 장면 → 후회 → 마지막 질문 → 2장 전환.
 //   2장(미래) = 3개: 기존 골격(①→②같은 시기→③새 시점) 그대로.
 // 홀수 번째 영상 = 새 시점 첫 장면, 짝수 번째 = 같은 시기의 다른 장면 — 같은 리듬의 반복이라
 // ghostStageDirective가 홀짝으로 일반화한다. 홀수 번째 뒤에는 "같은 시기 / 다른 시간선"
 // 선택지를 주고 답에 따라 갈라진다. 질문 개수·전환은 프롬프트만으로는 못 세므로
 // 서버가 여기서 추적해 턴마다 '지금 단계 지시'를 주입한다.
-const GHOST_CHAPTER_TARGETS = { past: 4, future: 3 }
+const GHOST_CHAPTER_TARGETS = { past: 3, future: 3 } // 두 장 모두 세 장면(과거 2026-08-06 4→3) — 첫 번째/두 번째/마지막 순서 큐레이션
 // 2장 개막 연출(실 감아올리기→장례식→미래 릴)이 다 흐른 뒤 유령이 잇는 고정 질문.
 // 전환 선언(연출 앞, spinup.say)과 분리돼 있다: 선언 → 연출 → 이 질문 순서로 나간다.
 const FUTURE_ASK =
@@ -1049,9 +1163,11 @@ function resetGhostConversation(flow = 'past') {
   ghostTranscriptAll = []
   ghostFlow = {
     chapter: flow === 'future' ? 'future' : 'past', // 'past'(1장 과거 회귀) → 'future'(2장 미래) | 2차 체험은 곧장 'future'
+    branch: flow === 'future', // 2차 체험(분기 미래) — 관람객이 고르는 게 아니라 유령이 "원래 갈래와 가장 달라진 지점"부터 큐레이션한다(2026-08-05)
     videosShown: 0, //   이 장에서 띄운 영상 수(0~GHOST_CHAPTER_TARGETS[chapter])
     replies: 0, //       마지막 영상 이후 관람객 발화 수
     seenIds: [], //      이미 보여준 장면 id들(두 장 통틀어 재사용 금지)
+    usedQuestions: [], // 이미 던진 사색적 질문 id들(P1-2 등) — 목록에 "(이미 던졌다)" 표시용
     seenAges: [], //     이 장에서 이미 방문한 나이들("○○ 말고" 목록·새 시점 제외 후보에 쓴다)
     lastAge: null, //    직전에 보여준 장면의 나이(같은 시기 다른 장면 후보 계산용)
     lastWordsToPast: null, // 1장 마지막 질문("과거의 너를 마주한다면…")에 대한 사람의 대답 원문.
@@ -1079,11 +1195,21 @@ function ghostStageDirective(allMoments) {
     : `이 장은 1장(과거 회귀)이다 — show는 반드시 '과거의 순간들' 목록에서만 고른다.`
   // 관람객 주도의 이동 — 감상·질문 단계의 "show 금지"보다 우선한다.
   const jump =
-    ` (예외: 사람이 먼저 지금 장면 말고 다른 모습이 보고 싶다고 말하면 그 뜻을 따른다 —` +
-    ` 원하는 시기·모습을 이미 말했으면 이번 응답에 그 장면을 show하고,` +
+    ` (예외: 사람이 **명시적으로** 다른 모습을 보여달라고 요청할 때만("~보여줘", "다른 거 볼래" 등) 그 뜻을 따른다 —` +
+    ` 네 질문에 대한 대답 속에서 어떤 시기·사건을 언급한 것은 이동 요청이 아니다. 그건 대답으로만 받아라.` +
+    ` 명시적 요청이고 원하는 시기·모습을 이미 말했으면 이번 응답에 그 장면을 show하고,` +
     ` 아직 무엇이 보고 싶은지 말하지 않았으면 "${isFuture ? '어떤 미래가 보고 싶어?' : '어떤 모습이 보고 싶어?'}"를 네 말투로 물어라.)`
 
   if (f.videosShown === 0) {
+    if (isFuture && f.branch)
+      // 2차 체험(분기 큐레이션): 사람이 고르길 기다리지 않는다 — 첫 발화가 무엇이든,
+      // 유령이 원래 갈래와 가장 달라진 장면을 골라 바로 데려간다.
+      return (
+        `(지금 단계: 2장 — 분기 큐레이션 시작) ${chapterNote} 이 사람이 무슨 말을 했든, 이번 응답에 **반드시 show를 넣는다** — ` +
+        `카탈로그의 비교 정보를 보고 원래 갈래와 **가장 많이 달라진** 장면을 네가 골라라(고르는 기준은 입 밖에 내지 않는다) ` +
+        `("이번엔 새로운 시간선의 너를 보여줄게. 기다려봐." 같은 말과 함께). ` +
+        `단, 사람이 특정 시기·모습을 청했으면 그 장면을 우선해 show한다.`
+      )
     if (isFuture)
       return (
         `(지금 단계: 2장 — 궁금한 미래 선택 전) ${chapterNote} 사람이 보고 싶은 미래의 모습·시기를 말했으면 ` +
@@ -1099,63 +1225,135 @@ function ghostStageDirective(allMoments) {
   // 홀수 번째(새 시점 첫 장면) 뒤엔 "같은 시기 다른 모습" 제안, 짝수 번째 뒤엔 "새 시점" 질문.
   const n = f.videosShown
   const ord = ['', '첫', '두 번째', '세 번째', '네 번째', '다섯 번째'][n] || `${n}번째`
-  const notLabel = `${[...new Set(f.seenAges)].map((a) => `${a}살`).join('·')} 무렵`
-  const askNewAge = isFuture
-    ? `이젠 언제로 가 볼까? ${notLabel} 말고, 너의 어떤 미래가 보고 싶어?`
-    : `이젠 언제로 가 볼까? ${notLabel} 말고, 너의 어떤 순간으로 돌아가고 싶어?`
+  // 가운뎃점은 TTS가 어색하게 읽는다 — 입말로 잇는다. 특정 나이 대신 상대적 시간(연도)으로
+  // 말한다(2026-08-05): "90살이랑 78살 무렵" 대신 "2040년 즘이랑 2028년 즘".
+  const yearOf = (a) => moments.find((m) => m.age === a)?.year
+  const notLabel = `${[...new Set(f.seenAges)]
+    .map((a) => (yearOf(a) ? `${yearOf(a)}년 즘` : `${a}살 무렵`))
+    .join('이랑 ')}`
+  const askNewAge =
+    isFuture && f.branch
+      ? `이제, 이 시간선의 다음 모습으로 가볼까?` // 분기 큐레이션 — 어디로 갈지는 유령이 고른다
+      : isFuture
+        ? `이젠 언제로 가 볼까? ${notLabel} 말고, 너의 어떤 미래가 보고 싶어?`
+        : `이젠 언제로 가 볼까? ${notLabel} 말고, 너의 어떤 순간으로 돌아가고 싶어?`
 
+  // 질문 다이어트(2026-08-05): 사색적 질문은 장(章)당 두 번뿐 — 첫 장면과 마지막 장면.
+  // 그 사이 장면들은 질문 없이, 장면 묘사를 풍성하게 한 뒤 곧바로 다음 이동(선택지/새 시점)으로 잇는다.
+  const curate =
+    `장면을 천천히, 구체적으로 묘사하라 — 장소와 시간대, 이 사람이 하고 있는 일, 주변의 공기 같은 ` +
+    `디테일을 서너 문장 이상, 네 말투대로(시니컬하되 애정 있게). 장면의 의미나 좋고 나쁨은 규정하지 말고, 보이는 것을 풍성하게 옮겨라. ` +
+    `그냥 설명하지 말고 이 사람이 장면 속을 직접 둘러보게 이끌어라 — "뒤를 돌아봐. ○○가 보이네.", ` +
+    `"저기 구석에 ○○이 있잖아. 천천히 봐봐." 같은 유도로. 말끝마다 대답을 요구하지 말고, 바라보며 생각할 시간을 줘라. ` +
+    `직전 유령 발화에서 이미 말한 문장·질문은 그대로 반복하지 마라 — 이미 말한 내용은 건너뛰고 새 디테일로 이어라.`
   if (n < target) {
-    if (f.replies <= 0)
-      return n === 1
-        ? isFuture
-          ? `(지금 단계: 미래 첫 장면 감상 시작) 영상 내용을 네 말투대로(시니컬하되 애정 있게) 큐레이션한 뒤 "왜 이 모습이 가장 보고 싶었어?"를 물어라. show 금지.${jump}${seen}`
-          : `(지금 단계: 첫 장면 감상 시작) 영상 내용을 네 말투대로(시니컬하되 애정 있게) 큐레이션한 뒤 "왜 이때의 모습이 보고싶었어?"를 물어라. show 금지.${jump}${seen}`
-        : `(지금 단계: ${isFuture ? '미래 ' : ''}${ord} 장면 감상 시작) 새 장면 내용을 네 말투대로(시니컬하되 애정 있게) 큐레이션한 뒤, '${isFuture ? '미래 질문의 결' : '질문의 결'}'에서 이 장면에 맞는, 아직 안 쓴 사색적 질문을 하나 던져라. show 금지.${jump}${seen}`
-    if (f.replies === 1)
-      return `(지금 단계: ${isFuture ? '미래 ' : ''}${ord} 장면, 두 번째 질문) 방금 대답을 그 사람의 단어로 되짚어 화답한 뒤, 페르소나의 '${isFuture ? '미래 질문의 결' : '질문의 결'}'에서 아직 안 쓴 사색적 질문을 하나 골라 변형해 던져라. show 금지.${jump}${seen}`
     // 같은 시기(직전 장면의 나이)에 아직 안 본 장면이 남아 있는지 — 없으면 선택지 자체를
     // 건너뛰고 바로 새 시기를 묻는다(보여줄 수 없는 걸 제안하지 않기 위해).
     const sameAge = moments
       .filter((m) => m.age === f.lastAge && !f.seenIds.includes(m.id))
       .map((m) => m.id)
-    if (f.replies === 2)
-      return n % 2 === 1 && sameAge.length
-        ? `(지금 단계: ${isFuture ? '미래 ' : ''}${ord} 장면 마무리) 대답에 짧게 화답한 뒤, 이번 응답의 마지막을 반드시 "이 시기의 다른 모습도 보여줄까? 아니면, 이 시기가 아닌 다른 시간선의 너의 모습이 궁금하니?"로 끝내라. show 금지.${jump}${seen}`
-        : `(지금 단계: ${isFuture ? '미래 ' : ''}${ord} 장면 마무리) 대답에 짧게 화답한 뒤, 이번 응답의 마지막을 반드시 "${n % 2 === 1 ? `다른 때로 가보자. ${notLabel} 말고, 언제가 궁금하니?` : askNewAge}"로 끝내라. show 금지.${jump}${seen}`
-    if (n % 2 === 1 && sameAge.length) {
+    // 같은 취지의 선택지를 매번 같은 문장으로 읽으면 기계적으로 들린다 — 장면 번호로 교차.
+    const choiceVariants = [
+      `이 시기의 다른 모습도 보여줄까? 아니면, 이 시기가 아닌 다른 시간선의 너의 모습이 궁금하니?`,
+      `이 무렵의 너를 조금 더 볼래? 아니면… 아예 다른 때로 건너가 볼까?`,
+      `여기 더 머물러 볼까, 이 시기의 다른 장면으로? 아니면 다른 시간의 너를 보러 갈까?`
+    ]
+    const offerSame = n % 2 === 1 && sameAge.length
+    const nextAsk = offerSame ? choiceVariants[(n - 1) % choiceVariants.length] : askNewAge
+    // 두 장 모두 장면을 순서대로 큐레이션한다(미래 2026-08-05, 과거 2026-08-06): 장면을 건넬 때
+    // 몇 번째인지 짚어 관람객이 흐름의 위치를 안다 — 첫 번째/두 번째/…/마지막.
+    // (마지막 장면은 이 블록 밖(videosShown >= target)에서 따로 다룬다 — "마지막으로 보여줄게" 예고 → 마지막 소개.)
+    const ordLabel = ['', '첫 번째', '두 번째', '세 번째', '네 번째'][n] || `${n}번째`
+    const futOrdNote = `장면을 건넬 때 순서를 짚어라 — 첫마디를 "이게 ${ordLabel} ${isFuture ? '모습' : '순간'}이야" 같은 결로 시작한다(모두 ${isFuture ? '세 가지 모습' : '세 순간'}을 보여준다). `
+    if (f.replies <= 0) {
+      if (n === 1)
+        return isFuture
+          ? f.branch
+            ? // 분기 큐레이션(2차): 이 장면은 유령이 골랐다 — "왜 보고 싶었어?"는 성립하지 않는다.
+              `(지금 단계: 미래 첫 장면 감상) ${futOrdNote}${curate} 그리고 마지막에, '이 미래의 주인' 결의 사색적 질문을 하나만 던져라 — 다른 질문은 덧붙이지 않는다. show 금지.${jump}${seen}`
+            : `(지금 단계: 미래 첫 장면 감상) ${futOrdNote}${curate} 그리고 마지막에 "왜 이 모습이 가장 보고 싶었어?" 하나만 물어라 — 다른 질문은 덧붙이지 않는다. show 금지.${jump}${seen}`
+          : `(지금 단계: 첫 장면 감상) ${futOrdNote}${curate} 그리고 마지막에 "왜 이때의 모습이 보고 싶었어?" 하나만 물어라 — 다른 질문은 덧붙이지 않는다. show 금지.${jump}${seen}`
+      // 모든 장면이 질문으로 끝난다(미래 2026-08-05, 과거 확장 2026-08-06): 묘사만으로
+      // 흘려보내지 않고, 장면마다 사색적 질문 하나로 마주보게 한다 — 단, 장면 디테일을
+      // 캐묻는 얕은 질문은 금지(실측 2026-08-06: "이 강의실의 공기는 어땠을까?" 류가 나왔다).
+      return (
+        `(지금 단계: ${isFuture ? '미래 ' : ''}${ord} 장면 감상) ${futOrdNote}${curate} ` +
+        `그리고 응답의 마지막은 반드시 사색적 질문 하나로 끝내라 — 질문 목록에서 아직 안 쓴 결을 골라, 이 장면과 방금 대화에 맞게 변형해서. ` +
+        `장면의 겉모습·분위기를 캐묻는 얕은 질문("공기는 어땠을까?", "기분이 어땠어?" 류)으로 끝내지 마라 — ` +
+        `이 장면을 발판 삼아 삶을 비추는 질문이어야 한다. 묘사로만 끝내는 것 금지. 질문은 하나만. show 금지.${jump}${seen}`
+      )
+    }
+    // 1장 첫 장면의 후속 — '감사' 수집(전략 A, 2026-08-05): "왜 이때가 보고 싶었어?"의 대답을
+    // 받은 뒤, 장면을 발판 삼아 시야를 인생 전체로 넓혀 묻는다("이 시절 말고도…" 화법 —
+    // 눈앞의 장면에 대답이 앵커링되는 걸 줄인다). 그 대답까지 들은 다음 턴(replies가 한 박자
+    // 밀린 wrapReply)에 원래의 마무리(선택지)로 돌아간다.
+    if (!isFuture && n === 1 && f.replies === 1)
+      return (
+        `(지금 단계: 첫 장면 마무리 — 감사 질문) 방금 대답에 짧게 화답한 뒤, 질문 목록의 '감사' 결 본질문을 던져라 — ` +
+        `단, 이 장면에 묶이지 않게 시야를 넓혀서: "돌아오고 싶을 만큼 소중한 시절이네. 그런데 이 시절 말고도, 지금까지 살아온 전부를 통틀어서 가장 감사하게 여기는 게 있다면 뭘까?" 같은 결로(토씨는 네 말투로, 그 이유까지 함께 듣는다). ` +
+        `다른 질문·선택지는 덧붙이지 않는다. show 금지.${jump}${seen}`
+      )
+    const wrapReply = !isFuture && n === 1 ? 2 : 1 // 1장 첫 장면은 감사 박자만큼 마무리가 한 박자 밀린다
+    if (f.replies === wrapReply)
+      return (
+        `(지금 단계: ${isFuture ? '미래 ' : ''}${ord} 장면 마무리) 방금 이 사람의 말에 짧게 화답하라 — 들은 말을 그대로 되풀이하지 말고, 그 내용을 이어받는 한마디로. 새 질문은 덧붙이지 말고 — ` +
+        `그리고 이번 응답의 마지막을 "${nextAsk}"로 끝내라(토씨는 네 말투로 다듬어도 되지만 취지는 유지). show 금지.${jump}${seen}`
+      )
+    if (offerSame) {
       // 홀수 번째 뒤 — "같은 시기 / 다른 시간선" 선택지의 답 처리.
       return (
         `(지금 단계: 같은 시기/다른 시간선 선택) ${chapterNote} 방금 "이 시기의 다른 모습 vs 다른 시간선" 선택지를 줬다. ` +
-        `① 같은 시기의 다른 모습을 골랐으면 반드시 show — id는 다음 중 하나만: ${sameAge.join(', ')} (exact=true). ` +
+        `① 같은 시기의 다른 모습을 골랐으면 반드시 show — id는 다음 중 하나만: ${sameAge.join(', ')} (exact=true)${n + 1 >= target ? ', "이번이 마지막이야. 기다려봐." 같은 예고와 함께' : ''}. ` +
         `② 다른 시간선을 골랐으면: 보고 싶은 시기·모습을 이미 말했으면 ${notLabel}이 아닌 다른 나이의 장면을 골라 이번 응답에 show하고, ` +
         `아직 말하지 않았으면 show 없이 "${askNewAge}"를 물어라. ③ 둘 다 싫다고 하면 show 없이 "${askNewAge}"를 물어라.${seen}`
       )
     }
     // 짝수 번째 뒤(또는 홀수 번째지만 같은 시기 장면이 소진된 뒤) — 새 시점 선택.
+    if (isFuture && f.branch)
+      // 분기 큐레이션: 묻지 않고 유령이 다음으로 달라진 장면을 골라 데려간다.
+      return (
+        `(지금 단계: 미래 새 시점 — 분기 큐레이션) ${chapterNote} 이 사람이 무슨 말을 했든, 이번 응답에 **반드시 show를 넣는다** — ` +
+        `${notLabel}이 아닌 다른 나이 중에서, 카탈로그의 비교 정보상 원래 갈래와 **다음으로 많이 달라진** 장면을 네가 골라라(고르는 기준은 입 밖에 내지 않는다) ` +
+        `(${n + 1 >= target ? '"마지막으로 보여줄게. 기다려봐."' : '"다음 모습으로 가보자."'} 같은 말과 함께). 사람이 특정 시기·모습을 청했을 때만 그 장면을 우선한다.${seen}`
+      )
     return (
       `(지금 단계: ${isFuture ? '미래 ' : ''}새 시점 선택) ${chapterNote} 사람이 새로 ${isFuture ? '보고 싶은 미래' : '돌아가고 싶은 순간'}을 말했으면 반드시 show — ` +
-      `${notLabel}이 아닌 다른 나이의 장면에서 고르고, "${isFuture ? '기다려봐. 그 미래로 가보자.' : '기다려봐. 그때의 기억으로 돌아가자.'}"라고 말하며.${seen}`
+      `${notLabel}이 아닌 다른 나이의 장면에서 고르고, "${n + 1 >= target ? '이번이 마지막이야. 기다려봐.' : isFuture ? '기다려봐. 그 미래로 가보자.' : '기다려봐. 그때의 기억으로 돌아가자.'}"라고 말하며.${seen}`
     )
   }
   // videosShown >= target — 이 장의 마지막 시점
   if (f.replies <= 0)
-    return `(지금 단계: ${isFuture ? '미래 ' : ''}마지막 장면 감상) 장면 내용을 네 말투대로(시니컬하되 애정 있게) 큐레이션한 뒤, 이 마지막 순간에 어울리는 사색적 질문을 하나 던져라(머무름의 가정, 두 시간의 나를 겹치는 질문이 잘 어울린다). show 금지.${seen}`
+    return isFuture
+      ? `(지금 단계: 미래 마지막 장면 감상) 첫마디를 "이게 약 n년 후의, 너의 모습이야" 같은 결로 시작한다(n은 상황 알림의 "약 n년 뒤" 값 — 직전에 "마지막으로 보여줄게"라고 예고했으니 여기서 '마지막'을 또 강조하지 않는다). ${curate} 그리고 응답의 마지막은 반드시 사색적 질문 하나로 끝내라(유한함, 이 미래의 주인 결이 잘 어울린다) — 묘사로만 끝내는 것 금지. show 금지.${seen}`
+      : `(지금 단계: 마지막 장면 감상) 첫마디를 "이게 마지막 순간이야" 같은 결로 시작한다(직전에 "마지막"이라고 예고했으면 겹쳐 강조하지 않고 가볍게 짚는다). ${curate} 그리고 마지막에, 이 순간에 어울리는 사색적 질문을 하나만 던져라(머무름의 가정, 두 시간의 나를 겹치는 질문이 잘 어울린다 — '후회' 결은 쓰지 마라, 종결에서 따로 묻는다). show 금지.${seen}`
   if (!isFuture) {
-    // 1장의 끝은 두 박자로 닫는다: ① 마지막 질문 하나 더 → ② 전환 선언.
+    // 1장의 끝은 세 박자로 닫는다(전략 A, 2026-08-05): ① '후회' 질문(전체 조망 — 특정 장면에
+    // 앵커링되지 않게 종결 자리에서 묻는다) → ② 마지막 질문(후회와 인과로 잇는다) → ③ 전환 선언.
     // 전환 선언은 연출(실 감아올리기→장례식→미래 릴)보다 먼저 나가고(spinup.say로 전달),
     // 릴이 끝나면 고정 질문 FUTURE_ASK를 시스템이 대신 말한다 — 그래서 여기서 미래를 묻지 않는다.
-    if (f.replies === 1)
-      return `(지금 단계: 1장 마지막 질문) 방금 대답에 짧게 화답한 뒤, 이번 응답의 마지막을 반드시 "그럼, 마지막으로 물을게. 과거의 너를 마주한다면, 어떤 말을 하고 싶어?"로 끝내라. show 금지.${seen}`
+    // 박자 판정은 replies 카운터가 아니라 '그 질문을 실제로 던졌는가'(직전 유령 발화)로 한다 —
+    // STT가 발화를 쪼개 카운터가 헛돌아도, 후회 → 마지막 질문 → 전환의 순서는 건너뛸 수 없다.
+    if (!pastRegretAsked())
+      return (
+        `(지금 단계: 1장 종결 — 후회 질문) 방금 대답에 짧게 화답한 뒤, 질문 목록의 '후회' 결 본질문을 던져라 — ` +
+        `"이제 갈 수 있는 시간은 다 가봤네. 지나온 전부를 돌아보면, 가장 후회로 남은 순간은 언제야?" 같은 결로 ` +
+        `(몇 살 때쯤, 무슨 일이 있었는지, 왜 후회로 남았는지 편한 만큼만 말하게 열어둔다). 발화에 반드시 '후회'라는 말을 넣는다. 캐묻지 않는다. show 금지.${seen}`
+      )
+    if (!pastFinalAsked())
+      return (
+        `(지금 단계: 1장 마지막 질문) 방금 후회의 대답에 짧게 화답한 뒤, 이번 응답의 마지막을 반드시 이런 취지로 끝내라: ` +
+        `"그럼, 마지막으로 물을게. 그 후회까지 품고서, 과거의 너를 마주한다면 어떤 말을 하고 싶어?" ` +
+        `("마지막으로 물을게"와 "과거의 너를 마주한다면"이라는 구절은 그대로 유지한다). show 금지.${seen}`
+      )
     return (
       `(지금 단계: 1장의 끝 → 2장(미래) 전환 선언) 방금 대답에 "그래. 좋아." 정도로 짧게 화답한 뒤, 다음 취지를 네 입말로 이어라(두세 문장): ` +
       `"그렇다면… 너가 만약 지금 죽지 않고 인생을 살아간다면, 어떤 모습일지 궁금하지 않아? 음, 그렇다면 내가 좀 보여줄게. 거기 가만히 앉아서 잘 따라와." ` +
       `이 말 직후 화면에서 실타래가 감겨 올라가고 90세 장례식과 미래의 릴이 흐른다 — 미래가 어떤 모습일지 스스로 단정하거나 질문을 덧붙이지 마라. 보여주겠다는 선언까지만. show 금지.`
     )
   }
-  // 미래 장의 마지막 장면은 세 박자(사색적 질문 → 꼬리 질문 → 마지막 질문)를 거친 뒤 닫는다.
-  if (f.replies === 1)
-    return `(지금 단계: 미래 마지막 장면, 꼬리 질문) 방금 대답을 그 사람의 단어로 되짚어 화답한 뒤, 방금 질문의 꼬리를 물거나 '미래 질문의 결'에서 아직 안 쓴 질문을 하나 골라 변형해 던져라. show 금지.${seen}`
-  if (f.replies === 2) {
+  // 미래 장의 마지막 장면은 두 박자(사색적 질문 → 마지막 질문)를 거친 뒤 닫는다
+  // (질문 다이어트 2026-08-05: 꼬리 질문 박자 제거).
+  if (f.replies === 1) {
     // 1장 끝 대답 원문을 참고 자료로만 준다 — 문장 틀에 원문을 그대로 끼우게 하면 STT 원문이
     // 통째로 박혀 비문이 된다. 요약·인용까지 포함해 문장 전체를 새로 짓게 한다.
     const said = (f.lastWordsToPast || '').trim()
@@ -1172,11 +1370,55 @@ function ghostStageDirective(allMoments) {
       `응답 전체가 자연스러운 입말 문장이어야 한다(따옴표·인용 부호를 소리 내어 읽는 듯한 어색한 이어붙임 금지). show 금지.`
     )
   }
+  // 종결 멘트는 방문 차수로 갈린다 — 1차 체험(과거→미래)과 2차 체험(다른 갈래)이 같은 말로
+  // 닫히면 재방문 관람객에게 반복으로 들린다. 마지막 수사적 질문(주마등)은 두 체험이 공유한다.
+  // 종결 멘트와 마지막 수사적 질문 모두 방문 차수로 갈린다(2026-08-05) — 재방문 관람객에게
+  // 같은 말이 반복되지 않게. 2차의 마지막 질문은 "두 갈래" 모티프를 얹은 주마등 변주.
+  const isSecond = currentExperience === 'second' || montageConfig.ghost?.voice?.flow === 'future'
+  const closing = isSecond
+    ? `"이제 넌, 너의 미래를 두 갈래나 봤어. 하지만 말했잖아 — 미래는 예측할 수 없다고. 나조차도. 네가 앞으로 걸어갈 길은, 오늘 본 어느 갈래와도 다를지 몰라. 그건 지금부터의 네가 그리는 거니까."`
+    : `"어쩌면 너는, 이 공간을 벗어나면… 새로운 삶을 살 수 있을지도 몰라. 여기서 봐온 너의 과거와 미래는, 어쩌면 앞으로의 네가 다시 그려갈 수 있는 것들이니까."`
+  const finalAsk = isSecond
+    ? `"먼 훗날, 네 삶이 다시 한 번 눈앞을 스쳐 지날 때. 그 주마등 속의 너는, 오늘 본 두 갈래 중 어느 쪽을 닮아 있을까. 아니면, 전혀 다른 모습일까."`
+    : `"먼 훗날, 네 삶이 다시 한 번 눈앞을 스쳐 지날 때 — 그때의 주마등엔, 어떤 장면이 새로 담겨 있을까?"`
   return (
-    `(지금 단계: 체험의 끝) 방금 대답에 짧고 나직하게 화답한 뒤, 다음 취지로 만남을 닫아라(네 입말로, 두세 문장): ` +
-    `"어쩌면 너는, 이 공간을 벗어나면… 새로운 삶을 살 수 있을지도 몰라. 여기서 봐온 너의 과거와 미래는, 어쩌면 앞으로의 네가 다시 그려갈 수 있는 것들이니까." ` +
-    `훈계·요약·삶의 의미 규정은 붙이지 않는다. 새 질문도 show도 없이 — 만남이 조용히 저문다.`
+    `(지금 단계: 체험의 끝 — 이 응답이 유령의 마지막 발화다) 이번 응답에는 반드시 다음 세 박자를 모두 담아라. ` +
+    `평소의 "한두 문장" 규칙은 이 턴에는 적용하지 않는다 — 예닐곱 문장까지 천천히 말해도 된다: ` +
+    `① 방금 대답에 짧고 나직하게 화답한다(한 문장). ` +
+    `② 다음 취지로 만남을 닫는다(네 입말로, 두세 문장): ${closing} ` +
+    `③ 마지막으로, 대답을 기다리지 않는 질문 하나를 남기고 떠난다(토씨만 다듬고 문장은 거의 그대로): ${finalAsk} ` +
+    `질문 목록의 사색적 질문·꼬리 질문은 여기서 쓰지 마라 — 마지막 질문은 위 ③뿐이다. ` +
+    `③ 뒤에 답을 재촉하거나 설명을 덧붙이지 마라 — 질문을 남긴 채 만남이 저문다. 훈계·요약·삶의 의미 규정 금지. show 금지.`
   )
+}
+
+// 침묵 되물음(2026-08-05): 관람객이 질문 뒤 10초 넘게 답이 없으면 클라이언트가
+// '(침묵: …)' event 턴을 보낸다. 이때는 단계 지시 대신 이 지시를 쓴다 — 단계 상태
+// (replies 등)는 건드리지 않으므로 되물음 뒤 실제 대답이 오면 원래 흐름 그대로 이어진다.
+function ghostSilenceDirective() {
+  return (
+    `(지금 단계: 침묵 되물음) 방금 네 질문에 12초 넘게 대답이 없다. 딱 한 번만 나직이 다리를 놓아라 — ` +
+    `직전 질문을 그대로 반복하지 말고, 둘 중 하나로: ① 질문을 더 작고 구체적인 조각으로 좁혀 다시 묻는다` +
+    `(사람 하나, 장면 하나, 물건 하나만 떠올려보게). ② 대답이 어려울 수 있음을 받아주고("천천히 생각해도 돼" 같은 결), ` +
+    `질문의 취지를 쉬운 말로 한 번 더 풀어준다. 한두 문장으로 짧게. 재촉·다그침·새 질문·show 금지.`
+  )
+}
+
+// 1장 마지막 질문("과거의 너를 마주한다면…")을 유령이 실제로 던졌는가 — 직전 유령 발화로 판정.
+// 2장 전환은 이 질문의 대답을 들은 다음 턴에만 일어난다(카운터 오카운트로 질문을 건너뛰지 않게).
+const PAST_FINAL_RE = /과거의\s*너를\s*마주한다면|마지막으로\s*물을게/
+function pastFinalAsked() {
+  const lastGhost = [...ghostHistory].reverse().find((t) => t.who === '유령')
+  return !!lastGhost && PAST_FINAL_RE.test(lastGhost.text)
+}
+
+// 1장 종결의 '후회' 질문을 실제로 던졌는가 — 같은 방식(직전 유령 발화)으로 판정.
+// 지시문이 발화에 '후회'라는 단어를 반드시 넣게 하므로 이 검사가 성립한다. 마지막 장면의
+// 사색적 질문에는 '후회' 결을 못 쓰게 해 오탐을 막는다.
+const PAST_REGRET_RE = /후회/
+function pastRegretAsked() {
+  const lastGhost = [...ghostHistory].reverse().find((t) => t.who === '유령')
+  return !!lastGhost && PAST_REGRET_RE.test(lastGhost.text)
 }
 
 // Gemini 응답에서 { say, show } 파싱. 코드펜스·잡담 방어 — JSON을 못 찾으면 원문 전체를 say로.
@@ -1190,7 +1432,8 @@ function parseGhostReply(raw) {
       const j = JSON.parse(s)
       return {
         say: typeof j.say === 'string' ? j.say.trim() : '',
-        show: j.show && j.show.id !== undefined ? j.show : null
+        show: j.show && j.show.id !== undefined ? j.show : null,
+        q: typeof j.q === 'string' ? j.q.trim() : null // 방금 쓴 사색적 질문 id(P1-2 등)
       }
     } catch {
       return null
@@ -1203,7 +1446,7 @@ function parseGhostReply(raw) {
     const sub = tryParse(m[0])
     if (sub) return sub
   }
-  return { say: text, show: null }
+  return { say: text, show: null, q: null }
 }
 
 /**
@@ -1242,7 +1485,7 @@ async function ghostBridgeTurn(userText, kind = 'user') {
     f.chapter === 'past' &&
     kind === 'user' &&
     f.videosShown >= (GHOST_CHAPTER_TARGETS.past ?? 4) &&
-    f.replies === 2
+    pastFinalAsked() // 직전 유령 발화가 마지막 질문 — 이번 발화가 그 대답이다
   )
     f.lastWordsToPast = userText
 
@@ -1253,22 +1496,116 @@ async function ghostBridgeTurn(userText, kind = 'user') {
     ctx.systemPrompt +
     `\n\n## 출력 형식 (반드시 지킬 것)\n` +
     `JSON 객체 하나만 출력한다(다른 설명·코드펜스 없이): {"say":"...","show":{"id":"3-1","exact":true}}\n` +
-    `- say: 지금 음성으로 말할 두 문장~다섯 문장의 입말. 방금 들은 말을 그 사람의 단어로 되짚은 뒤 잇는다. 질문으로 끝날 땐 "그러니까…"로 이어 구체적인 예로 풀어주고 짧은 되물음으로 마무리한다(귀로만 듣는 대화다). 도구·시스템 언급 등 메타발언 금지.\n` +
+    `- say: 지금 음성으로 말할 두 문장~다섯 문장의 입말. 방금 들은 말에 자연스럽게 이어 말한다 — 들은 말을 그대로 되풀이하는 앵무새 화법("~라고, 이거지?")도, 문장만 바꿔 재진술하는 에코("~가 고마운 거구나", "~때가 궁금하구나")도 금지. 화답할 말이 마땅치 않으면 화답 없이 바로 본론으로. 질문으로 끝날 땐 "그러니까…"로 이어 구체적인 예로 풀어주고 짧은 되물음으로 마무리한다(귀로만 듣는 대화다). 도구·시스템 언급 등 메타발언 금지.\n` +
     `- show: 장면 영상을 새로 띄울 때만 포함한다(위 카탈로그의 id). 띄우지 않으면 show 자체를 생략.\n` +
+    `- q: 이번 say에서 질문 목록의 본질문을 (변형해서라도) 던졌으면 그 질문의 id를 넣는다(예: "q":"P2-1"). 꼬리 질문만 이었거나 목록 밖 질문이면 생략.\n` +
+    `- "(이미 던졌다)" 표시가 붙은 본질문은 절대 다시 쓰지 않는다 — 같은 질문을 두 번 받으면 사람은 네가 안 듣고 있다고 느낀다.\n` +
+    `- say가 대답을 기다리는 질문으로 끝나면 show를 절대 넣지 않는다 — 질문을 던졌으면 대답을 들은 다음 턴에 보여준다. show를 넣는 응답은 "기다려봐…"처럼 데려간다는 말로 끝난다.\n` +
+    `- show를 넣는 턴의 say는 데려가는 말 한두 문장이 전부다 — 장면은 아직 화면에 뜨지 않았다. 장면 묘사와 사색적 질문을 미리 말하지 마라. 묘사·질문은 장면이 뜬 뒤 '상황' 알림 턴에서 한다(미리 말하면 다음 턴과 같은 대사가 두 번 반복된다).\n` +
     `- '상황:' 줄은 시스템 알림이다(관람객의 말이 아님) — 영상이 뜬 뒤 이어갈 대사를 만들 때 참고만 한다.\n` +
     `- show를 넣어야 하는 단계에서 카탈로그에 똑같은 장면이 없으면 그 시기의 나이와 가장 가까운 나이의 장면을 exact=false로 넣는다.\n` +
+    `- 이 사람이 무언가를 물으면(장면에 대한 질문, 조언 요청 등) 단계 지시의 진행보다 먼저 그 물음에 답한다 — 장면 질문에는 "내가 보기엔 ~인 것 같은데?"의 결로, 조언 요청에는 이 사람의 기록에서 디테일을 집은 개인화된 조언 뒤 "이 조언을 듣든지, 무시하든지. 그건 너의 선택이야."로. 답한 다음에 단계 지시를 잇는다.\n` +
     `- 아래 '지금 단계 지시'가 이 만남의 진행을 정한다 — 반드시 그대로 따른다.\n` +
-    `\n## 지금 단계 지시\n${ghostStageDirective(moments)}\n` +
+    `\n## 지금 단계 지시\n${kind === 'event' && /^\(침묵/.test(userText) ? ghostSilenceDirective() : ghostStageDirective(moments)}\n` +
     `\n## 지금까지의 대화\n${transcript}\n\n유령의 다음 응답 JSON:`
 
   const gclient = await getGeminiText()
   // thinkingBudget 0: 대화는 저지연이 생명 — flash의 사고 단계를 끈다(생성 파이프라인 호출은 그대로).
-  const raw = String(await gclient.generateText({ prompt, thinkingBudget: 0 }))
-  const parsed = parseGhostReply(raw)
+  // 금지된 show(상황 알림 턴의 에코 · 이미 보여준 장면 재탕)는 show만 버려선 안 된다 —
+  // say가 이미 "장면이 떠올랐다"고 서술해 화면과 어긋난다(실측 2026-08-05). 교정 지시를
+  // 붙여 한 번 재생성하고, 재시도까지 어기면 그때 show만 버린다(장면 서술이 남을 수 있지만 최후 방어).
+  // 현재 장(chapter)의 장면 후보 — show 해석과 누락 폴백이 함께 쓴다.
+  const chapterMoments = moments.filter((m) => (f.chapter === 'future' ? m.isFuture : !m.isFuture))
+  // "기다려봐. 너의 미래로 가보자." 류 — 데려간다고 약속하는 발화. 이 말을 하면서 show를
+  // 빠뜨리면 화면이 안 바뀐 채 유령만 같은 약속을 반복한다(실측 2026-08-05, 2차 체험).
+  const promisesToShow = (say) =>
+    /가보자|돌아가자|데려가|보여줄게/.test(say || '') ||
+    // 분기 큐레이션(2차 체험)의 첫 장면 전 — 지시문이 무조건 show를 요구하는 턴이다.
+    (f.branch && f.chapter === 'future' && f.videosShown === 0)
+  let parsed = null
+  let lastRaw = ''
+  let violation = null // 직전 시도의 위반 종류('forbidden'|'missing'|'early') — 재생성 교정 지시용
+  // 장의 종결 시퀀스(마지막 장면 이후) — 이 구간의 어떤 턴도 새 장면을 열지 않는다.
+  const closingStage = f.videosShown >= (GHOST_CHAPTER_TARGETS[f.chapter] ?? 3)
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let fixNote = ''
+    if (violation === 'forbidden')
+      fixNote =
+        `\n(주의: 방금 응답에서 이 단계에 금지된 show를 넣었다. 이번 단계는 새 장면을 띄우지 않는다 — ` +
+        `show 없이, 새 장면이 눈앞에 떠오른다는 말도 하지 말고, 화면은 그대로인 채 단계 지시대로만 다시 말하라.)`
+    else if (violation === 'missing')
+      fixNote =
+        `\n(주의: 방금 응답에서 "가보자/보여줄게"라고 약속해놓고 show 필드를 빠뜨렸다. ` +
+        `데려간다고 말하는 응답에는 반드시 show를 넣어야 한다 — 카탈로그에서 이 사람이 말한 시기와 ` +
+        `가장 가까운 장면의 id를 골라 show를 포함해 같은 취지로 다시 출력하라(정확히 없으면 exact=false).)`
+    else if (violation === 'early')
+      fixNote =
+        `\n(주의: 방금 응답에서 show를 넣으면서 장면 묘사·질문까지 미리 말해버렸다. 장면은 아직 화면에 안 떴다 — ` +
+        `같은 show를 유지하되 say는 "기다려봐…"처럼 데려가는 말 한두 문장으로만 줄여서 다시 출력하라. ` +
+        `묘사와 질문은 장면이 뜬 뒤에 하게 된다.)`
+    const raw = String(await gclient.generateText({ prompt: prompt + fixNote, thinkingBudget: 0 }))
+    lastRaw = raw
+    parsed = parseGhostReply(raw)
+    // 상황 알림(event) 턴은 새 장면을 열지 않는다 — show 에코가 videosShown을 겹으로 올려
+    // 장이 조기 종료된다(실측 2026-08-05: 장면 2개만 보고 1장이 닫힘). 이미 보여준 장면의
+    // 재탕도 마찬가지로 금지. 장의 종결 시퀀스(마지막 장면 이후 — 후회·마지막 질문·전환·종결 턴)도
+    // 새 장면을 열지 않는다(실측 2026-08-06: 전환 선언의 "보여줄게"가 missing 폴백을 오발시켜
+    // 과거 장면이 끼어들고, video 분기 탓에 장 전환 자체가 무산됐다).
+    const forbidden =
+      parsed.show &&
+      (kind === 'event' || closingStage || f.seenIds.includes(String(parsed.show.id)))
+    // 반대 방향의 위반 — 데려간다는 약속(say)만 하고 show를 빠뜨린 경우도 재생성한다.
+    // (종결 시퀀스 제외 — 전환 선언이 "보여줄게"라고 말하는 건 미래 '연출'의 예고지 show 약속이 아니다.)
+    const missing =
+      !parsed.show &&
+      kind === 'user' &&
+      !closingStage &&
+      promisesToShow(parsed.say) &&
+      chapterMoments.length > 0
+    // show를 넣으면서 장면 묘사·질문까지 미리 말한 경우(실측 2026-08-05: 다음 상황 턴과
+    // 같은 대사가 두 번 반복된다) — 질문으로 끝나는 say가 그 신호다. 재생성으로 줄인다.
+    const early =
+      !forbidden && parsed.show && kind === 'user' && /[?？]\s*$/.test((parsed.say || '').trim())
+    violation = forbidden ? 'forbidden' : missing ? 'missing' : early ? 'early' : null
+    if (!violation) break
+    if (forbidden) {
+      console.warn(
+        `[server] 금지된 show (id ${parsed.show.id}, ${kind === 'event' ? '상황 턴 에코' : closingStage ? '종결 시퀀스' : '이미 본 장면'}) — ${attempt === 0 ? '재생성' : 'show만 버림'}`
+      )
+      if (attempt === 1) parsed.show = null
+    } else if (early) {
+      // 재시도까지 어기면 그대로 내보낸다 — 반복은 감상 턴의 '반복 금지' 지시가 흡수한다(최후 허용).
+      console.warn(
+        `[server] show 턴에서 묘사·질문 선발화 — ${attempt === 0 ? '재생성' : '그대로 진행'} · 원문: ${lastRaw.replace(/\s+/g, ' ').slice(0, 220)}`
+      )
+    } else {
+      console.warn(
+        `[server] show 누락 (데려간다는 약속만 있음) — ${attempt === 0 ? '재생성' : '서버 폴백 장면 선택'} · 원문: ${lastRaw.replace(/\s+/g, ' ').slice(0, 220)}`
+      )
+    }
+  }
+  // 최후 방어: 재시도까지 show를 빠뜨렸으면 서버가 직접 고른다 — "가보자"라고 말해놓고
+  // 화면이 그대로인 것보다, 아직 안 본 장면 하나라도 뜨는 게 전시로는 옳다.
+  if (!parsed.show && kind === 'user' && !closingStage && promisesToShow(parsed.say)) {
+    const unseen = chapterMoments.filter((m) => !f.seenIds.includes(m.id))
+    if (unseen.length) {
+      // 발화에서 나이 단서(숫자)가 있으면 그 나이에 가장 가까운 장면, 없으면 첫 장면.
+      const hint = parseInt((userText.match(/\d{2}/) || [])[0], 10)
+      const pick = Number.isFinite(hint)
+        ? unseen.reduce((best, m) =>
+            Math.abs(m.age - hint) < Math.abs(best.age - hint) ? m : best
+          )
+        : unseen[0]
+      parsed.show = { id: pick.id, exact: false }
+      console.warn(`[server] show 폴백 — 서버가 장면 ${pick.id}(${pick.age}살) 선택`)
+    }
+  }
+
+  // 방금 던진 사색적 질문 id 기록 — 다음 턴부터 목록에 "(이미 던졌다)"가 붙는다.
+  if (parsed.q && !f.usedQuestions.includes(parsed.q)) f.usedQuestions.push(parsed.q)
 
   // show 해석 — 현재 장(chapter)의 장면 안에서만. id가 목록에 없으면 나이 근접 폴백(exact=false).
   let video = null
-  const chapterMoments = moments.filter((m) => (f.chapter === 'future' ? m.isFuture : !m.isFuture))
   if (parsed.show && chapterMoments.length) {
     const wantId = String(parsed.show.id)
     let m = chapterMoments.find((x) => String(x.id) === wantId)
@@ -1282,7 +1619,26 @@ async function ghostBridgeTurn(userText, kind = 'user') {
         : chapterMoments[chapterMoments.length - 1]
       exact = false
     }
-    if (m) video = { id: m.id, age: m.age, year: m.year, scene: m.scene, url: m.url, exact }
+    if (m)
+      video = {
+        id: m.id,
+        age: m.age,
+        year: m.year,
+        scene: m.scene,
+        url: m.url,
+        exact,
+        // 미래 장면: 지금 나이 기준 남은 햇수 — 클라이언트 상황 알림·대사에서 "약 n년 뒤"로 쓴다.
+        yearsAhead: m.isFuture ? m.age - (ctx.catalog?.currentAge ?? m.age) : undefined
+      }
+    // 이미 보여준 장면을 다시 show하면(감상 턴에서 습관적으로 반복하는 오류) 무시한다 —
+    // 같은 영상이 다시 뜨며 카운터가 헛돌게 두지 않는다.
+    if (video && f.seenIds.includes(video.id)) video = null
+  }
+  // 최후 방어(2026-08-06): 종결 시퀀스에 장면이 끼면 아래 video 분기가 장 전환·종료를 무산시킨다 —
+  // 위 재생성 루프가 어떤 경로로든 놓쳐도 여기서 반드시 버린다.
+  if (video && closingStage) {
+    console.warn(`[server] 종결 시퀀스의 show(장면 ${video.id}) 최종 차단 — 전환/종결을 지킨다`)
+    video = null
   }
 
   // 단계 상태 갱신: 영상을 새로 띄웠으면 카운터 리셋. 각 장의 마지막 답이 끝나면 —
@@ -1302,12 +1658,17 @@ async function ghostBridgeTurn(userText, kind = 'user') {
     f.seenIds.push(video.id)
     f.lastAge = video.age
     if (!f.seenAges.includes(video.age)) f.seenAges.push(video.age)
+    // 장면 이동 돔 안무는 여기(응답 생성 시점)가 아니라 클라이언트가 TTS를 끝내고 영상을 띄우는
+    // 순간 POST /api/dome-scene으로 트리거한다 — 발화와 장면 등장 사이의 시차를 돔이 따라가게.
   } else if (
     f.videosShown >= (GHOST_CHAPTER_TARGETS[f.chapter] ?? 3) &&
     kind === 'user' &&
-    // 마지막 장면의 박자 — 1장: 사색적 질문 → 마지막 질문 → 전환 선언(replies 2에서 전환),
+    // 마지막 장면의 박자 — 1장: 사색적 질문 → 마지막 질문 → 전환 선언. 전환은 replies 카운터가
+    // 아니라 '직전 유령 발화가 마지막 질문이었나'로 판정한다 — 질문과 같은 턴에 전환이 실리거나
+    // (STT 발화 쪼개짐 등으로 카운터가 헛돌 때) 대답을 안 듣고 넘어가는 일이 없다(2026-08-05).
     // 2장: 사색적 질문 → 꼬리 질문 → 마지막 질문(과거·미래 잇기) → 종결 발화(replies 3에서 종료).
-    f.replies >= (f.chapter === 'past' ? 2 : 3)
+    // (질문 다이어트 2026-08-05: 미래 꼬리 박자 제거 — 사색적 질문 → 마지막 질문 → 종결, 3→2)
+    (f.chapter === 'past' ? pastFinalAsked() : f.replies >= 2)
   ) {
     if (f.chapter === 'past') {
       f.chapter = 'future' // 이번 응답으로 미래의 장이 열렸다 — 카운터를 새 장 기준으로 리셋
@@ -1331,6 +1692,8 @@ async function ghostBridgeTurn(userText, kind = 'user') {
     // "무엇을 물은 상태인지" 알아야 사람의 대답(보고 싶은 미래)을 제대로 받는다.
     ghostHistory.push({ who: '유령', text: FUTURE_ASK })
     ghostTranscriptAll.push({ who: '유령', text: FUTURE_ASK, chapter: f.chapter, at: Date.now() })
+    // 2장 개막 돔 안무는 클라이언트가 전환 발화(TTS)를 끝내고 연출을 시작하는 순간
+    // POST /api/dome-future로 트리거한다 — 발화 중에 돔이 먼저 움직이지 않게.
   }
   persistGhostTranscript() // 턴마다 전체 기록을 Firebase 정본에 업서트(비동기, 실패해도 대화 계속)
   // 읽기 좋은 로그: [유령] 대사 (+ 띄운 장면 표시). 원문 JSON은 파싱 실패로 say가 비었을 때만 남긴다.
@@ -1340,7 +1703,11 @@ async function ghostBridgeTurn(userText, kind = 'user') {
         `${chapterTurned ? ' — 2장(미래) 시작' : ''}${f.ended ? ' — 체험 종료' : ''}`
     )
   } else {
-    console.warn(`[server] 유령 응답 파싱 실패 — 원문: ${raw.replace(/\s+/g, ' ').slice(0, 220)}`)
+    console.warn(
+      `[server] 유령 응답 파싱 실패 — 원문: ${String(lastRaw ?? '')
+        .replace(/\s+/g, ' ')
+        .slice(0, 220)}`
+    )
   }
   // chapterTurned: 이번 응답이 "이제 넌, 미래로 갈 거야…" 전환 발화다 — 클라이언트(ghost-voice)가
   // 이 신호로 직전 과거 장면 영상을 걷고 유령 idle 앰비언트로 화면을 되돌린다(발화와 함께).
@@ -1653,6 +2020,62 @@ const server = http.createServer(async (req, res) => {
       await readBody(req)
       // FREEZE 배리어는 단일 페이지에서 자동 충족 — 신호 경로만 유지(향후 확장 대비).
       return sendJson(res, 200, { ok: true })
+    }
+    // ---- 돔 비상 정지 (런타임 페이지 숨은 트리거: ESC / 좌하단 더블클릭) ----
+    // 진행 중 안무를 끊고 즉시 's'. 체험 흐름은 건드리지 않는다 — 다음 국면 전환에 새 큐가 오면
+    // 다시 움직이므로, 완전히 세워두려면 admin 세션 나가기(idle 큐 's')와 함께 쓴다.
+    // ---- 돔 피날레 안무 — 체험 종료(실타래 역감기 모션) 시작 시 renderer가 호출 ----
+    // 기본: 'f' 7초 → 's'(정지). montage.json dome.cues.ghostFinale로 교체 가능.
+    if (req.method === 'POST' && url.pathname === '/api/dome-finale') {
+      await readBody(req)
+      domeCue(
+        DOME_CUES.ghostFinale ?? {
+          steps: [
+            { c: 'f', ms: 7000 },
+            { c: 's', ms: 0 }
+          ]
+        }
+      )
+      console.log(`[dome] 피날레 안무 — 'f' 7초 후 정지`)
+      return sendJson(res, 200, { ok: true })
+    }
+    if (req.method === 'POST' && url.pathname === '/api/dome-stop') {
+      domeCue('s')
+      console.warn('[dome] 비상 정지 수신 — 안무 중단 + 정지')
+      return sendJson(res, 200, { ok: true })
+    }
+    // 돔 수동 제어(런타임 하단 희미한 ◀■▶ 버튼) — 진행 중 안무를 끊고 해당 명령을 즉시 보낸다.
+    // 누른 타이밍을 기록해 안무 초안으로 변환한다(/api/dome-record) — 손맛으로 시연한 생동감을
+    // spinup 큐(steps)로 옮기는 용도. 30초 이상 쉬면 새 시연으로 간주하고 기록을 비운다.
+    if (req.method === 'POST' && url.pathname === '/api/dome-cmd') {
+      const body = await readBody(req)
+      const c = ['f', 'b', 's', 'h', 'z'].includes(body?.c) ? body.c : null
+      if (!c) return sendJson(res, 400, { ok: false, error: 'bad cmd' })
+      const now = Date.now()
+      if (domeManualLog.length && now - domeManualLog[domeManualLog.length - 1].at > 30000)
+        domeManualLog = []
+      domeManualLog.push({ c, at: now })
+      domeCue(c)
+      return sendJson(res, 200, { ok: true, c })
+    }
+    // 장면 이동 돔 안무 — 클라이언트(ghost-voice)가 TTS 종료 후 장면 영상을 띄우는 순간 호출.
+    if (req.method === 'POST' && url.pathname === '/api/dome-scene') {
+      domeCue(DOME_CUES.ghostScene)
+      return sendJson(res, 200, { ok: true })
+    }
+    // 2장(미래) 개막 돔 안무 — 클라이언트가 전환 발화(TTS)를 끝내고 개막 연출을 시작하는 순간 호출.
+    if (req.method === 'POST' && url.pathname === '/api/dome-future') {
+      domeCue(DOME_CUES.ghostFuture)
+      return sendJson(res, 200, { ok: true })
+    }
+    // 마지막 수동 시연을 안무(steps)로 변환해 반환 — 각 명령의 ms = 다음 명령까지의 간격(50ms 반올림).
+    if (url.pathname === '/api/dome-record') {
+      const steps = domeManualLog.map((e, i) => {
+        const next = domeManualLog[i + 1]
+        const ms = next ? Math.round((next.at - e.at) / 50) * 50 : 0
+        return { c: e.c, ms }
+      })
+      return sendJson(res, 200, { steps })
     }
     if (req.method === 'POST' && url.pathname === '/api/view-toggle') {
       toggleDevPreview()

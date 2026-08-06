@@ -132,6 +132,8 @@ export async function generateLifeLibrary(profile, opts = {}) {
   const priorFuneral = prior?.funeral || null
   const priorFuneralFuture = prior?.funeralFuture || null
   const priorFuneralBranched = prior?.funeralBranched || null
+  const priorGrave = prior?.grave || null // 장지 rev·승인 이력도 보존(2026-08-05 — 누락돼 재생성 시 지워지던 버그)
+  const priorGraveBranched = prior?.graveBranched || null
   const priorClips = prior?.clips || null
   const priorReel = prior?.reel || null
   if (prior?.workflow !== mode) prior = null
@@ -178,11 +180,22 @@ export async function generateLifeLibrary(profile, opts = {}) {
     ...(priorFuneral ? { funeral: priorFuneral } : {}), // 장례식 rev·승인 이력 보존
     ...(priorFuneralFuture ? { funeralFuture: priorFuneralFuture } : {}),
     ...(priorFuneralBranched ? { funeralBranched: priorFuneralBranched } : {}),
+    ...(priorGrave ? { grave: priorGrave } : {}),
+    ...(priorGraveBranched ? { graveBranched: priorGraveBranched } : {}),
     ...(priorClips ? { clips: priorClips } : {}),
     ...(priorReel ? { reel: priorReel } : {}),
     images: []
   }
   const writeManifest = async () => {
+    // read-merge-write(2026-08-05): 생성이 도는 동안 admin이 디스크에 더한 키(grave·funeral·
+    // reelPhotos 등)를 이 흐름의 stale 전체 덮어쓰기가 지우지 않게, 디스크에만 있는 키를
+    // in-memory manifest로 먼저 흡수한 뒤 쓴다(이 흐름이 쥔 키는 in-memory가 이긴다).
+    try {
+      const disk = JSON.parse(await fs.readFile(manifestPath, 'utf-8'))
+      for (const k of Object.keys(disk)) if (!(k in manifest)) manifest[k] = disk[k]
+    } catch {
+      /* 디스크 판이 없거나 깨졌으면 in-memory 그대로 쓴다 */
+    }
     await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2))
     // 로컬 기록 후 정본(Firebase) 동기화를 호출자에 위임 — best-effort(생성 흐름을 막지 않는다).
     if (onManifest) {

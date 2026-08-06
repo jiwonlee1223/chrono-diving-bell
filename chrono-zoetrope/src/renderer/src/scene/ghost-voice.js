@@ -243,17 +243,29 @@ export function createGhostVoice({
   // 브라우저의 짧은 끝점 감지에 발화 종료를 맡기지 않는다: 말하다 잠깐 멈칫해도 endSilenceMs 동안
   // 조용해질 때까지 기다렸다가 그때까지 쌓인 문장 전체를 돌려준다. 브라우저가 세션을 스스로 닫으면
   // (장시간 무음 등) 들은 게 없을 때 재시작해 계속 기다린다. 침묵이면 null, API 미지원이면 undefined.
-  function listenUtterance({ endSilenceMs = 2500, maxUtteranceMs = 45000 } = {}) {
+  // noSpeechMs > 0이면: 그 시간 동안 말이 전혀 시작되지 않을 때 NO_SPEECH를 돌려준다 —
+  // 유령의 침묵 되물음(한 번만) 트리거용. 말이 시작되면 이 타이머는 해제된다.
+  const NO_SPEECH = Symbol('no-speech')
+  function listenUtterance({ endSilenceMs = 2500, maxUtteranceMs = 45000, noSpeechMs = 0 } = {}) {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition
     if (!SR) return Promise.resolve(undefined)
     return new Promise((resolve) => {
       let finalText = ''
       let interim = ''
       let done = false
+      let noSpeech = false
       let silenceTimer = null
       let overallTimer = null
+      let noSpeechTimer = null
       let rec = null
       onListening?.(true) // 사용자 발화 듣기 시작 — 배경음악 덕킹(level 5).
+      if (noSpeechMs > 0)
+        noSpeechTimer = setTimeout(() => {
+          if (!done && !`${finalText}${interim}`.trim()) {
+            noSpeech = true
+            finish()
+          }
+        }, noSpeechMs)
 
       function finish() {
         if (done) return
@@ -261,17 +273,19 @@ export function createGhostVoice({
         onListening?.(false) // 듣기 종료 — 배경음악 원래대로.
         clearTimeout(silenceTimer)
         clearTimeout(overallTimer)
+        clearTimeout(noSpeechTimer)
         if (bridgeRecognition === rec) bridgeRecognition = null
         try {
           rec?.stop()
         } catch {
           /* 무시 */
         }
-        resolve(`${finalText} ${interim}`.trim() || null)
+        resolve(`${finalText} ${interim}`.trim() || (noSpeech ? NO_SPEECH : null))
       }
 
       // 무슨 말이든 들리기 시작한 뒤에만 침묵 타이머를 돌린다 — 아무 말 없을 땐 계속 기다린다.
       function armSilence() {
+        clearTimeout(noSpeechTimer) // 말이 시작됐다 — 무응답 되물음 타이머 해제
         clearTimeout(silenceTimer)
         silenceTimer = setTimeout(finish, endSilenceMs)
         if (!overallTimer) overallTimer = setTimeout(finish, maxUtteranceMs) // 발화 시작 기준 상한
@@ -315,20 +329,40 @@ export function createGhostVoice({
 
   // bridge 대화 본 루프: 인사(회고) → [듣기 → 턴 → 말하기 → (영상 → 상황 알림 턴 → 말하기)] 반복.
   async function runBridge(session) {
+    // 2차 체험의 개막 연출(분기 장례식·릴 분기)은 입장 의례(데모 국면)가 이미 재생했다 —
+    // 유령은 인사부터 시작한다(중복 재생 금지, 2026-08-05).
     await speak(session.greeting)
     if (stopped) return
     if (!(window.SpeechRecognition || window.webkitSpeechRecognition)) {
       console.warn('[ghost-voice] SpeechRecognition 미지원 — 인사만 하고 조용히 곁에 머문다')
       return
     }
+    // 침묵 되물음(2026-08-05): 유령이 말을 마친 뒤 12초 동안 아무 말이 없으면 딱 한 번,
+    // 서버에 침묵 event 턴을 보내 나직한 되물음을 받는다. 그 뒤로는 무한정 기다린다
+    // (관람객이 실제로 말하면 카운터가 리셋돼 다음 질문에서 다시 한 번 쓸 수 있다).
+    let silenceNudged = false
     while (!stopped) {
-      const heard = await listenUtterance(session.listen)
+      const heard = await listenUtterance({
+        ...(session.listen || {}),
+        noSpeechMs: silenceNudged ? 0 : 12000
+      })
       if (stopped) return
+      if (heard === NO_SPEECH) {
+        silenceNudged = true
+        try {
+          const nudge = await postTurn('(침묵: 12초 넘게 대답이 없다)', 'event')
+          if (!stopped && nudge?.say) await speak(nudge.say)
+        } catch {
+          /* 되물음 실패 — 그냥 계속 기다린다 */
+        }
+        continue
+      }
       if (!heard) {
         // 침묵은 재촉하지 않는다(페르소나) — 곧바로 다시 귀 기울인다(listenUtterance가 이미 오래 기다렸다).
         await new Promise((r) => setTimeout(r, 300))
         continue
       }
+      silenceNudged = false // 실제 발화가 들렸다 — 다음 질문에서 되물음을 다시 한 번 허용
       let reply
       try {
         reply = await postTurn(heard, 'user')
@@ -351,6 +385,8 @@ export function createGhostVoice({
         // ⓪ 전환 선언 — 감아올리기 모션 직전, 유령 idle에서 말한다("…내가 좀 보여줄게. 거기 가만히 앉아서 잘 따라와.").
         if (reply.spinup?.say) await speak(reply.spinup.say, (await spinupSrc) || undefined)
         if (stopped) return
+        // 물리 돔: 2장 전환 안무(왕복 3회 + b 7초) — 전환 발화가 끝나고 연출이 시작되는 이 순간 트리거.
+        fetch('/api/dome-future', { method: 'POST' }).catch(() => {})
         // ⓪ 실타래 감아올리기(10배속 가속 → 어둠). 이어질 재료(장례식·미래 릴)가 하나도 없으면
         // 건너뛴다 — 어둠에서 아무것도 떠오르지 못해 화면이 검정에 갇히는 걸 막는다.
         if (reply.spinup && (reply.funeral?.url || reply.futureReel?.photos?.length))
@@ -372,6 +408,8 @@ export function createGhostVoice({
         return
       }
       if (reply?.video?.url) {
+        // 물리 돔: 장면 이동 안무 — TTS가 끝나고 장면이 떠오르는 바로 이 순간 트리거(fire-and-forget).
+        fetch('/api/dome-scene', { method: 'POST' }).catch(() => {})
         // 검정 → 그 순간이 떠오른다(pingpong loop). resolveAfterSec: 첫 loop 한 바퀴(최대 18s)를
         // 기다리지 않고 fade-in 직후 후속 대사로 넘어간다 — 영상은 뒤에서 계속 돈다.
         await playVideo?.(reply.video.url, {
@@ -384,7 +422,7 @@ export function createGhostVoice({
         // "왜 이때의 모습이 보고싶었어?")를 받는다.
         try {
           const follow = await postTurn(
-            `(방금 ${reply.video.age}살(${reply.video.year}년) 장면 영상이 화면에 떠올랐다. exact=${reply.video.exact}. 장면: ${reply.video.scene})`,
+            `(방금 ${reply.video.age}살(${reply.video.year}년${Number.isFinite(reply.video.yearsAhead) ? `, 지금으로부터 약 ${reply.video.yearsAhead}년 뒤` : ''}) 장면 영상이 화면에 떠올랐다. exact=${reply.video.exact}. 장면: ${reply.video.scene})`,
             'event'
           )
           if (!stopped && follow?.say) await speak(follow.say)

@@ -79,7 +79,8 @@ export class VideoRegenerator {
     }
     if (this.mode === 'seedance') return this.#seedanceLoop(image, { onProgress })
 
-    const v = this.regen.wan.video
+    // 분기(3차) 장면은 videoBranch 규격(속도 우선), 본편 32장은 video 규격(상향 해상도).
+    const v = (image.branch && this.regen.wan.videoBranch) || this.regen.wan.video
     const t0 = Date.now()
     console.log(`[regen] Wan2.2 I2V: ${image.id} (${v.width}x${v.height}, ${v.length}f)`)
     const uploaded = await this.client.uploadImage(

@@ -5,7 +5,9 @@
 // **묘비석(또는 수목장 표석·납골당 안치단 등 그 방식에 맞는 표지)을 파노라마 정중앙**에 두고,
 // 묘비명(epitaph)·이름을 새긴다. 사람이 없는 고요한 풍경이다.
 //
-// 적용 범위: 1차 플로우 전용(variant 개념 없음 — 지금의 죽음 하나뿐).
+// 적용 범위(2026-08-05 확장): variant 'present'(1차 — 지금의 죽음의 안식처, manifest.grave) /
+// 'branched'(2차 체험 — 분기된 삶의 안식처, manifest.graveBranched). 분기 장지는 분기 연대기를
+// 근거로 1차 장지와 **다른 장소**여야 한다(synthesizeGraveSetting의 branchNarrative·avoidSetting).
 // 체험 순서: 장례식 영상 → 장지 파노라마 영상 → 암전 → reel (server/index.mjs grave phase).
 //
 // 구조는 funeral.js의 워크플로우를 그대로 따른다:
@@ -25,6 +27,17 @@ import { collectFuneralWishes, resolveDeceasedAge } from './funeral.js'
 export const GRAVE_DIR = 'grave'
 export const GRAVE_MANIFEST_KEY = 'grave'
 
+/** manifest에서 이 variant의 장지 상태가 사는 키. present는 기존 키 유지(하위호환). */
+export function graveManifestKey(variant = 'present') {
+  return variant === 'branched' ? 'graveBranched' : GRAVE_MANIFEST_KEY
+}
+function gravePrefix(variant = 'present') {
+  return variant === 'branched' ? 'grave-branched' : 'grave'
+}
+export function graveVariantLabel(variant = 'present') {
+  return variant === 'branched' ? '분기 장지' : '장지'
+}
+
 // Wan 파라미터 — 장례식과 동일한 4:1 규격.
 const DEFAULT_VIDEO = { width: 1920, height: 480, length: 81, fps: 16, steps: 4, shift: 5.0 }
 
@@ -43,17 +56,35 @@ const DEFAULT_MOTION_PROMPT =
  * 희망사항이 없으면 null → 한국의 야산 묘역(봉분+화강암 묘비) 디폴트.
  * @returns {Promise<{setting:string, marker:string}|null>}
  */
-export async function synthesizeGraveSetting(gclient, wishes, { signal, log = () => {} } = {}) {
+export async function synthesizeGraveSetting(
+  gclient,
+  wishes,
+  { branchNarrative = null, avoidSetting = null, signal, log = () => {} } = {}
+) {
   const method = wishes?.funeralMethod
   const site = wishes?.burialSite
-  if (!method && !site) return null
+  const narrative = String(branchNarrative || '').trim()
+  if (!method && !site && !narrative) return null
+  // 분기(2차 체험) 장지: 근거는 분기 연대기(그 다른 삶이 닿은 곳)이고, 본인 희망사항은 참고.
+  // 1차 장지(avoidSetting)와는 분명히 다른 장소여야 한다 — 두 갈래의 죽음이 같은 자리로 보이면 안 된다.
+  const branchBlock = narrative
+    ? `\nThey then lived a DIFFERENT later life from what they once imagined — this chronicle of that` +
+      ` diverged life is your PRIMARY source for where that life would come to rest (the wishes above are` +
+      ` secondary reference from before the divergence):\n${narrative}\n` +
+      (avoidSetting
+        ? `\nIMPORTANT: their OTHER life's resting place was already depicted as: "${String(avoidSetting).slice(0, 300)}".` +
+          ` This diverged life's resting place must be CLEARLY DIFFERENT from that — different kind of place,` +
+          ` different landscape — while still fitting the chronicle.\n`
+        : `\nChoose a resting place that fits the diverged chronicle — it should read as a different life's ending.\n`)
+    : ''
   const prompt =
     `A Korean person answered questions about how and where they want to be laid to rest` +
     ` (treat Korean text as-is):\n` +
     (method ? `- The funeral method they wished for: "${method}"\n` : '') +
     (site ? `- Where they wished to be laid to rest: "${site}"\n` : '') +
+    branchBlock +
     `\nWe are composing a photograph of their actual RESTING PLACE — the grave site itself, after the` +
-    ` funeral, honoring their wishes faithfully. Decide:\n` +
+    ` funeral, honoring ${narrative ? 'the diverged life above' : 'their wishes'} faithfully. Decide:\n` +
     `- "setting": the landscape or space around the resting place, in concrete visual terms — terrain,` +
     ` vegetation or architecture, materials, weather and light, season. In Korea unless the wish names` +
     ` another country. (A tree burial / 수목장 → a memorial tree in a quiet forest garden; scattering at` +
@@ -243,6 +274,14 @@ async function readManifest(personaDir) {
   return JSON.parse(await fs.readFile(path.join(personaDir, 'manifest.json'), 'utf-8'))
 }
 async function writeManifest(personaDir, manifest, onManifest) {
+  // read-merge-write(2026-08-05): 이 잡이 도는 동안 다른 잡이 디스크에 더한 키를 지우지 않게,
+  // 디스크에만 있는 키를 흡수한 뒤 쓴다(이 잡이 쥔 grave/graveBranched는 in-memory가 이긴다).
+  try {
+    const disk = JSON.parse(await fs.readFile(path.join(personaDir, 'manifest.json'), 'utf-8'))
+    for (const k of Object.keys(disk)) if (!(k in manifest)) manifest[k] = disk[k]
+  } catch {
+    /* 디스크 판 없음/깨짐 — in-memory 그대로 */
+  }
   await fs.writeFile(path.join(personaDir, 'manifest.json'), JSON.stringify(manifest, null, 2))
   if (onManifest) await onManifest(manifest)
 }
@@ -258,6 +297,8 @@ export async function runGraveWorkflow({
   gclient,
   config,
   stage = 'image',
+  variant = 'present', // 'present'(1차 장지) | 'branched'(2차 체험 — 분기된 삶의 안식처)
+  branchNarrative = null, // branched: 분기 연대기 — 안식처 결정의 1순위 근거
   doc = null,
   force = false,
   signal,
@@ -269,11 +310,13 @@ export async function runGraveWorkflow({
   const manifest = await readManifest(personaDir)
   const profile = manifest.profile || {}
   await fs.mkdir(path.join(personaDir, GRAVE_DIR), { recursive: true })
+  const mkey = graveManifestKey(variant)
+  const prefix = gravePrefix(variant)
 
-  let g = manifest[GRAVE_MANIFEST_KEY]
+  let g = manifest[mkey]
   if (stage === 'image' && (!g || force || g.status === 'done')) {
     const rev = (g?.rev || 0) + 1
-    g = manifest[GRAVE_MANIFEST_KEY] = {
+    g = manifest[mkey] = {
       rev,
       status: 'image',
       error: null,
@@ -301,7 +344,7 @@ export async function runGraveWorkflow({
   if (!g) return { ok: false, error: '장지 이미지가 아직 없다 — 먼저 이미지 생성 단계를 실행하라' }
   const rev = g.rev
   const hist = g.history[g.history.length - 1]
-  const imageFile = `${GRAVE_DIR}/grave-r${rev}.png`
+  const imageFile = `${GRAVE_DIR}/${prefix}-r${rev}.png`
   // [video 단계 force] 같은 rev·같은 승인 이미지로 영상만 재생성(funeral.js와 동일한 튜닝 루프)
   if (stage === 'video' && force && g.video) {
     g.videoHistory = [...(g.videoHistory || []), g.video]
@@ -313,7 +356,7 @@ export async function runGraveWorkflow({
   }
   const vk = g.videoRev || 1
   const videoFile =
-    vk === 1 ? `${GRAVE_DIR}/grave-r${rev}.mp4` : `${GRAVE_DIR}/grave-r${rev}-v${vk}.mp4`
+    vk === 1 ? `${GRAVE_DIR}/${prefix}-r${rev}.mp4` : `${GRAVE_DIR}/${prefix}-r${rev}-v${vk}.mp4`
   const setState = async (status, patch = {}) => {
     g.status = status
     Object.assign(g, patch)
@@ -329,8 +372,22 @@ export async function runGraveWorkflow({
         if (signal?.aborted) return { ok: false, cancelled: true, rev }
         const wishes = doc ? collectFuneralWishes(doc) : null
         // 배경 합성 — rev별 캐시(재시도 재사용). 희망 없음/실패 = null → 디폴트 한국 묘역.
+        // branched: 분기 연대기를 1순위 근거로, 1차 장지(setting)와 다른 장소를 요구한다.
         if (g.setting === undefined) {
-          g.setting = wishes ? await synthesizeGraveSetting(gclient, wishes, { signal, log }) : null
+          const avoidSetting =
+            variant === 'branched'
+              ? manifest[GRAVE_MANIFEST_KEY]?.setting?.setting ||
+                'a quiet Korean hillside burial ground with a grassy burial mound and granite headstone'
+              : null
+          g.setting =
+            wishes || branchNarrative
+              ? await synthesizeGraveSetting(gclient, wishes, {
+                  branchNarrative,
+                  avoidSetting,
+                  signal,
+                  log
+                })
+              : null
           hist.setting = g.setting
           await writeManifest(personaDir, manifest, onManifest)
         }
@@ -396,7 +453,7 @@ export async function runGraveWorkflow({
         const buf = await fs.readFile(path.join(personaDir, g.image.file))
         const uploaded = await client.uploadImage(
           buf,
-          `grave-${path.basename(personaDir)}-r${rev}.png`
+          `${prefix}-${path.basename(personaDir)}-r${rev}.png`
         )
         const workflow = buildWan22I2VWorkflow({
           prompt: gcfg.motionPrompt || DEFAULT_MOTION_PROMPT,
@@ -408,7 +465,8 @@ export async function runGraveWorkflow({
           steps: v.steps,
           boundaryStep: Math.floor(v.steps / 2),
           shift: v.shift,
-          filenamePrefix: `chrono-zoetrope/grave/grave-${path.basename(personaDir)}-r${rev}-v${vk}`
+          // ComfyUI 출력 임시 이름 — ComfyUI가 뒤에 카운터를 붙이므로 짧게(판별 접두사+rev)면 충분하다.
+          filenamePrefix: `chrono-zoetrope/grave/${prefix}-r${rev}`
         })
         const { videos } = await client.generateVideo(workflow, {
           onProgress: (e) => onProgress({ phase: 'video', ...e })

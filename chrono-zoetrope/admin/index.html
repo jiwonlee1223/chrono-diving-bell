@@ -243,6 +243,24 @@
         opacity: 0.45;
         cursor: default;
       }
+      /* 인생그래프 요약 업로드 — 재생성(노랑)과 구분되는 청록 계열 업로드 버튼 */
+      #journey-upload {
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        padding: 6px 13px;
+        border-radius: 999px;
+        border: 1px solid rgba(90, 210, 200, 0.5);
+        background: transparent;
+        color: #6fd9cf;
+      }
+      #journey-upload:hover {
+        background: rgba(90, 210, 200, 0.14);
+      }
+      #journey-upload:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
       .regenall-status {
         font-size: 12px;
         color: #ffc466;
@@ -717,6 +735,12 @@
               전체 재생성
             </button>
             <span class="regenall-status" id="regenall-status"></span>
+            <button
+              id="journey-upload"
+              title="이미 생성된 부정미래(2차)·긍정미래(3차) 릴 이미지와 제목·30자 상황 설명을 Firebase futureLifeJourneyGraph에 올립니다"
+            >
+              인생그래프 요약 업로드
+            </button>
           </span>
         </header>
         <section id="queue-panel" class="hidden">
@@ -753,11 +777,14 @@
       let lastFuneralAt = 0 // 마지막으로 반영한 장례식 잡 완료 시각
       let lastFuneralSig = '' // 장례식 잡·대기열 구성 시그니처(바뀌면 패널 재렌더)
       // 장례식은 두 벌(variant)이라 접이 상태도 판별로 따로 둔다.
-      const FUNERAL_VARIANTS = ['present', 'future']
-      const funeralLabel = (v) => (v === 'future' ? '미래 장례식(90세)' : '현재 장례식')
-      const funeralKey = (v) => (v === 'future' ? 'funeralFuture' : 'funeral')
-      let funeralHistOpen = { present: false, future: false } // 히스토리 접이 상태 — 폴링 재렌더에도 유지
-      let funeralCastOpen = { present: false, future: false } // 조문객 캐스트 접이 상태
+      // branched(분기 장례식)는 분기 미래가 생성된 참가자에만 패널을 그린다(renderFuneral 게이트).
+      const FUNERAL_VARIANTS = ['present', 'future', 'branched']
+      const funeralLabel = (v) =>
+        v === 'branched' ? '분기 장례식(90세)' : v === 'future' ? '미래 장례식(90세)' : '현재 장례식'
+      const funeralKey = (v) =>
+        v === 'branched' ? 'funeralBranched' : v === 'future' ? 'funeralFuture' : 'funeral'
+      let funeralHistOpen = { present: false, future: false, branched: false } // 히스토리 접이 상태 — 폴링 재렌더에도 유지
+      let funeralCastOpen = { present: false, future: false, branched: false } // 조문객 캐스트 접이 상태
       // 장지(안식처) 파노라마 — 1차 전용, variant 없음. 장례식과 같은 큐/승인 구조.
       let graveState = null // /api/queue의 grave: { job, queue, last }
       let lastGraveAt = 0
@@ -1294,6 +1321,14 @@
       // 상태·버튼·히스토리만 각자의 manifest 키를 본다.
       function renderFuneral(variant) {
         if (!pid || !manifest) return ''
+        // 분기 장례식 패널은 분기 미래가 있는 참가자에만 — 분기 데이터(장례식 이미지 또는 분기 릴)가
+        // 하나도 없으면 패널 자체를 숨긴다(재료 없는 생성 버튼으로 오생성하는 것을 막는다).
+        if (
+          variant === 'branched' &&
+          !manifest.funeralBranched &&
+          !(manifest.reelPhotosBranched || []).some((e) => !e.failed && e.file)
+        )
+          return ''
         const fn = manifest[funeralKey(variant)] || null
         const fj = funeralState && funeralState.job
         const fq = (funeralState && funeralState.queue) || []
@@ -1439,64 +1474,76 @@
         }
 
         const head =
-          variant === 'future'
-            ? `Funeral Panorama — 미래 (90세의 죽음)`
-            : `Funeral Panorama — 현재 (지금의 죽음)`
+          variant === 'branched'
+            ? `Funeral Panorama — 분기 (다른 삶의 90세의 죽음)`
+            : variant === 'future'
+              ? `Funeral Panorama — 미래 (90세의 죽음)`
+              : `Funeral Panorama — 현재 (지금의 죽음)`
         return (
           `<section class="video-panel"><div class="video-head"><h2>${head}</h2></div>` +
           `<div class="video-row">${row}</div>${castRow}${preview}${history}</section>`
         )
       }
       // 장지(안식처) 패널 — 묻히길 바란 곳(burialSite)의 풍경 + 묘비석 4:1 파노라마 → Wan 영상.
-      // 1차 플로우 전용(variant 없음). 흐름은 장례식 패널과 동일: 생성 → 검토·승인 → 영상화 → 저장.
-      function renderGrave() {
+      // variant 'present'(1차, manifest.grave) / 'branched'(2차 체험 — 분기된 삶의 안식처,
+      // manifest.graveBranched — 분기 연대기 기반, 1차 장지와 다른 장소). 흐름은 동일.
+      function renderGrave(variant = 'present') {
         if (!pid || !manifest) return ''
-        const gn = manifest.grave || null
+        // 분기 장지 패널은 분기 데이터가 있는 참가자에만(장례식 패널과 같은 게이트).
+        if (
+          variant === 'branched' &&
+          !manifest.graveBranched &&
+          !(manifest.reelPhotosBranched || []).some((e) => !e.failed && e.file)
+        )
+          return ''
+        const L = variant === 'branched' ? '분기 장지' : '장지'
+        const vAttr = ` data-variant="${variant}"`
+        const gn = (variant === 'branched' ? manifest.graveBranched : manifest.grave) || null
         const gj = graveState && graveState.job
         const gq = (graveState && graveState.queue) || []
-        const mine = gj && gj.pid === pid
-        const queuedAt = gq.findIndex((q) => q.pid === pid)
+        const mine = gj && gj.pid === pid && (gj.variant || 'present') === variant
+        const queuedAt = gq.findIndex((q) => q.pid === pid && (q.variant || 'present') === variant)
 
         let row
         if (mine) {
           const phase = gj.phase === 'video' ? 'Wan2.2 영상화' : 'Gemini 파노라마 생성'
           row =
-            `<span class="video-label">장지 <b>${phase} 중…</b>${gq.length ? ` (대기 ${gq.length}건)` : ''}</span>` +
+            `<span class="video-label">${L} <b>${phase} 중…</b>${gq.length ? ` (대기 ${gq.length}건)` : ''}</span>` +
             `<button data-act="grave-stop" class="stop-btn">중지</button>`
         } else if (queuedAt >= 0) {
-          row = `<span class="video-label">장지 <b>대기 중… (${queuedAt + 1}번째)</b></span>`
+          row = `<span class="video-label">${L} <b>대기 중… (${queuedAt + 1}번째)</b></span>`
         } else if (!gn) {
           row =
-            `<span class="video-label">장지 <b>없음</b></span>` +
-            `<button data-act="grave-gen" data-force="0">이미지 생성${gj ? ' (대기열 등록)' : ''}</button>`
+            `<span class="video-label">${L} <b>없음</b></span>` +
+            `<button data-act="grave-gen" data-force="0"${vAttr}>이미지 생성${gj ? ' (대기열 등록)' : ''}</button>`
         } else if (gn.status === 'error') {
           row =
-            `<span class="video-label">장지 <b><span style="color:#e07070">실패 (rev ${gn.rev}${gn.error ? ` — ${gn.error.slice(0, 80)}` : ''})</span></b></span>` +
-            `<button data-act="grave-gen" data-force="0">이어서 생성</button>` +
-            `<button data-act="grave-gen" data-force="1">새 rev로 재생성</button>`
+            `<span class="video-label">${L} <b><span style="color:#e07070">실패 (rev ${gn.rev}${gn.error ? ` — ${gn.error.slice(0, 80)}` : ''})</span></b></span>` +
+            `<button data-act="grave-gen" data-force="0"${vAttr}>이어서 생성</button>` +
+            `<button data-act="grave-gen" data-force="1"${vAttr}>새 rev로 재생성</button>`
         } else if (!gn.image) {
           row =
-            `<span class="video-label">장지 <b>이미지 생성 중단됨 (rev ${gn.rev})</b></span>` +
-            `<button data-act="grave-gen" data-force="0">이어서 생성</button>`
+            `<span class="video-label">${L} <b>이미지 생성 중단됨 (rev ${gn.rev})</b></span>` +
+            `<button data-act="grave-gen" data-force="0"${vAttr}>이어서 생성</button>`
         } else if (!gn.approved) {
           row =
-            `<span class="video-label">장지 <b>이미지 검토 대기 (rev ${gn.rev})</b> — 아래 이미지를 확인하세요</span>` +
-            `<button data-act="grave-approve" style="background:#2a5a2a">승인 (영상화 허용)</button>` +
-            `<button data-act="grave-gen" data-force="1">이미지 재생성 (새 rev)</button>`
+            `<span class="video-label">${L} <b>이미지 검토 대기 (rev ${gn.rev})</b> — 아래 이미지를 확인하세요</span>` +
+            `<button data-act="grave-approve" style="background:#2a5a2a"${vAttr}>승인 (영상화 허용)</button>` +
+            `<button data-act="grave-gen" data-force="1"${vAttr}>이미지 재생성 (새 rev)</button>`
         } else if (!gn.video) {
           row =
-            `<span class="video-label">장지 <b>승인됨 (rev ${gn.rev}${gn.approvedAt ? `, ${gn.approvedAt.slice(0, 16).replace('T', ' ')}` : ''})</b></span>` +
-            `<button data-act="grave-video">영상화 시작 (Wan2.2)</button>` +
-            `<button data-act="grave-gen" data-force="1">이미지 재생성 (새 rev)</button>`
+            `<span class="video-label">${L} <b>승인됨 (rev ${gn.rev}${gn.approvedAt ? `, ${gn.approvedAt.slice(0, 16).replace('T', ' ')}` : ''})</b></span>` +
+            `<button data-act="grave-video"${vAttr}>영상화 시작 (Wan2.2)</button>` +
+            `<button data-act="grave-gen" data-force="1"${vAttr}>이미지 재생성 (새 rev)</button>`
         } else {
           const saved = gn.firebase
             ? ` · ☁ 저장됨 ${gn.firebase.uploadedAt ? gn.firebase.uploadedAt.slice(0, 16).replace('T', ' ') : ''}${(gn.firebase.rev || gn.rev) !== gn.rev ? ` (rev ${gn.firebase.rev} — 최신 아님)` : ''}`
             : ''
           row =
-            `<span class="video-label">장지 <b>완료 (rev ${gn.rev}${(gn.videoRev || 1) > 1 ? `, 영상 v${gn.videoRev}` : ''})</b>${saved}</span>` +
-            `<button data-act="grave-upload"${gn.firebase && gn.firebase.rev === gn.rev ? ' title="이미 저장됨 — 다시 누르면 재업로드"' : ''}>Firebase 저장${gn.firebase && gn.firebase.rev === gn.rev ? ' ✓' : ''}</button>` +
-            `<button data-act="grave-video" data-force="1" title="같은 이미지로 영상만 다시 생성 (승인 유지)">영상 재생성</button>` +
-            `<button data-act="grave-gen" data-force="1">재생성 (새 rev)</button>`
+            `<span class="video-label">${L} <b>완료 (rev ${gn.rev}${(gn.videoRev || 1) > 1 ? `, 영상 v${gn.videoRev}` : ''})</b>${saved}</span>` +
+            `<button data-act="grave-upload"${vAttr}${gn.firebase && gn.firebase.rev === gn.rev ? ' title="이미 저장됨 — 다시 누르면 재업로드"' : ''}>Firebase 저장${gn.firebase && gn.firebase.rev === gn.rev ? ' ✓' : ''}</button>` +
+            `<button data-act="grave-video" data-force="1"${vAttr} title="같은 이미지로 영상만 다시 생성 (승인 유지)">영상 재생성</button>` +
+            `<button data-act="grave-gen" data-force="1"${vAttr}>재생성 (새 rev)</button>`
         }
 
         // 합성된 배경(안식처 판정) — 캐스트 줄 대응물. setting 없으면 디폴트 묘역 표시.
@@ -1563,8 +1610,12 @@
             `</div>`
         }
 
+        const head =
+          variant === 'branched'
+            ? `Grave Panorama — 분기 장지 (다른 삶의 안식처, 2차 체험)`
+            : `Grave Panorama — 장지 (안식처, 1차)`
         return (
-          `<section class="video-panel"><div class="video-head"><h2>Grave Panorama — 장지 (안식처, 1차 전용)</h2></div>` +
+          `<section class="video-panel"><div class="video-head"><h2>${head}</h2></div>` +
           `<div class="video-row">${row}</div>${settingRow}${preview}${history}</section>`
         )
       }
@@ -1573,7 +1624,9 @@
         const slot = $('#reel-slot')
         if (slot)
           slot.innerHTML =
-            renderVideo() + FUNERAL_VARIANTS.map((v) => renderFuneral(v)).join('') + renderGrave()
+            renderVideo() +
+            FUNERAL_VARIANTS.map((v) => renderFuneral(v)).join('') +
+            ['present', 'branched'].map((v) => renderGrave(v)).join('')
       }
       async function postVideo(path, okMsg, failMsg, body = {}) {
         try {
@@ -1673,6 +1726,33 @@
           pollQueue()
         } catch (e) {
           setStatus(`전체 재생성 실패: ${e.message}`)
+        }
+      }
+      // 인생그래프 요약 업로드 — 이미 생성된 미래 릴 두 벌(부정=2차 future / 긍정=3차 branched)의
+      // 이미지 URL + 제목·30자 설명을 futureLifeJourneyGraph에 수동으로 올린다(캡션은 Gemini 생성 — 수십 초).
+      async function uploadFutureJourney() {
+        if (!pid) return
+        const btn = $('#journey-upload')
+        btn.disabled = true
+        setStatus('인생그래프 요약 업로드 중… (캡션 생성에 수십 초 걸릴 수 있습니다)')
+        try {
+          const r = await api('/api/future-journey/upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ personaId: pid })
+          })
+          const part = (k, L) => {
+            const v = r[k]
+            if (!v) return `${L} 없음`
+            if (v.error) return `${L} 실패(${v.error})`
+            if (v.skipped) return `${L} 없음`
+            return `${L} ${v.count}장`
+          }
+          setStatus(`인생그래프 요약 업로드 완료 — ${part('negative', '부정미래')} · ${part('positive', '긍정미래')}`)
+        } catch (e) {
+          setStatus(`인생그래프 요약 업로드 실패: ${e.message}`)
+        } finally {
+          btn.disabled = false
         }
       }
       const stopRegenAll = () =>
@@ -1817,12 +1897,14 @@
         }
       }
       // ── 장지(안식처) — 장례식과 같은 4단계 핸들러(variant 없음) ──
-      async function genGrave(force) {
+      const graveLabelOf = (v) => (v === 'branched' ? '분기 장지' : '장지')
+      async function genGrave(force, variant = 'present') {
         if (!pid) return
+        const L = graveLabelOf(variant)
         if (
           force &&
           !confirm(
-            `${manifest?.profile?.name || pid}의 장지 이미지를 새 rev로 다시 생성합니다.\n기존 rev는 히스토리에 남고, 새 이미지는 다시 승인해야 영상화됩니다. 진행할까요?`
+            `${manifest?.profile?.name || pid}의 ${L} 이미지를 새 rev로 다시 생성합니다.\n기존 rev는 히스토리에 남고, 새 이미지는 다시 승인해야 영상화됩니다. 진행할까요?`
           )
         )
           return
@@ -1830,12 +1912,12 @@
           await api(`/api/personas/${pid}/grave`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ force: Boolean(force) })
+            body: JSON.stringify({ force: Boolean(force), variant })
           })
-          setStatus('장지 이미지 생성 대기열 등록 — 완료되면 패널에 떠서 검토·승인할 수 있습니다')
+          setStatus(`${L} 이미지 생성 대기열 등록 — 완료되면 패널에 떠서 검토·승인할 수 있습니다`)
           pollQueue()
         } catch (e) {
-          setStatus(`장지 생성 실패: ${e.message}`)
+          setStatus(`${L} 생성 실패: ${e.message}`)
         }
       }
       const stopGrave = () =>
@@ -1844,35 +1926,39 @@
           '장지 생성 중지 요청 — 진행분은 저장되어 재실행 시 이어집니다',
           '중지 실패'
         )
-      async function approveGrave() {
+      async function approveGrave(variant = 'present') {
         if (!pid) return
         try {
           const r = await api(`/api/personas/${pid}/grave/approve`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({})
+            body: JSON.stringify({ variant })
           })
-          setStatus(`장지 이미지 승인 완료 (rev ${r.rev}) — 이제 영상화를 시작할 수 있습니다`)
+          setStatus(
+            `${graveLabelOf(variant)} 이미지 승인 완료 (rev ${r.rev}) — 이제 영상화를 시작할 수 있습니다`
+          )
           await loadManifest().catch(() => {})
         } catch (e) {
           setStatus(`승인 실패: ${e.message}`)
         }
       }
-      async function videoGrave(force) {
+      async function videoGrave(force, variant = 'present') {
         if (!pid) return
         try {
           await api(`/api/personas/${pid}/grave/video`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ force: !!force })
+            body: JSON.stringify({ force: !!force, variant })
           })
-          setStatus('장지 영상화 대기열 등록 — Wan2.2 생성이 시작됩니다 (수 분 소요)')
+          setStatus(
+            `${graveLabelOf(variant)} 영상화 대기열 등록 — Wan2.2 생성이 시작됩니다 (수 분 소요)`
+          )
           pollQueue()
         } catch (e) {
           setStatus(`영상화 실패: ${e.message}`)
         }
       }
-      async function uploadGrave(btn) {
+      async function uploadGrave(btn, variant = 'present') {
         if (!pid) return
         if (btn) {
           btn.disabled = true
@@ -1882,9 +1968,9 @@
           const r = await api(`/api/personas/${pid}/grave/upload`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({})
+            body: JSON.stringify({ variant })
           })
-          setStatus(`장지 Firebase 저장 완료 (rev ${r.rev})`)
+          setStatus(`${graveLabelOf(variant)} Firebase 저장 완료 (rev ${r.rev})`)
           await loadManifest().catch(() => {})
         } catch (e) {
           setStatus(`Firebase 저장 실패: ${e.message}`)
@@ -2019,10 +2105,12 @@
         else if (t.dataset.act === 'grave-hist-toggle') {
           graveHistOpen = !graveHistOpen
           mountVideo()
-        } else if (t.dataset.act === 'grave-gen') genGrave(t.dataset.force === '1')
-        else if (t.dataset.act === 'grave-approve') approveGrave()
-        else if (t.dataset.act === 'grave-video') videoGrave(t.dataset.force === '1')
-        else if (t.dataset.act === 'grave-upload') uploadGrave(t)
+        } else if (t.dataset.act === 'grave-gen')
+          genGrave(t.dataset.force === '1', t.dataset.variant || 'present')
+        else if (t.dataset.act === 'grave-approve') approveGrave(t.dataset.variant || 'present')
+        else if (t.dataset.act === 'grave-video')
+          videoGrave(t.dataset.force === '1', t.dataset.variant || 'present')
+        else if (t.dataset.act === 'grave-upload') uploadGrave(t, t.dataset.variant || 'present')
         else if (t.dataset.act === 'grave-stop') stopGrave()
         else if (t.id === 'video-resume') resumeClips()
         else if (t.id === 'video-genclips') genClips()
@@ -2031,6 +2119,7 @@
         else if (t.id === 'gen-pause') pauseGen()
         else if (t.id === 'gen-stop') stopGen()
         else if (t.id === 'regen-all') regenAll()
+        else if (t.id === 'journey-upload') uploadFutureJourney()
         else if (t.id === 'regenall-stop') stopRegenAll()
         else if (t.classList.contains('retry-btn')) retryProfile(t.dataset.id, t)
         else if (t.classList.contains('resume-btn')) resumeProfile(t.dataset.id, t)
