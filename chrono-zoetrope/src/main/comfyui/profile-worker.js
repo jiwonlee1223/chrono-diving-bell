@@ -296,6 +296,7 @@ export async function processProfile(
       seamfix: config.seamfix, // 이음매 밴드 폭/페더 (없으면 workflow 기본 256/96)
       timeoutMs: config.timeoutMs,
       sceneRetries: config.sceneRetries, // 장면 실패 시 재시도 횟수 (undefined면 기본 1)
+      sceneConcurrency: config.sceneConcurrency, // Gemini 장면 동시 생성 수 (undefined면 기본 3)
       signal, // 중지 버튼 신호
       gemini: config.gemini, // 호출자가 resolveGeminiConfig로 apiKeyPath를 절대경로화해서 넘긴다
       // 얼굴 앵커: 레퍼런스 이미지·나이 변환 접두어·기록용 메타를 한 규칙(selectFor)에서 뽑는다.
@@ -548,6 +549,7 @@ export async function processLifeGraphSession(
         seamfix: config.seamfix,
         timeoutMs: config.timeoutMs,
         sceneRetries: config.sceneRetries,
+        sceneConcurrency: config.sceneConcurrency, // Gemini 장면 동시 생성 수 (undefined면 기본 3)
         signal,
         gemini: config.gemini,
         pid,
@@ -800,6 +802,7 @@ export async function processBranchedFuture(
         seamfix: config.seamfix,
         timeoutMs: config.timeoutMs,
         sceneRetries: config.sceneRetries,
+        sceneConcurrency: config.sceneConcurrency, // Gemini 장면 동시 생성 수 (undefined면 기본 3)
         signal,
         gemini: config.gemini,
         pid,

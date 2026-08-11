@@ -231,35 +231,61 @@ export async function upsertGhostTranscript({
   personaId,
   flow = 'past',
   turns = [],
-  ended = false
+  ended = false,
+  sessionKey = null // '<flow>-<시작ms>' — 있으면 sessions.<key> 하위 맵에 세션별로 누적(2026-08-06).
+  //                    종전(최상위 turns 통째 교체)엔 대화를 다시 하면 이전 세션 기록이 덮여
+  //                    3차 재료(1차 대화)가 유실됐다. merge:true는 맵만 보존하고 배열은 대체하므로,
+  //                    세션마다 다른 키 아래에 쓰면 이전 세션이 남는다. sessionKey 없으면 구버전 동작.
 }) {
   if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
   const key = panoramaDocKey(profile)
-  await db
-    .collection(COLLECTION_GHOST_TRANSCRIPTS)
-    .doc(key)
-    .set(
-      {
-        name: profile.name || null,
-        birthDate: profile.birthDate || null,
-        personaId: personaId || null,
-        flow, //           어느 플로우의 대화인지('past'=1차 | 'future'=2차)
-        ended, //          체험이 끝까지 갔는지
-        count: turns.length,
-        turns,
-        updatedAt: FieldValue.serverTimestamp()
-      },
-      { merge: true }
-    )
+  const meta = {
+    name: profile.name || null,
+    birthDate: profile.birthDate || null,
+    personaId: personaId || null,
+    flow, //           마지막 대화의 플로우('past'=1차 | 'future'=2차)
+    ended, //          마지막 대화가 끝까지 갔는지
+    updatedAt: FieldValue.serverTimestamp()
+  }
+  const body = sessionKey
+    ? {
+        ...meta,
+        sessions: {
+          [sessionKey]: {
+            flow,
+            ended,
+            count: turns.length,
+            turns,
+            updatedAt: FieldValue.serverTimestamp()
+          }
+        }
+      }
+    : { ...meta, count: turns.length, turns } // 레거시 호출(세션 키 없음) — 종전 스키마 유지
+  await db.collection(COLLECTION_GHOST_TRANSCRIPTS).doc(key).set(body, { merge: true })
   return { key, count: turns.length }
 }
 
-/** 유령 대화 기록 조회 — 3차 플로우의 외삽 재료. profile 객체나 문서 키 문자열 둘 다 받는다. */
+/**
+ * 유령 대화 기록 조회 — 3차 플로우의 외삽 재료. profile 객체나 문서 키 문자열 둘 다 받는다.
+ * sessions 하위 맵(세션별 누적)이 있으면 **모든 세션의 turns를 시간순으로 합쳐** 최상위 turns로
+ * 돌려준다 — 읽는 쪽(3차 외삽·admin 게이트)은 스키마 변화를 모른 채 전체 대화를 본다.
+ * 세션 도입 전에 쓰인 최상위 turns(레거시 마지막 세션)는 가장 앞에 붙인다.
+ */
 export async function fetchGhostTranscript(profileOrKey) {
   if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
   const key = typeof profileOrKey === 'string' ? profileOrKey : panoramaDocKey(profileOrKey)
   const snap = await db.collection(COLLECTION_GHOST_TRANSCRIPTS).doc(key).get()
-  return snap.exists ? snap.data() : null
+  if (!snap.exists) return null
+  const d = snap.data()
+  const entries = d.sessions ? Object.entries(d.sessions) : []
+  if (!entries.length) return d
+  entries.sort(
+    (a, b) => (parseInt(a[0].split('-').pop(), 10) || 0) - (parseInt(b[0].split('-').pop(), 10) || 0)
+  )
+  const merged = Array.isArray(d.turns) ? [...d.turns] : [] // 레거시(세션 도입 전) 기록 보존
+  for (const [, s] of entries) if (Array.isArray(s.turns)) merged.push(...s.turns)
+  const last = entries[entries.length - 1][1]
+  return { ...d, turns: merged, count: merged.length, flow: last.flow ?? d.flow, ended: last.ended ?? d.ended }
 }
 
 export const COLLECTION_FUNERALS = 'generatedFunerals'
@@ -631,6 +657,52 @@ export async function uploadPersonaVideos({
   }
   await doc.set({ ...base, count: uploaded.length, videos: uploaded }, { merge: true })
   return { key, count: uploaded.length, videos: uploaded }
+}
+
+/**
+ * 영상 클립 한 개만 Storage에 올리고 generatedVideos 문서의 videos 배열에서 그 id를 교체(없으면 추가)한다
+ * — admin 단건 재생성이 그 장면 클립만 정본에 최신본으로 반영할 때 쓴다(전체 재업로드 회피).
+ * objectPath가 결정론적(generated-videos/<key>/<id>.mp4)이라 덮어쓰기로 최신 바이트가 반영되고
+ * 이전 판은 Storage·Firestore 어디에도 남지 않는다 (uploadPersonaPanoramaImage와 동일 패턴).
+ * @param {object} p { profile:{name,birthDate,id?}, personaId, dir, image:{id,age?,year?,scene?,isPast?}, bucket? }
+ * @returns {Promise<{key,id,url,storagePath}>}
+ */
+export async function uploadPersonaVideoClip({ profile, personaId, dir, image, bucket }) {
+  if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  if (!image?.id) throw new Error('image.id가 필요하다')
+  const bkt = getStorage(app).bucket(bucket || defaultBucket)
+  const key = panoramaDocKey(profile)
+  const local = path.join(dir, 'videos', `${image.id}.mp4`)
+  const objectPath = `generated-videos/${key}/${image.id}.mp4`
+  const { url, storagePath } = await uploadFileToStorage(bkt, local, objectPath, 'video/mp4')
+  const entry = {
+    id: image.id,
+    age: image.age ?? null,
+    year: image.year ?? null,
+    scene: image.scene ?? null,
+    isPast: image.isPast ?? null,
+    url,
+    storagePath
+  }
+  // 기존 doc의 videos 배열에서 같은 id를 교체(없으면 추가) — read-modify-write. 영상 큐는 순차라 경합 없음.
+  const ref = db.collection(COLLECTION_VIDEOS).doc(key)
+  const snap = await ref.get()
+  const prev = snap.exists ? snap.data().videos || [] : []
+  const videos = prev.filter((v) => v.id !== image.id)
+  videos.push(entry)
+  await ref.set(
+    {
+      name: profile.name || null,
+      birthDate: profile.birthDate || null,
+      personaId,
+      bucket: bkt.name,
+      count: videos.length,
+      videos,
+      updatedAt: FieldValue.serverTimestamp()
+    },
+    { merge: true }
+  )
+  return { key, id: image.id, url, storagePath }
 }
 
 // ── Firebase 정본 읽기(정본화: 로컬 library는 캐시) ──────────────────────────────

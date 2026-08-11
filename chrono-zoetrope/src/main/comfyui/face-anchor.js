@@ -17,11 +17,28 @@
 // 이 나이 이상만 "현재 얼굴 앵커"로 나이 변환을 건다(미만은 아동 — de-age 세이프티 회피).
 export const ADULT_MIN_AGE = 18
 
-// 그 순간의 실제 사진 접두어 — 얼굴(정체성)과 실제 장소·사물은 살리되, 복장·표정·자세는 장면에서
-// 그 인물이 하는 행동에 맞게 조정되게 한다(사진을 납작하게 복사하지 않게).
+// 그 순간의 실제 사진 접두어 — outpainting 프레이밍(2026-08-06): 사진을 '해석 소재'가 아니라
+// 결과물의 중심으로 삼고, 사진 속 인물·구도·공간·빛을 최대한 그대로 보존한 채 프레임 바깥의
+// 공간만 이어 그리게 한다. 단 클로즈업 사진을 문자 그대로 늘리면 인물이 화면에서 너무 커지므로
+// (파노라마 인물 세로 35~40% 기준), 필요하면 같은 순간을 더 넓은 앵글에서 본 것처럼만 물러난다.
 export const REFERENCE_PHOTO_PREFIX =
-  'The attached photograph is a real photo of this moment. Use it as the source for this person’s facial identity and for the real place, objects and colors of the scene, keeping them recognizable. ' +
-  'But their clothing, facial expression and pose should follow what the person is actively doing in this reimagined 360° scene, not be flatly copied from the photo. '
+  'The attached photograph is a REAL photo of this exact moment. Treat this image generation as an EXTENSION of that photograph, not a reinterpretation: ' +
+  'the person, their face, clothing, pose, and the real place, objects, colors and lighting visible in the photo must be preserved as faithfully as possible, as if the photo sits at the heart of the result. ' +
+  'Continue the same physical space naturally beyond the photo’s edges — imagine what surrounds this scene outside the frame and paint it in seamlessly, matching the photo’s lighting, era, season and atmosphere. ' +
+  'If the photograph is black-and-white, sepia or faded, do NOT reproduce that monochrome look: render the whole scene in natural, realistic full color, inferring plausible colors for the place, clothing and objects from their era and materials. ' +
+  'If the photo is a close-up, pull the camera back to a wider view of the SAME moment so the person fits the composition, changing nothing about who they are or what they are doing. ' +
+  'Do not invent a different setting, different clothing or a different activity than what the photograph shows. ' +
+  'The scene description that follows is secondary context to help you extend the surroundings and mood; wherever it conflicts with what the photograph actually shows, the photograph wins. '
+
+// 같은 나이의 장면 2개가 같은 stage 사진을 앵커로 쓰면 위 outpainting 지시("사진과 다른 행동 금지")가
+// 둘 다 사진 재현으로 수렴해 거의 같은 그림 두 장이 나온다(2026-08-06 사용자 보고). 두 번째 이후
+// 장면(sceneIndex≥2)에는 이 접미어를 붙여, 사진은 정체성·시대·장소의 앵커로만 격하하고 행동·구도는
+// 장면 텍스트를 따르게 한다 — 첫 장면(scene 1)만 사진의 순수 확장으로 남는다.
+export const STAGE_SIBLING_SCENE_SUFFIX =
+  'IMPORTANT EXCEPTION for THIS scene: another scene of this same age has ALREADY been generated as a direct extension of this photograph, and this one must NOT be a second near-copy. ' +
+  'For this scene, use the photograph ONLY as the anchor for the person’s facial identity, apparent age, era and general place. ' +
+  'The specific moment, activity, camera position, angle and composition must follow the scene description below instead — a clearly different moment of the same period, ' +
+  'not the moment the photograph shows. '
 
 // aged 포트레이트(2단계 A단계 결과)를 레퍼런스로 실을 때 앞에 붙이는 지시. 포트레이트는 '이미 그
 // 나이의 그 사람'이므로 여기서는 aging을 시키지 않는다 — 그 얼굴·그 나이를 그대로 유지시키기만
@@ -71,7 +88,14 @@ export function selectSceneReference(
   item,
   { stageRef = null, faceRef = null, agedRefFor = null } = {}
 ) {
-  if (stageRef) return { reference: stageRef, prefix: REFERENCE_PHOTO_PREFIX, kind: 'stage' }
+  if (stageRef)
+    return {
+      reference: stageRef,
+      // 같은 나이 두 번째 장면부터는 사진 직역을 풀어 장면 텍스트를 따르게 한다(판박이 방지).
+      prefix:
+        REFERENCE_PHOTO_PREFIX + (item.sceneIndex >= 2 ? STAGE_SIBLING_SCENE_SUFFIX : ''),
+      kind: 'stage'
+    }
   // 얼굴 참조 최대화(2026-08-03): aged 포트레이트는 나이 제한 없이 앵커로 쓴다 — 아동 나이도
   // 프리패스(prepareAgedAnchors)가 그 나이 얼굴을 뽑는 데 성공했으면 그걸 실어 정체성을 잇는다.
   // (de-age는 포트레이트 단계에서 이미 끝났으므로 장면 단계엔 세이프티 위험이 없다.)
@@ -91,7 +115,8 @@ export function selectSceneReference(
  * @returns {string}
  */
 export function prefixForEntry(entry) {
-  if (entry.referenceKind === 'stage') return REFERENCE_PHOTO_PREFIX
+  if (entry.referenceKind === 'stage')
+    return REFERENCE_PHOTO_PREFIX + (entry.sceneIndex >= 2 ? STAGE_SIBLING_SCENE_SUFFIX : '')
   if (entry.referenceKind === 'aged') return KEEP_FACE_PREFIX
   if (entry.referenceKind === 'anchor') return ageAnchorPrefix(entry)
   return ''

@@ -65,10 +65,11 @@ export class VideoRegenerator {
   /**
    * 한 장면을 영상화. seedance = 10초 seamless 루프(FLF 동일프레임), wan = Wan2.2 I2V.
    * 실패·mock이면 null. 캐시 videos/<id>.mp4 (전시 FREEZE·릴이 공유).
+   * force=true면 캐시를 무시하고 새로 생성해 같은 경로에 덮어쓴다(단건 재생성용).
    * @param {{ id, absPath, scene, age? }} image
    */
-  async regenerate(image, { onProgress } = {}) {
-    const cached = this.cachedPath(image.id)
+  async regenerate(image, { onProgress, force = false } = {}) {
+    const cached = force ? null : this.cachedPath(image.id)
     if (cached) {
       console.log(`[regen] 캐시 적중: ${image.id}`)
       return cached

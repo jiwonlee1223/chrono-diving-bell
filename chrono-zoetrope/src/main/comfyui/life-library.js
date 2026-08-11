@@ -60,6 +60,7 @@ export async function generateLifeLibrary(profile, opts = {}) {
     image = { width: 1344, height: 768 },
     timeoutMs = 300000,
     sceneRetries = 1, // 장면 생성 실패 시 추가 재시도 횟수 (총 시도 = 1 + sceneRetries)
+    sceneConcurrency = 3, // Gemini 장면 동시 생성 수(reelPhotos.concurrency와 같은 취지) — ComfyUI 경로는 GPU 큐가 하나라 무시하고 직렬
     signal, //          외부 취소(중지 버튼) — 장면 사이·생성 요청에서 확인해 중단한다
     gemini = {},
     seamfix = {}, //     이음매 밴드 { bandWidth, feather } — 미지정 키는 workflow 기본(256/96)
@@ -186,7 +187,7 @@ export async function generateLifeLibrary(profile, opts = {}) {
     ...(priorReel ? { reel: priorReel } : {}),
     images: []
   }
-  const writeManifest = async () => {
+  const writeManifestNow = async () => {
     // read-merge-write(2026-08-05): 생성이 도는 동안 admin이 디스크에 더한 키(grave·funeral·
     // reelPhotos 등)를 이 흐름의 stale 전체 덮어쓰기가 지우지 않게, 디스크에만 있는 키를
     // in-memory manifest로 먼저 흡수한 뒤 쓴다(이 흐름이 쥔 키는 in-memory가 이긴다).
@@ -205,6 +206,14 @@ export async function generateLifeLibrary(profile, opts = {}) {
         /* 정본 동기화 실패는 무시 — 로컬 진행분은 이미 저장됐고 다음 장에서 다시 시도된다 */
       }
     }
+  }
+  // 병렬 워커가 동시에 저장을 부르면 read-merge-write가 서로를 밟으므로 직렬 체인으로 순서를 보장한다
+  // (reel-photos.js의 writing 체인과 같은 패턴).
+  let writing = Promise.resolve()
+  const writeManifest = () => {
+    const run = writing.then(writeManifestNow)
+    writing = run.catch(() => {})
+    return run
   }
 
   try {
@@ -265,8 +274,18 @@ export async function generateLifeLibrary(profile, opts = {}) {
       await writeManifest()
     }
 
-    for (let i = 0; i < plan.length; i++) {
-      if (signal?.aborted) break // 중지 요청 — 진행분은 finally가 저장, 남은 장은 나중에 재개
+    // 병렬화(2026-08-06): Gemini 장면(equirect·gemini)은 원격 API라 동시 호출이 가능하다 —
+    // reel-photos.js와 같은 워커 풀. ComfyUI 경로(kontext·sdxl·seamfix 보정)는 GPU 큐가
+    // 하나라 직렬 유지. manifest.images는 완료 순서와 무관하게 plan 순서를 지키도록
+    // 인덱스 배열(results)에 모았다가 저장 직전에 재구성한다(파노라마 재생목록·릴 편집이 순서 전제).
+    const results = new Array(plan.length).fill(null)
+    const syncImages = () => {
+      manifest.images = results.filter(Boolean)
+    }
+    let doneCount = 0
+    const effConcurrency = isGemini || isEquirect ? Math.max(1, sceneConcurrency) : 1
+
+    const processItem = async (i) => {
       const item = plan[i]
       // gemini·equirect는 시드 개념이 없다. seamfix는 보정 단계(ComfyUI)에 시드가 필요하므로 발급한다.
       const seed = isGemini || isEquirect ? null : randomSeed()
@@ -280,20 +299,21 @@ export async function generateLifeLibrary(profile, opts = {}) {
       // 재개: 이전 실행에서 성공한 장면은 건너뛴다. failed 표시된 장은 다시 시도한다.
       const prev = priorImages.get(item.id)
       if (prev && !prev.failed && (await fileExists(localFile))) {
-        manifest.images.push(prev)
+        results[i] = prev
+        syncImages()
         await writeManifest()
         onProgress({
           type: 'image-done',
-          done: i + 1,
+          done: ++doneCount,
           total: plan.length,
           item,
           file: localFile,
           resumed: true
         })
-        continue
+        return
       }
 
-      onProgress({ type: 'image-start', done: i, total: plan.length, item })
+      onProgress({ type: 'image-start', done: doneCount, total: plan.length, item })
       const t0 = Date.now()
 
       // 장면별 회복력: 타임아웃 등 실패 시 재시도, 그래도 안 되면 그 장만 건너뛰고 계속한다.
@@ -409,10 +429,10 @@ export async function generateLifeLibrary(profile, opts = {}) {
 
       if (cancelled) {
         await fs.rm(localFile, { force: true }).catch(() => {}) // 반쯤 써진 파일 정리
-        break // 중지 — 이 장은 failed로 남기지 않는다(사용자가 나중에 재개)
+        return // 중지 — 이 장은 failed로 남기지 않는다(사용자가 나중에 재개)
       }
       if (ok) {
-        manifest.images.push({
+        results[i] = {
           ...item,
           prompt,
           seed,
@@ -421,13 +441,20 @@ export async function generateLifeLibrary(profile, opts = {}) {
           ...(srcFile ? { srcFile } : {}), // seamfix 원본 — edge 재연결이 재사용
           ...(refMeta ? { referenceFile: refMeta.file, referenceKind: refMeta.kind } : {}), // 재생성용 레퍼런스
           elapsedMs: Date.now() - t0
-        })
+        }
+        syncImages()
         await writeManifest() // 장마다 기록 — 중단돼도 진행분은 남는다
-        onProgress({ type: 'image-done', done: i + 1, total: plan.length, item, file: localFile })
+        onProgress({
+          type: 'image-done',
+          done: ++doneCount,
+          total: plan.length,
+          item,
+          file: localFile
+        })
       } else {
         // 재시도까지 실패 — 그 장은 failed로 표시하고(파일 없음) 계속. admin에서 개별 재생성 가능.
         await fs.rm(localFile, { force: true }).catch(() => {}) // 반쯤 써진 파일 정리
-        manifest.images.push({
+        results[i] = {
           ...item,
           prompt,
           seed,
@@ -435,17 +462,31 @@ export async function generateLifeLibrary(profile, opts = {}) {
           file: `${item.id}.png`,
           ...(refMeta ? { referenceFile: refMeta.file, referenceKind: refMeta.kind } : {}),
           failed: true
-        })
+        }
+        syncImages()
         await writeManifest()
         onProgress({
           type: 'image-failed',
-          done: i + 1,
+          done: ++doneCount,
           total: plan.length,
           item,
           error: lastErr?.message
         })
       }
     }
+
+    // 워커 풀 — effConcurrency명이 plan 인덱스를 나눠 가진다. 중지(signal)되면 새 장을 집지 않고
+    // 각자 하던 장만 마무리/정리하고 빠진다(진행분은 finally가 저장, 남은 장은 재개 시 이어서).
+    let nextIndex = 0
+    await Promise.all(
+      Array.from({ length: Math.min(effConcurrency, plan.length) }, async () => {
+        while (!signal?.aborted) {
+          const i = nextIndex++
+          if (i >= plan.length) break
+          await processItem(i)
+        }
+      })
+    )
   } finally {
     client?.close()
     await writeManifest().catch(() => {})

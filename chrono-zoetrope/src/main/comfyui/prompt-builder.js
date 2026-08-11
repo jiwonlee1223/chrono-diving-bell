@@ -31,17 +31,22 @@ export const NO_TEXT_DIRECTIVE =
 
 // 한국 배경 강제(2026-08-03) — 장면 묘사("school corridor" 등)가 국적 중립이면 모델이 미국식
 // 공간(사물함 복도·스쿨버스·교외 주택)을 디폴트로 그린다. 모든 장면 프롬프트에 이 지시를 넣어
-// 건축·인테리어·소품·주변 인물까지 한국 컨텍스트를 유지시킨다. 연대(item.year)를 알면 그
-// 시대의 한국으로 못 박고, 미래는 연대 고증 대신 "지금과 이어지는 일상의 한국"으로 둔다
-// (composeReelPhotoPrompt의 era 규칙과 동일 — 미래에 연대를 못 박으면 SF 소품이 끌려온다).
+// 건축·인테리어·소품·주변 인물까지 한국 컨텍스트를 유지시킨다.
+// 시대 규칙(2026-08-10 개편, composeReelPhotoPrompt의 era와 동일 원칙):
+//   과거 — 정확한 연도를 프롬프트에 박아 그 해의 분위기를 고증한다(그 해에 없던 물건 금지).
+//   미래 — 연도를 밝히되 "조용히 진보한 그럴듯한 근미래"로: 오늘 이미 사라져가는 물건(종이 신문 등)이
+//   미래 장면에 나오면 관람객의 몰입이 깨진다(사용자 피드백). 단 홀로그램·플라잉카식 SF는 여전히 금지.
 export function koreanContextFor(item = {}) {
   const hasYear = Number.isFinite(item.year)
   const decade = hasYear ? Math.floor(item.year / 10) * 10 : null
   const where =
     item.isPast === false
-      ? 'South Korea some decades from now — everyday Korean life that still looks recognisably ordinary, quietly modern but NOT science fiction'
+      ? (hasYear ? `South Korea in the year ${item.year} — ` : 'South Korea some decades from now — ') +
+        'a PLAUSIBLE NEAR FUTURE: everyday life is still recognisably ordinary, but technology and objects have quietly advanced with the years — slimmer ambient devices and displays, electric vehicles, evolved fashions and storefronts. ' +
+        'Objects that are already fading from daily life today must NOT appear (no paper newspapers, no cash handling, no bulky old TVs or appliances, no visibly dated cars or phones). ' +
+        'Still NOT science fiction: no holograms, no flying vehicles, no sleek sci-fi styling'
       : hasYear
-        ? `${decade}s South Korea, with period-accurate everyday Korean details of that time`
+        ? `South Korea in the year ${item.year} (the ${decade}s) — with period-accurate everyday Korean details of that exact time: the architecture, interiors, clothing, hairstyles, vehicles and objects of ${item.year}, and NOTHING that did not exist yet in that year`
         : 'South Korea'
   return (
     ` IMPORTANT SETTING — unless the scene description above explicitly names a different country or city, this scene takes place in ${where}.` +
@@ -323,15 +328,17 @@ export function reelSceneForAge(age, seedString) {
  */
 export function composeReelPhotoPrompt(profile, item, { orientation = 'portrait' } = {}) {
   const who = `a ${item.age}-year-old ${subjectNoun(item.age, profile?.gender)}`
-  // 시대 문구 — 과거는 실제 연대의 고증을 요구할 수 있지만, 미래 연대(2070년대 등)에 "고증"을
-  // 요구하면 모델이 SF 소품(홀로그램·플라잉카)을 끌어온다. 미래는 연대를 못 박지 않고
-  // "지금에서 N십 년 흐른, 알아볼 수 있는 일상"으로 둔다 — 주마등은 공상과학이 아니다.
+  // 시대 문구(2026-08-10 개편, koreanContextFor와 동일 원칙) — 과거는 정확한 연도 고증,
+  // 미래는 연도를 밝힌 "조용히 진보한 근미래"(오늘 사라져가는 물건 금지, SF 소품도 여전히 금지).
   const decade = Math.floor(item.year / 10) * 10
   const era =
     item.isPast === false
-      ? `Korea a few decades from now — everyday life that still looks recognisably ordinary,` +
-        ` quietly modern but NOT science fiction: no futuristic technology, no holograms, no sleek sci-fi styling`
-      : `${decade}s Korea — everyday period-accurate details of that time and place`
+      ? `Korea in the year ${item.year} — a plausible near future: everyday life still recognisably ordinary,` +
+        ` but technology, devices, vehicles and fashions quietly advanced with the years; nothing that is already` +
+        ` fading from daily life today (no paper newspapers, no cash, no dated appliances or cars), yet NOT` +
+        ` science fiction: no holograms, no flying vehicles, no sleek sci-fi styling`
+      : `Korea in the year ${item.year} (the ${decade}s) — everyday period-accurate details of that exact time` +
+        ` and place, with nothing that did not exist yet in ${item.year}`
   const extra = (profile?.descriptors || []).join(', ')
   const frame =
     orientation === 'landscape'

@@ -84,6 +84,23 @@ export function nearestGeminiAspect(width, height) {
   return best
 }
 
+/**
+ * 21:9 결과를 세로 중앙 기준 4:1로 잘라낸다 — pro 모델(gemini-3-pro-image)이 4:1 파노라마를
+ * 거부해서 생긴 우회 경로 전용: pro로 21:9를 생성한 뒤 이걸로 4:1 규격에 맞춘다.
+ * 이미 4:1 이하(납작)면 원본을 그대로 돌려준다.
+ */
+export async function cropImageTo41(buf) {
+  const { default: sharp } = await import('sharp')
+  const img = sharp(buf)
+  const { width, height } = await img.metadata()
+  const targetH = Math.round(width / 4)
+  if (!width || !height || height <= targetH) return buf
+  return img
+    .extract({ left: 0, top: Math.round((height - targetH) / 2), width, height: targetH })
+    .png()
+    .toBuffer()
+}
+
 function sniffMime(buffer) {
   if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8) return 'image/jpeg'
   if (buffer.length >= 4 && buffer[0] === 0x89 && buffer[1] === 0x50) return 'image/png'

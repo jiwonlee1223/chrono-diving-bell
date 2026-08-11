@@ -26,16 +26,18 @@
     "onePerStage": true
   },
   "demo": {
-    "$comment": "1차 흐름(서버 소유 국면): 세션 지정 → spinup(실타래 배속) → funeral(자기 장례식 영상) → TV 꺼지듯 암전 → reel(주마등, 현 시점→탄생 역순) → ghost(유령 뜬 idle, 1인칭 진입 대기). 서버가 타이머로 진행하고 국면을 방송·부트스트랩에 실어, 런타임 페이지를 새로고침해도 직전 국면을 이어간다. 중단은 admin '세션 나가기'로만.",
+    "$comment": "1차 흐름(서버 소유 국면): 세션 지정 → spinup(실타래 배속) → funeral(자기 장례식 영상+내레이션) → 장지 → reel(주마등, 탄생→현 시점 순방향 + 삶 회고 내레이션) → ghost(유령 뜬 idle, 1인칭 진입 대기). 서버가 타이머로 진행하고 국면을 방송·부트스트랩에 실어, 런타임 페이지를 새로고침해도 직전 국면을 이어간다. 중단은 admin '세션 나가기'로만.",
     "spinupMs": 10000,
-    "$spinupFirstMs": "1차 체험 개막 spinup 길이만 따로(2026-08-05 2배 연장). 2차 개막·유령 2장 브리지는 spinupMs를 그대로 쓴다. 돔 cues.spinup 6왕복(18초)과 세트.",
-    "spinupFirstMs": 20000,
+    "$spinupFirstMs": "1차 체험 개막 spinup 길이만 따로. 2차 개막·유령 2장 브리지는 spinupMs를 그대로 쓴다. 돔 cues.spinup(선행 정지 10초 + 6왕복 18초 = 28초)과 세트 — 2026-08-06: 실타래 빨리감기+천둥만 10초 먼저 흐른 뒤 돔 fbfb가 시작되고, 안무가 끝나면 장례식으로 넘어간다.",
+    "spinupFirstMs": 28000,
     "$funeral": "주마등 앞에 자기 장례식 영상(고인 시선 파노라마)을 먼저 튼다. false면 건너뛴다. 영상이 아직 없으면(admin 승인·영상화 전) 자동으로 건너뛰므로 전시는 멈추지 않는다.",
     "funeral": true,
     "$funeralVariant": "어느 장례식인가. 'present'(기본)=지금 죽은 장례식 — 뒤따르는 주마등(탄생~현 시점)과 시간대가 맞는다. 'future'=이대로 살아 90세에 맞는 죽음의 장례식.",
     "funeralVariant": "present",
-    "$funeralSceneMs": "장례식 장면에 머무는 시간(ms). Wan 클립 자체는 ~5초(81f/16fps)라 이 시간에 닿을 때까지 loop로 돈다 — 정확히는 이 값에 가장 가까운 정수 바퀴에서 끝내 이음매에서 끊기지 않게 한다(5.06초 클립 기준 3바퀴=15.2초). 1차·2차 플로우 장례식에 함께 적용된다.",
-    "funeralSceneMs": 15000,
+    "$funeralSceneMs": "장례식 장면에 머무는 시간(ms). Wan 클립 자체는 ~5초(81f/16fps)라 이 시간에 닿을 때까지 loop로 돈다 — 정확히는 이 값에 가장 가까운 정수 바퀴에서 끝내 이음매에서 끊기지 않게 한다(5.06초 클립 기준 4바퀴=20.2초). 1차·2차 플로우 장례식에 함께 적용된다. 2026-08-06 15초→20초: 내레이션(~10초) 뒤 10초 정적을 확보.",
+    "funeralSceneMs": 20000,
+    "$graveSceneMs": "장지 장면에 머무는 시간(ms). 미지정 시 funeralSceneMs를 따른다. 2026-08-06: 정적 10초.",
+    "graveSceneMs": 10000,
     "$funeralBlackoutMs": "장례식 영상이 끝나고 TV가 꺼지듯 접히는 암전 연출의 총 길이(ms). 이 암전에서 주마등이 시작된다.",
     "funeralBlackoutMs": 1600,
     "$funeralMaxMs": "장례식 국면 상한(ms). 클라이언트 무응답·로드 실패로 종료 신호가 안 오면 이 시간 뒤 주마등으로 넘어간다.",
@@ -50,7 +52,7 @@
     "filmstripGutterFrac": 0.05,
     "$filmLook": "필름스트립을 옛날 필름 카메라 롤처럼 연출(기본 true). 스트립 위아래 퍼포레이션(스프로킷 구멍)·프레임 테두리를 그리고, 셰이더에서 세피아·그레인·프로젝터 플리커·세로 스크래치·게이트 위브(미세 흔들림)를 얹는다. false면 기존 민짜 스트립.",
     "filmLook": true,
-    "$birthHoldSec": "1차 주마등 끝 연출 — 마지막 장(탄생)이 정면 중앙에 정지해 머무는 시간(초). 이후 릴이 다 돌 때까지 blank.",
+    "$birthHoldSec": "1차 주마등 끝 연출 — 마지막 장(순방향이라 현 시점, 2026-08-06)이 정면 중앙에 정지해 머무는 시간(초). 이후 릴이 다 돌 때까지 blank.",
     "birthHoldSec": 5,
     "reelPlaybackRate": 3
   },
@@ -61,13 +63,24 @@
       "provider": "elevenlabs",
       "engine": "bridge",
       "ttsModelId": "eleven_flash_v2_5",
-      "sentenceBreak": 0.6,
+      "$sentenceBreak": "문장 사이 정적(초). 서버가 문장 경계마다 <break>를 끼운다 — 템포와 별개로 '말 사이 숨'을 만든다. 2026-08-10 0.6→0.8.",
+      "sentenceBreak": 0.8,
       "listen": { "endSilenceMs": 2500, "maxUtteranceMs": 45000 },
+      "$stt": "브리지 듣기 엔진. webspeech=브라우저 Web Speech(ko 인식이 Realtime보다 좋았음, 2026-08-06 실측) / realtime=OpenAI Realtime 전사(semantic_vad — 말의 내용으로 끝점 판정, 뜸 들여도 안 자름; 키 파일 없음·연결 실패 시 Web Speech 폴백). eagerness: low=참을성 있게 기다림/medium/high. inputGain=마이크 증폭 배율(1=원신호) — 신호가 약해 말을 못 잡으면 2~4로 올려 실측. noiseReduction: far_field(원거리 마이크, 억제 강함)/near_field(근접 마이크).",
+      "stt": {
+        "engine": "webspeech",
+        "apiKeyPath": "./secrets/openai-api-key.txt",
+        "model": "gpt-4o-transcribe",
+        "eagerness": "low",
+        "language": "ko",
+        "inputGain": 3,
+        "noiseReduction": "near_field"
+      },
       "agentId": "agent_7101ky4wmb2wfj4bnf3ajcpbgsfw",
       "apiKeyPath": "./secrets/elevenlabs-api-key.txt",
       "language": "ko",
       "voiceId": "Ip8ZgfdNlluBt9FGzcAN",
-      "$speed": "발화 템포(0.7~1.2, 1=기본). 낮을수록 천천히 — 모델이 그 템포로 자연 발화한다.",
+      "$speed": "발화 템포(0.7~1.2, 1=기본). 낮을수록 천천히 — 모델이 그 템포로 자연 발화한다. 2026-08-10 전체적으로 빠르다는 피드백으로 0.9로 하향.",
       "speed": 0.9,
       "flow": "past",
       "past": {
@@ -116,9 +129,10 @@
     "port": "COM3",
     "baudRate": 115200,
     "cues": {
-      "$spinup": "실타래 개막 안무(1차 전용 — 2차는 cuesSecond.spinup이 덮어씀) — b/f 1.5초 균등 6왕복 후 정지. 총 18초, 반복 없음(2026-08-05 3왕복→6왕복, spinupFirstMs 2배 연장과 세트).",
+      "$spinup": "실타래 개막 안무(1차 전용 — 2차는 cuesSecond.spinup이 덮어씀) — 선행 정지 10초(실타래 빨리감기+천둥만 흐른다, 2026-08-06) 뒤 b/f 1.5초 균등 6왕복 후 정지. 총 28초, 반복 없음. spinupFirstMs 28000과 세트.",
       "spinup": {
         "steps": [
+          { "c": "s", "ms": 10000 },
           { "c": "b", "ms": 1500 },
           { "c": "f", "ms": 1500 },
           { "c": "b", "ms": 1500 },
@@ -138,15 +152,17 @@
       "reel": "s",
       "ghost": "s",
       "idle": "s",
-      "$ghostScene": "유령 대화 중 장면(순간) 이동마다 — f/b 1.5초 1왕복 후 정지. 1장(과거)·2장(미래) 공통.",
+      "$ghostScene": "유령 대화 중 장면(순간) 이동마다 — f/b 1.5초 2왕복 후 정지(2026-08-06 1왕복→2왕복). 총 6초. 1장(과거)·2장(미래) 공통.",
       "ghostScene": {
         "steps": [
+          { "c": "f", "ms": 1500 },
+          { "c": "b", "ms": 1500 },
           { "c": "f", "ms": 1500 },
           { "c": "b", "ms": 1500 },
           { "c": "s", "ms": 0 }
         ]
       },
-      "$ghostFuture": "유령 대화의 1장(과거)→2장(미래) 전환 순간('이제 보여줄게' 발화·개막 연출과 함께) — 1차 개막과 같은 b/f 1.5초 3왕복 후, b 7초 돔 체인징, 정지. 총 16초.",
+      "$ghostFuture": "유령 대화의 1장(과거)→2장(미래) 전환 순간('이제 보여줄게' 발화·개막 연출과 함께) — b/f 1.5초 3왕복 후, b 7초 돔 체인징, 정지. 총 16초(2026-08-06 8초→7초 원복).",
       "ghostFuture": {
         "steps": [
           { "c": "b", "ms": 1500 },

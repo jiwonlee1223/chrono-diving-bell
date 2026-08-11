@@ -675,11 +675,15 @@ function futureExtrapolationMaterials(profile, sessionPoints, futureAges) {
       : '') +
     `### The direction of this future\n` +
     `This is the future in which their hopes do NOT arrive. Somewhere along the way something goes` +
-    ` wrong — quietly, plausibly — and the plans, wishes and bucket-list items they wrote above are` +
-    ` postponed, derailed, or silently shelved. Show this ONLY as visible facts and events (a saved-for` +
-    ` trip replaced by a hospital corridor, an instrument still in its case, a shop that never opened);` +
-    ` never narrate disappointment, never state that they failed. The life must remain ordinary and` +
-    ` believable — not tragedy or spectacle, just a life that bent away from what they wanted.\n\n` +
+    ` wrong — plausibly, but UNMISTAKABLY — and the plans, wishes and bucket-list items they wrote` +
+    ` above are postponed, derailed, or shelved. Across the WHOLE future, choose only ONE or TWO ages` +
+    ` to carry a clear visible trace of a hope that did not arrive (an instrument still in its case in` +
+    ` the corner of the room, a shop that never opened, a saved-for trip replaced by a hospital` +
+    ` corridor). Every other age shows plain ordinary life bent by that one turn — no additional staged` +
+    ` reminders of what is missing; the absence speaks through how the life simply goes on.\n` +
+    `Yet never narrate disappointment, never state that they failed, and never tip into catastrophe:` +
+    ` no ruin, no destitution, no tragedy or spectacle. The life stays believable and even functional —` +
+    ` it is simply, visibly, not the life they wanted.\n\n` +
     `### How to weigh your prediction\n` +
     `Blend these four sources in roughly these proportions. Do not let any single one dominate:\n` +
     `- 50% — DEMOGRAPHIC TRAJECTORY: what actually tends to happen to people of this birth cohort,` +
@@ -694,9 +698,11 @@ function futureExtrapolationMaterials(profile, sessionPoints, futureAges) {
     ` turn inward. Keep this as an undercurrent that shapes tone, never as a stated prophecy.\n` +
     `- 10% — THE UNFORESEEN: life does not follow plans. Choose exactly ONE of these ages to carry the` +
     ` single turn that knocked things off course — a health event, a family obligation, work that` +
-    ` consumed the years, money that went elsewhere. Every other age shows NO new misfortune — only` +
-    ` ordinary life and the quiet traces of plans that never arrived, downstream of that one turn.` +
-    ` It should still look like a life, not a spectacle.\n\n`
+    ` consumed the years, money that went elsewhere. Make that turn a clear HINGE of the chronicle:` +
+    ` the ages before and after it should read visibly differently, and its consequences keep surfacing` +
+    ` downstream in where they live, what they do and who is around. Every other age shows NO new` +
+    ` misfortune — only ordinary life bent by that one turn, and the traces of plans that never` +
+    ` arrived. It should still look like a life, not a spectacle.\n\n`
   return { materials, cur }
 }
 
@@ -752,6 +758,9 @@ export function buildFutureExtrapolationPrompt(profile, sessionPoints, futureAge
     `- Describe only what a camera could see: places, light, objects, actions, who is present.` +
     ` Do NOT interpret or judge what this life meant, and do not narrate success, failure or regret.\n` +
     `- Do not depict death or a deathbed — the final scene of this life is fixed elsewhere.\n` +
+    `- These are FUTURE years — the objects, devices and vehicles in each scene must be plausible for` +
+    ` that scene's year: quietly advanced everyday things, and NOTHING that is already fading from daily` +
+    ` life today (no paper newspapers, no cash, no dated appliances). Still not science fiction.\n` +
     `- Be specific and physical. No captions, no lettering, no text of any kind in the scene.\n` +
     `- ${SCENE_ROLE_RULES.replaceAll('\n', '\n- ')}\n` +
     `- Each scene: one English present-participle phrase, the same style as: ` +
@@ -806,7 +815,8 @@ export async function synthesizeAgeScenes(
 // 사실만 장면으로 보여준다. 관람객은 같은 형식의 두 생애(2차 vs 3차)를 나란히 보게 된다.
 //
 // §1과의 관계: 2차와 같은 의식적 예외다. 단, 3차는 근거가 한 겹 더 있다 — 관람객이 유령에게
-// 실제로 말한 문장들(후회·망설임·새로 발견한 욕망)에서만 변화의 단서를 읽고, 대화에 없는
+// 실제로 말한 문장들(후회·망설임·새로 발견한 욕망)을 1순위로, profiles에 직접 쓴 전체 데이터
+// (미래 점·모토·버킷리스트·묘비명·편지)를 함께 읽되(2026-08-06 확장), 어디에도 흔적이 없는
 // 심경 변화를 지어내지 않는다. manifest에는 sceneSource='branched'로 출처를 남긴다.
 
 /** 분기 미래의 대상 나이 — 현재보다 뒤의 격자 나이 전부(사용자 점 유무와 무관: 전부 다시 산다). */
@@ -842,13 +852,17 @@ function branchedExtrapolationMaterials(profile, sessionPoints, transcriptTurns,
   const transcript = formatTranscriptTurns(transcriptTurns)
   if (!transcript) return null
   const pastNotes = []
+  const futureNotes = [] // 본인이 profiles에 직접 쓴 미래 점 — 희망 미래의 가장 직접적인 진술(2026-08-06)
   const seen = new Set()
   for (const age of AGES) {
     const r = resolveAgePoint(age, sessionPoints, profile)
-    if (!r || seen.has(r.key) || r.isFuture) continue
+    if (!r || seen.has(r.key)) continue
     seen.add(r.key)
     const t = r.point?.text?.trim()
-    if (t) pastNotes.push(`- age ${r.point?.age ?? ageOfStageId(r.key) ?? age}: "${t}"`)
+    if (!t) continue
+    ;(r.isFuture ? futureNotes : pastNotes).push(
+      `- age ${r.point?.age ?? ageOfStageId(r.key) ?? age}: "${t}"`
+    )
   }
   // 3차(긍정미래)는 최신 myLife를 딛는다(pickMyLifeEntry 기본값 'latest') — 체험 뒤 crafter가
   // 새로 추가한 항목이 있으면 그것이 "지금 원하는 것"의 가장 또렷한 진술이다.
@@ -868,30 +882,54 @@ function branchedExtrapolationMaterials(profile, sessionPoints, transcriptTurns,
   const materials =
     `### The person\n${who}\n\n` +
     (pastNotes.length
-      ? `### What they wrote about their life so far (Korean, verbatim)\n${pastNotes.join('\n')}\n\n`
+      ? `### What they wrote about their life so far (their profile, Korean, verbatim)\n${pastNotes.join('\n')}\n\n`
+      : '') +
+    (futureNotes.length
+      ? `### The future they themselves wrote and hoped for (their profile, Korean, verbatim)\n${futureNotes.join('\n')}\n\n`
       : '') +
     (ctx.lines.length
-      ? `### What else they wrote about themselves (Korean, verbatim)\n${ctx.lines.join('\n')}\n\n`
+      ? `### What else they wrote about themselves (their profile, Korean, verbatim)\n` +
+        `Their motto and bucket list say where they hoped to go; the epitaph and farewell letters say` +
+        ` who and what they hold dearest — the people named there should still appear, older, in these` +
+        ` future scenes:\n${ctx.lines.join('\n')}\n\n`
       : '') +
     `### The conversation with the ghost (Korean, verbatim — your PRIMARY source)\n${transcript}\n\n` +
     `### Rules for the divergence\n` +
-    `- Ground every change in something the visitor actually said in the conversation above — a moment` +
-    ` they wanted to return to, a regret, a wish, a hesitation before an answer. Do NOT invent a change` +
-    ` of heart that has no trace in their words.\n` +
-    `- This is the life in which things WORK OUT: the wishes, hopes and bucket-list items that surfaced` +
-    ` in their words (and in what they wrote) actually come to pass, each at a plausible age. Regrets` +
-    ` voiced to the ghost become the choices they finally made; shelved dreams get picked back up and` +
-    ` carried through. Show fulfillment ONLY as visible facts and events — the trip taken, the door of` +
-    ` the shop finally open, the person still at the table — never narrate happiness or declare success.\n` +
+    `- Ground every change in something the visitor themselves expressed — first in what they SAID in` +
+    ` the conversation above (a moment they wanted to return to, a regret, a wish, a hesitation before` +
+    ` an answer), and also in what they WROTE across their profile above (their hoped future, motto,` +
+    ` bucket list, epitaph, letters). Do NOT invent a change of heart that has no trace in any of it.\n` +
+    `- This is the life in which things work out — but their wishes are NOT a checklist. From everything` +
+    ` that surfaced (the conversation first, then what they wrote), CHOOSE only the two or three desires` +
+    ` that carry real weight: the ones they returned to more than once, or hesitated before saying.` +
+    ` Those become the spine of the diverged life. Drop the rest, or leave them at most as a faint` +
+    ` background trace. A future that replays every stated wish reads as a mirror of their input and` +
+    ` breaks the spell.\n` +
+    `- TRANSLATE the wishes, do not transplant them (2026-08-11): before writing anything, infer the` +
+    ` VALUES underneath the chosen desires — what this person actually prioritizes (freedom, family,` +
+    ` craft, learning, recognition, quiet, service...). Then write the future a MATURED version of their` +
+    ` bucket list would produce: the same values, realized through concrete events the visitor never` +
+    ` wrote themselves — as if the list itself had grown up with them. At most ONE written item may` +
+    ` appear in a recognizable form; every other wish appears only as its value, transformed.\n` +
+    `- Never restage a chosen wish as a literal re-enactment of their words. Show the underlying desire` +
+    ` already woven into everyday life — its lived texture and aftermath,` +
+    ` not the moment of achievement. (If they wrote "travel the world", show a morning grocery run in a` +
+    ` foreign market, or worn luggage tags by the door — not a triumphant airport scene.) The visitor` +
+    ` must never feel their own written words mirrored back at them.\n` +
+    `- Show fulfillment ONLY as visible facts and events — the door of the shop simply open, the person` +
+    ` still at the table — never narrate happiness or declare success. Regrets voiced to the ghost` +
+    ` become the choices they finally made.\n` +
     (myLifeRenewed
       ? `- Their life motto and bucket list quoted above are the version they REWROTE right after this` +
-        ` experience — treat them, together with the conversation, as the clearest statement of what` +
-        ` they now want. The diverged life must visibly realize those bucket-list items, each at a` +
-        ` plausible age.\n`
+        ` experience — read it as the clearest EVIDENCE OF THEIR CURRENT VALUES, not as an itinerary.` +
+        ` Weigh its themes first when choosing the two or three desires above — but still choose, do not` +
+        ` realize every item, and pass everything through the TRANSLATE rule: values carried into new` +
+        ` events, never literal restagings of what they typed.\n`
       : '') +
     `- Keep demographic realism: ordinary work, money, family, health and aging in their society. The` +
     ` life goes well, but it stays a believable everyday life, not a fantasy — quiet arrival, not` +
-    ` spectacle.\n` +
+    ` spectacle. Fulfillment carries its ordinary cost and residue — a late start's clumsy hands, a` +
+    ` smaller apartment, an aging body; things worked out, visibly at the price real lives pay.\n` +
     `- Keep continuity of facts: the same places, people and skills from their past may reappear —` +
     ` but carried where they hoped (a shelved dream picked back up, a relationship tended and kept,` +
     ` a place finally left or returned to).\n` +
@@ -969,8 +1007,11 @@ export function buildBranchedExtrapolationPrompt(
     ` Korean specifics unless the conversation or notes above explicitly place a period in another` +
     ` country, in which case name that place in the sentence.\n` +
     `- Be specific and physical. No captions, no lettering, no text of any kind in the scene.\n` +
+    `- These are FUTURE years — the objects, devices and vehicles in each scene must be plausible for` +
+    ` that scene's year: quietly advanced everyday things, and NOTHING that is already fading from daily` +
+    ` life today (no paper newspapers, no cash, no dated appliances). Still not science fiction.\n` +
     `- Each scene: one English present-participle phrase, the same style as: ` +
-    `"repotting seedlings on a sunlit balcony rail, soil scattered on yesterday's newspaper".\n\n` +
+    `"repotting seedlings on a sunlit balcony rail, soil scattered on a spread of old cloth".\n\n` +
     `Return ONLY JSON, exactly these keys, ${BRANCH_SCENES_PER_AGE} scene(s) each:\n` +
     `{${keys.map((k) => `"${k}": [${sceneArray}]`).join(', ')}}`
   )

@@ -1,7 +1,8 @@
 // 유령 음성 대화 컨트롤러 — reel 종료 후 'ghost' 국면에서만 유령이 말을 건다.
 //
 // 두 엔진(서버 /api/ghost/session의 engine 필드가 고른다 — montage.json ghost.voice.engine):
-//   bridge(기본) — "중간 다리": 브라우저 STT(Web Speech, 끝점 감지=VAD) → 서버 Gemini가 대답과
+//   bridge(기본) — "중간 다리": STT(OpenAI Realtime 전사+semantic_vad, 실패 시 Web Speech 폴백)
+//     → 서버 Gemini가 대답과
 //     띄울 장면을 JSON으로 생성(/api/ghost/turn) → ElevenLabs 순수 TTS(/api/ghost/tts, 실패 시
 //     브라우저 TTS 폴백). ElevenLabs 대시보드 설정(에이전트·client tool 등록)이 필요 없다.
 //     턴 단위 대화라 끼어들기(barge-in)는 없다 — 나직하고 느린 유령 페르소나에 맞춘 트레이드오프.
@@ -16,6 +17,7 @@
 // 실패는 조용히 삼킨다 — 미설정·키 없음·마이크 거부·비보안 컨텍스트면 목소리 없이 유령만 뜬다(§1 침묵 폴백).
 
 import { Conversation } from '@elevenlabs/client'
+import { attachVoiceFx, warmUpVoiceAudio, cancelPanFollow } from './voice-fx.js'
 
 // getSession: () => Promise<{ enabled, flow, signedUrl, overrides, startDelayMs, past?, future? } | { enabled:false }>
 // onSpeaking: (boolean) => void  — 유령이 말하는 동안 true (발광 부스트·배경음악 덕킹 등 연동용).
@@ -52,116 +54,13 @@ export function createGhostVoice({
   let startTimer = null // show 램프 뒤 말 걸기까지의 지연 타이머.
   let bridgeAudio = null //       bridge: 재생 중 <audio> (ElevenLabs TTS) — stop()이 끊는다.
   let bridgeRecognition = null // bridge: 진행 중 SpeechRecognition — stop()이 abort한다.
+  let bridgeRealtimeStop = null // bridge: 진행 중 Realtime 전사 세션의 정리 함수 — stop()이 부른다.
 
-  // ── 목소리 스테레오 패닝 — 유령 위치(getPan)를 따라 목소리를 왼쪽/오른쪽에서 들리게 한다(입체감). ──
-  // TTS <audio>를 Web Audio 그래프(MediaElementSource → StereoPanner → destination)로 흘려보내고,
-  // 재생 중 매 프레임 getPan()을 읽어 panner를 갱신한다. 후면투사 반전(§3.5) 설치에서 좌우가 뒤집혀
-  // 보이면 PAN_INVERT를 -1로(런타임 머신에서 검증). MAX_PAN<1 로 완전 하드패닝은 피해 중앙 존재감을 남긴다.
-  const PAN_INVERT = 1
-  const MAX_PAN = 0.85
-  const VOICE_GAIN = 5 // 목소리 배율
-  // 에코 — 유령 목소리에 공간감(먼 곳에서 울려오는 느낌). 원음은 그대로 두고 젖은 신호만 섞는다.
-  const ECHO_DELAY = 0.28 //    반복 간격(초). 짧으면 방 울림, 길면 동굴 울림.
-  const ECHO_FEEDBACK = 0.25 // 반복마다 감쇠율(0~1). 높을수록 꼬리가 길게 남는다.
-  const ECHO_WET = 0.15 //      에코 섞는 비율. 0이면 에코 없음(원음만).
-  let audioCtx = null //      목소리 패닝용 AudioContext(지연 생성).
-  const mediaSources = new WeakMap() // <audio> → MediaElementSource(요소당 한 번만 생성 가능).
-  let panRaf = 0 //           재생 중 pan 추종 rAF.
-
-  function ensureAudioCtx() {
-    if (!audioCtx) {
-      const AC = window.AudioContext || window.webkitAudioContext
-      if (!AC) return null
-      audioCtx = new AC()
-    }
-    if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {})
-    return audioCtx
-  }
-
-  // 첫 발화 워밍업 — AudioContext 생성·resume과 OS 출력 스트림이 열리는 첫 100~300ms 동안은
-  // 소리가 버려져 TTS 앞 반 음절이 잘린다. 첫 speak 전에 무음 버퍼를 한 번 틀어 출력을 깨우고
-  // 잠깐 기다린다(이후 발화는 이미 열려 있어 바로 통과).
-  let voiceWarmedUp = false
-  async function warmUpVoiceAudio() {
-    if (voiceWarmedUp) return
-    voiceWarmedUp = true // 실패해도 재시도로 발화를 계속 지연시키지 않는다
-    const ctx = ensureAudioCtx()
-    if (!ctx) return
-    try {
-      if (ctx.state !== 'running') await ctx.resume()
-      const buf = ctx.createBuffer(1, Math.round(ctx.sampleRate * 0.05), ctx.sampleRate)
-      const src = ctx.createBufferSource()
-      src.buffer = buf
-      src.connect(ctx.destination)
-      src.start()
-      await new Promise((r) => setTimeout(r, 150)) // 출력 스트림이 실제로 열릴 시간
-    } catch {
-      /* 워밍업 실패 — 그냥 재생(기존 동작) */
-    }
-  }
-
-  // <audio>를 패너에 연결하고 재생이 끝날 때까지 유령 위치를 따라 pan을 갱신한다. 반환 = 정리 함수.
-  // Web Audio 불가·CORS 등으로 실패하면 조용히 그대로 둔다(<audio>가 기본 출력으로 재생 — 패닝만 없음).
-  function attachPanFollow(a) {
-    const ctx = ensureAudioCtx()
-    if (!ctx || typeof getPan !== 'function') return () => {}
-    let panner
-    try {
-      let src = mediaSources.get(a)
-      if (!src) {
-        src = ctx.createMediaElementSource(a)
-        mediaSources.set(a, src)
-      }
-      panner = ctx.createStereoPanner()
-      const boost = ctx.createGain() // 목소리 증폭 — HTMLAudio volume은 1.0이 상한이라 Web Audio 게인으로 키운다.
-      boost.gain.value = VOICE_GAIN
-      // 리미터 — 증폭으로 0dB를 넘는 피크만 눌러 클리핑(찢어짐)을 막는다. 평상시 음색엔 거의 관여 안 함.
-      const limiter = ctx.createDynamicsCompressor()
-      limiter.threshold.value = -3
-      limiter.knee.value = 0
-      limiter.ratio.value = 20
-      limiter.attack.value = 0.002
-      limiter.release.value = 0.1
-      src.connect(panner)
-      panner.connect(boost)
-      boost.connect(limiter)
-      // 에코 — boost에서 갈라져 delay→feedback 루프를 돌며 잦아드는 젖은 신호를 리미터에 합류시킨다.
-      // 원음(dry) 경로는 위에서 그대로 유지되므로 대사 명료도는 잃지 않는다.
-      if (ECHO_WET > 0) {
-        const delay = ctx.createDelay(2)
-        delay.delayTime.value = ECHO_DELAY
-        const feedback = ctx.createGain()
-        feedback.gain.value = ECHO_FEEDBACK
-        const wet = ctx.createGain()
-        wet.gain.value = ECHO_WET
-        boost.connect(delay)
-        delay.connect(feedback)
-        feedback.connect(delay)
-        delay.connect(wet)
-        wet.connect(limiter)
-      }
-      limiter.connect(ctx.destination)
-    } catch {
-      return () => {} // 이 요소는 이미 라우팅됐거나 패닝 불가 — 그냥 둔다.
-    }
-    const follow = () => {
-      const p = Math.max(-1, Math.min(1, (getPan() || 0) * PAN_INVERT)) * MAX_PAN
-      // 부드럽게 수렴(급격한 위치 점프에도 소리가 튀지 않게).
-      panner.pan.value += (p - panner.pan.value) * 0.15
-      panRaf = requestAnimationFrame(follow)
-    }
-    panner.pan.value = Math.max(-1, Math.min(1, (getPan() || 0) * PAN_INVERT)) * MAX_PAN
-    follow()
-    return () => {
-      cancelAnimationFrame(panRaf)
-      panRaf = 0
-      try {
-        panner.disconnect()
-      } catch {
-        /* 무시 */
-      }
-    }
-  }
+  // ── 목소리 이펙트(부스트·리미터·에코·패닝) — voice-fx.js 공용 체인(2026-08-10 추출) ──
+  // 내레이션(playNarration — 장례식·릴 회고)과 같은 체인을 공유해 목소리의 결이 앱 전체에서
+  // 동일하게 고정된다. 상수(에코 등)를 바꾸려면 voice-fx.js 한 곳만 만지면 된다.
+  const attachPanFollow = (a) =>
+    attachVoiceFx(a, typeof getPan === 'function' ? getPan : null)
 
   // ── bridge 엔진 (기본): 브라우저 STT → 서버 Gemini(/api/ghost/turn) → 서버 TTS(/api/ghost/tts) ──
   // ElevenLabs 대시보드(에이전트·도구 등록)가 필요 없다. 턴 단위 대화: 듣기 → 생각 → 말하기.
@@ -327,30 +226,222 @@ export function createGhostVoice({
     })
   }
 
+  // ── Realtime 전사 듣기 — OpenAI Realtime transcription 모드 + semantic_vad ──
+  // 침묵 타이머(endSilenceMs) 대신 말의 **내용**으로 발화 종료를 판정한다: "그때 제가…"처럼
+  // 문장이 안 끝났으면 침묵이 길어도 기다리고, 끝났으면 그때 전사 전체를 돌려준다.
+  // 서버(/api/ghost/stt-token)가 10분짜리 ephemeral 토큰을 발급 — OpenAI 키는 브라우저에 안 온다.
+  // 반환 규약은 listenUtterance와 동일: 텍스트 | NO_SPEECH | null. 실패는 throw — 호출부가
+  // Web Speech로 폴백한다(유령이 귀를 잃지 않는다).
+  // inputGain: 마이크 신호 증폭 배율 — 전시장처럼 마이크가 멀어 신호가 약하면 Realtime의 내부
+  // VAD가 말로 안 잡는다. 여기서 키워 보내면 소리 지르게 하지 않아도 감지된다(클리핑은 변환에서 클램프).
+  async function listenUtteranceRealtime({
+    maxUtteranceMs = 45000,
+    noSpeechMs = 0,
+    inputGain = 1
+  } = {}) {
+    const tokenRes = await fetch('/api/ghost/stt-token', { method: 'POST' })
+    if (!tokenRes.ok) throw new Error(`stt-token ${tokenRes.status}`)
+    const { value: token } = await tokenRes.json()
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    })
+    // Realtime 입력 포맷(PCM16 24kHz)에 맞춰 캡처 전용 컨텍스트를 24k로 연다 — 리샘플링 불필요.
+    const captureCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 })
+
+    return new Promise((resolve, reject) => {
+      let settled = false
+      let transcript = '' //  완료된 세그먼트 누적(completed)
+      let sawSpeech = false
+      let noSpeechTimer = null
+      let overallTimer = null
+      let ws = null
+      let workletNode = null
+      let sourceNode = null
+
+      function cleanup() {
+        clearTimeout(noSpeechTimer)
+        clearTimeout(overallTimer)
+        if (bridgeRealtimeStop === abort) bridgeRealtimeStop = null
+        try {
+          workletNode?.disconnect()
+          sourceNode?.disconnect()
+        } catch {
+          /* 무시 */
+        }
+        stream.getTracks().forEach((t) => t.stop())
+        captureCtx.close().catch(() => {})
+        if (ws && ws.readyState <= WebSocket.OPEN) {
+          try {
+            ws.close()
+          } catch {
+            /* 무시 */
+          }
+        }
+      }
+
+      function finish(result) {
+        if (settled) return
+        settled = true
+        onListening?.(false)
+        cleanup()
+        resolve(result)
+      }
+      function fail(err) {
+        if (settled) return
+        settled = true
+        onListening?.(false)
+        cleanup()
+        reject(err)
+      }
+      function abort() {
+        // stop() 경유 — 국면 전환 등. 오류가 아니라 "들은 것 없음"으로 조용히 닫는다.
+        finish(null)
+      }
+      bridgeRealtimeStop = abort
+
+      onListening?.(true)
+      if (noSpeechMs > 0)
+        noSpeechTimer = setTimeout(() => {
+          if (!sawSpeech && !transcript.trim()) finish(NO_SPEECH)
+        }, noSpeechMs)
+
+      // 브라우저 WebSocket은 헤더를 못 실으므로 서브프로토콜에 ephemeral 토큰을 싣는다(공식 브라우저 패턴).
+      ws = new WebSocket('wss://api.openai.com/v1/realtime', [
+        'realtime',
+        `openai-insecure-api-key.${token}`
+      ])
+      ws.onerror = () => fail(new Error('realtime WS 오류'))
+      ws.onclose = () => {
+        if (settled) return
+        // 서버가 세션을 닫음(토큰 만료 등) — 들은 게 있으면 그걸로 마감, 없으면 폴백으로.
+        if (transcript.trim()) finish(transcript.trim())
+        else fail(new Error('realtime WS 조기 종료'))
+      }
+      ws.onmessage = (e) => {
+        let msg
+        try {
+          msg = JSON.parse(e.data)
+        } catch {
+          return
+        }
+        if (msg.type === 'error') {
+          fail(new Error(msg.error?.message || 'realtime 세션 오류'))
+        } else if (msg.type === 'input_audio_buffer.speech_started') {
+          sawSpeech = true
+          clearTimeout(noSpeechTimer) // 말이 시작됐다 — 무응답 되물음 타이머 해제
+          if (!overallTimer)
+            overallTimer = setTimeout(() => {
+              // 발화 상한 — 그때까지 완료된 전사로 마감(없으면 계속은 무의미, 침묵 취급).
+              finish(transcript.trim() || null)
+            }, maxUtteranceMs)
+        } else if (msg.type === 'conversation.item.input_audio_transcription.completed') {
+          // semantic_vad가 "말이 끝났다"고 판정한 한 턴의 전사 — 이걸로 발화 하나 완성.
+          transcript = `${transcript} ${msg.transcript || ''}`.trim()
+          finish(transcript || null)
+        }
+      }
+      ws.onopen = async () => {
+        // 마이크 → AudioWorklet(PCM 캡처) → base64 append. 워크릿은 블롭 모듈로 즉석 등록.
+        try {
+          const workletSrc = `registerProcessor('pcm-capture', class extends AudioWorkletProcessor {
+            process(inputs) {
+              const ch = inputs[0] && inputs[0][0]
+              if (ch) this.port.postMessage(ch.slice(0))
+              return true
+            }
+          })`
+          const blobUrl = URL.createObjectURL(
+            new Blob([workletSrc], { type: 'application/javascript' })
+          )
+          await captureCtx.audioWorklet.addModule(blobUrl)
+          URL.revokeObjectURL(blobUrl)
+          if (settled) return
+          sourceNode = captureCtx.createMediaStreamSource(stream)
+          workletNode = new AudioWorkletNode(captureCtx, 'pcm-capture')
+          const inGain = captureCtx.createGain()
+          inGain.gain.value = Math.max(1, inputGain)
+          // ~100ms씩 모아 보낸다 — 프레임(128샘플)마다 보내면 메시지 폭주.
+          let pending = []
+          let pendingLen = 0
+          workletNode.port.onmessage = ({ data }) => {
+            if (settled || ws.readyState !== WebSocket.OPEN) return
+            pending.push(data)
+            pendingLen += data.length
+            if (pendingLen < 2400) return // 24kHz × 0.1s
+            const f32 = new Float32Array(pendingLen)
+            let off = 0
+            for (const c of pending) {
+              f32.set(c, off)
+              off += c.length
+            }
+            pending = []
+            pendingLen = 0
+            const i16 = new Int16Array(f32.length)
+            for (let i = 0; i < f32.length; i++) {
+              const s = Math.max(-1, Math.min(1, f32[i]))
+              i16[i] = s < 0 ? s * 0x8000 : s * 0x7fff
+            }
+            let bin = ''
+            const bytes = new Uint8Array(i16.buffer)
+            for (let i = 0; i < bytes.length; i += 8192)
+              bin += String.fromCharCode(...bytes.subarray(i, i + 8192))
+            ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: btoa(bin) }))
+          }
+          sourceNode.connect(inGain)
+          inGain.connect(workletNode)
+          // 워크릿 출력은 스피커로 보내지 않는다(마이크 루프백 방지) — 무음 게인 종단.
+          const mute = captureCtx.createGain()
+          mute.gain.value = 0
+          workletNode.connect(mute)
+          mute.connect(captureCtx.destination)
+        } catch (err) {
+          fail(err)
+        }
+      }
+    })
+  }
+
+  // 듣기 진입점 — 세션 설정이 realtime이면 Realtime 전사를 시도하고, 토큰·연결·워크릿 어느
+  // 단계든 실패하면 그 자리에서 Web Speech로 폴백한다(이후 턴은 재시도 없이 바로 Web Speech).
+  let realtimeBroken = false
+  async function listen(session, opts) {
+    if (session.stt?.engine === 'realtime' && !realtimeBroken && !stopped) {
+      try {
+        return await listenUtteranceRealtime({ ...opts, inputGain: session.stt?.inputGain })
+      } catch (err) {
+        realtimeBroken = true
+        console.warn('[ghost-voice] Realtime 전사 실패 — Web Speech 폴백:', err?.message || err)
+      }
+    }
+    return listenUtterance(opts)
+  }
+
   // bridge 대화 본 루프: 인사(회고) → [듣기 → 턴 → 말하기 → (영상 → 상황 알림 턴 → 말하기)] 반복.
   async function runBridge(session) {
     // 2차 체험의 개막 연출(분기 장례식·릴 분기)은 입장 의례(데모 국면)가 이미 재생했다 —
     // 유령은 인사부터 시작한다(중복 재생 금지, 2026-08-05).
     await speak(session.greeting)
     if (stopped) return
-    if (!(window.SpeechRecognition || window.webkitSpeechRecognition)) {
+    const hasWebSpeech = !!(window.SpeechRecognition || window.webkitSpeechRecognition)
+    if (!hasWebSpeech && session.stt?.engine !== 'realtime') {
       console.warn('[ghost-voice] SpeechRecognition 미지원 — 인사만 하고 조용히 곁에 머문다')
       return
     }
-    // 침묵 되물음(2026-08-05): 유령이 말을 마친 뒤 12초 동안 아무 말이 없으면 딱 한 번,
+    // 침묵 되물음(2026-08-05): 유령이 말을 마친 뒤 35초 동안 아무 말이 없으면 딱 한 번,
     // 서버에 침묵 event 턴을 보내 나직한 되물음을 받는다. 그 뒤로는 무한정 기다린다
     // (관람객이 실제로 말하면 카운터가 리셋돼 다음 질문에서 다시 한 번 쓸 수 있다).
     let silenceNudged = false
     while (!stopped) {
-      const heard = await listenUtterance({
+      const heard = await listen(session, {
         ...(session.listen || {}),
-        noSpeechMs: silenceNudged ? 0 : 12000
+        noSpeechMs: silenceNudged ? 0 : 35000
       })
       if (stopped) return
       if (heard === NO_SPEECH) {
         silenceNudged = true
         try {
-          const nudge = await postTurn('(침묵: 12초 넘게 대답이 없다)', 'event')
+          const nudge = await postTurn('(침묵: 35초 넘게 대답이 없다)', 'event')
           if (!stopped && nudge?.say) await speak(nudge.say)
         } catch {
           /* 되물음 실패 — 그냥 계속 기다린다 */
@@ -612,6 +703,14 @@ export function createGhostVoice({
       startTimer = null
     }
     // bridge 엔진 정리 — 듣기 중단·재생 중 목소리 즉시 끊기(§1: 다른 국면에선 침묵).
+    if (bridgeRealtimeStop) {
+      try {
+        bridgeRealtimeStop()
+      } catch {
+        /* 무시 */
+      }
+      bridgeRealtimeStop = null
+    }
     if (bridgeRecognition) {
       try {
         bridgeRecognition.abort()
@@ -628,10 +727,7 @@ export function createGhostVoice({
       }
       bridgeAudio = null
     }
-    if (panRaf) {
-      cancelAnimationFrame(panRaf)
-      panRaf = 0
-    }
+    cancelPanFollow()
     try {
       speechSynthesis?.cancel()
     } catch {

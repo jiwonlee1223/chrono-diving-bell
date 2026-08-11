@@ -51,7 +51,8 @@ export async function loadMontageLibrary({ rootDir, personaId = null }) {
 
   const { dir, manifest } = candidates[0]
   const images = (manifest.images ?? [])
-    .filter((im) => im.status !== 'rejected' && im.file && !im.failed)
+    // excluded: admin에서 영상화 제외한 장면 — 클립이 없으므로 최종 감상 재생목록에서도 뺀다.
+    .filter((im) => im.status !== 'rejected' && im.file && !im.failed && !im.excluded)
     .map((im) => ({
       id: im.id,
       file: im.file,

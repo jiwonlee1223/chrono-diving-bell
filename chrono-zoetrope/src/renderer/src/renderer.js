@@ -27,6 +27,7 @@ import { createPanoramaPreview } from './scene/panorama-preview.js'
 import { PostPass } from './scene/post-pass.js'
 import { createGhost } from './scene/ghost.js'
 import { createGhostVoice } from './scene/ghost-voice.js'
+import { attachVoiceFx, warmUpVoiceAudio } from './scene/voice-fx.js'
 import { createBgMusic } from './scene/bg-music.js'
 import { createSfxLayer } from './scene/sfx-layer.js'
 
@@ -136,7 +137,7 @@ async function main() {
   const REEL_PLAYBACK_RATE = 3 // 릴(90초)을 3배속 재생 → ~30초.
   let demoPhase = null
   // ghost 국면(주마등 종료 후) 동안 ZOETROPE 앰비언트 몽타주(현재 시점 사진 플레이리스트)를 막는다 —
-  // 릴이 탄생에서 끝난 직후 현재 사진이 이어 보이면 역행의 종결이 깨진다. 실타래 앰비언트로 대신한다.
+  // 릴이 끝난 직후(마지막 장 hold 뒤) 현재 사진 몽타주가 이어 보이면 종결감이 깨진다. 실타래 앰비언트로 대신한다.
   // 대화 영상(convoVideoActive)·1인칭 진입(IMMERSION 등 다른 상태)은 그대로 보인다.
   let ghostIdleDark = false
   const threadSpeedMul = makeTween(1) // 실타래 시간 배속(가속 연출).
@@ -300,7 +301,7 @@ async function main() {
   // 장례식 국면의 앰비언스 — 조문객들의 낮은 웅성거림(resources/sfx/에 그대로 있는 파일명).
   // 장면 텍스트 매칭이 아니라 국면 자체가 정하는 소리라 sfx.play()로 직접 지정한다.
   const FUNERAL_SFX_SLUG = 'Crowd Talking'
-  const FUNERAL_SFX_GAIN = 0.4
+  const FUNERAL_SFX_GAIN = 0.25 // 내레이션이 얹히면서 한 단계 낮춤(2026-08-06 0.4→0.25)
   // 장례식 장면을 머무는 시간(ms). Wan 클립 자체는 ~5초라 이 시간까지 loop로 돈다.
   // 서버가 국면 payload로 실제 값을 내려주면 그걸 쓰고, 없으면 이 기본값.
   const FUNERAL_SCENE_MS = 15000
@@ -522,7 +523,7 @@ async function main() {
   //   convoVideoActive를 켜야 실린더에 그려진다. 끝나면 Promise가 resolve된다(대화가 이어짐).
   function playFuneralOnce(
     url,
-    { seekSec = 0, blackoutMs = 1600, sceneMs = FUNERAL_SCENE_MS, convo = false, onDone } = {}
+    { seekSec = 0, blackoutMs = 1600, sceneMs = FUNERAL_SCENE_MS, convo = false, holdUntil, onDone } = {}
   ) {
     let settled = false
     let resolveDone
@@ -531,6 +532,13 @@ async function main() {
     const finish = async () => {
       if (settled) return done
       settled = true
+      // 내레이션이 아직 흐르면 끝날 때까지 장면을 붙든다(sceneMs는 최소 길이가 된다).
+      // pp 변환본은 네이티브 loop라 그동안에도 계속 움직인다(원본 폴백은 마지막 프레임 정지).
+      if (holdUntil) {
+        try {
+          await holdUntil
+        } catch {}
+      }
       cancelAnimationFrame(pingpongRaf)
       await tvOff({ totalMs: blackoutMs })
       teardownVideo()
@@ -661,10 +669,21 @@ async function main() {
   function playFutureReelIntro(payload) {
     return new Promise((resolve) => {
       if (!payload?.photos?.length || !montageMaterial) return resolve()
+      // 릴 위 미래 큐레이션 내레이션("이대로 지속된다면 넌 ○○를 하고, ○○해") — 릴과 동시에 시작.
+      const narr = payload?.narration
+        ? playNarration(payload.narration, 0, payload?.narrationGapMs ?? 0)
+        : null
       let settled = false
       const finish = async () => {
         if (settled) return
         settled = true
+        // 릴 1사이클이 먼저 끝났으면 내레이션이 맺을 때까지 장면을 붙든다(문장 중간에 끊겨
+        // FUTURE_ASK와 겹치지 않게). stop되면 promise가 바로 풀려 영영 걸리지 않는다.
+        if (narr) {
+          try {
+            await narr
+          } catch {}
+        }
         await veil.cover(0.6) // 미래가 어둠으로 저문다 — 그 어둠 위에서 유령이 말을 건다
         stopFilmstrip()
         convoVideoActive = false
@@ -702,6 +721,9 @@ async function main() {
     await veil.cover(0.08)
     startFilmstrip({ ...payload, elapsedMs: 0 }) // 분기 릴 — 기본 경로(1사이클 후 reel-done)
     veil.uncover(0.9)
+    // 분기 릴이 떠오른 이 시점부터 분기 미래 큐레이션 내레이션 — 지난번 미래(forkFrom)가
+    // 흐르는 동안엔 틀지 않는다(applyDemoInner가 forkIntro일 때 재생을 이리로 미룬다).
+    if (payload.narration) playNarration(payload.narration, 0, payload.narrationGapMs ?? 0)
   }
 
   // 유령 대화 영상 하나를 원본 속도로 loop 재생(ghost 대화 client tool이 호출). Promise 반환 —
@@ -958,7 +980,7 @@ async function main() {
     const elapsedSec = Math.max(0, (payload?.elapsedMs ?? 0) / 1000)
     // 실린더 둘레 종횡비(2πR/H) — 스트립이 종횡비를 유지한 채 감기도록 uStripScale의 분자가 된다.
     const circumAspect = (2 * Math.PI * install.cylinder.radius) / install.cylinder.height
-    // 1차 주마등 끝 연출(서버 payload holdLastSec): 마지막 장(탄생)이 정면 중앙에 오면 정지 →
+    // 1차 주마등 끝 연출(서버 payload holdLastSec): 마지막 장(순방향이라 현 시점, 2026-08-06)이 정면 중앙에 오면 정지 →
     // holdLastSec초 머문 뒤 blank. 미래 릴 payload에는 이 필드가 없어 기존 동작 그대로다.
     const holdLastSec = payload?.holdLastSec ?? 0
     const fs = {
@@ -1102,6 +1124,127 @@ async function main() {
   //  idle: 앰비언트(유령 숨김, admin 세션 나가기) · spinup: 실타래 배속 · reel: 회전/배속 재생 · ghost: 유령 뜬 idle
   // 전환은 무조건 fade: 국면이 실제로 바뀌면(재개·동일국면 갱신 제외) 베일로 화면을 덮은 뒤 새 국면을
   // 세팅하고 베일을 걷는다 — reel→ghost, spinup→reel 등 모든 화면 전환이 검정을 거쳐 부드럽게 넘어간다.
+  // 국면 내레이션(1차 장례식 "여긴 너의 장례식이야" · 주마등 삶 회고) — 유령 대화 세션과 무관하게
+  // 서버 TTS(/api/ghost/tts)를 스트리밍 재생한다. 텍스트는 서버가 demo payload의 narration으로 보낸다.
+  // 국면이 바뀌면 끊고, 부트스트랩 재개(immediate)면 이미 흘렀던 내레이션이라 다시 틀지 않는다.
+  let narrationAudio = null
+  let narrationTimer = 0
+  let narrationResolve = null // 진행 중 내레이션의 완료 promise resolve — stop/done에서 반드시 풀린다
+  let narrationRun = 0 //        진행 중 내레이션 세대 — stop이 올리면 재생 루프가 다음 단계로 안 넘어간다
+  function stopNarration() {
+    narrationRun++
+    clearTimeout(narrationTimer)
+    narrationTimer = 0
+    if (narrationResolve) {
+      narrationResolve()
+      narrationResolve = null
+    }
+    if (!narrationAudio) return
+    try {
+      narrationAudio.pause()
+    } catch {}
+    narrationAudio = null
+    bgMusic.setAgentSpeaking(false)
+  }
+  // 내레이션 텍스트를 TTS 요청 단위로 쪼갠다 — <break time="Ns">는 그 길이의 정적으로,
+  // 나머지는 문장 단위로. 장문을 통짜로 합성하면 ElevenLabs가 낭독조로 톤을 틀어버려서
+  // (2026-08-06), 대화 턴과 같은 짧은 입력을 문장별로 보내 톤을 맞춘다. 정적은 여기서 스케줄.
+  function narrationSegments(text) {
+    const segs = []
+    const parts = String(text).split(/<break\s+time="([\d.]+)s"\s*\/?>/)
+    for (let i = 0; i < parts.length; i++) {
+      if (i % 2 === 1) {
+        segs.push({ gapMs: parseFloat(parts[i]) * 1000 })
+        continue
+      }
+      for (const s of parts[i].split(/(?<=[.!?…])\s+/)) {
+        const t = s.trim()
+        if (t) segs.push({ text: t })
+      }
+    }
+    return segs
+  }
+  // delayMs만큼 정적 뒤에 문장별로 순차 재생(문장 사이 gapMs 정적 — 릴 회고가 릴 전반에 퍼지게).
+  // 반환 promise는 마지막 발화가 끝나거나(ended/error) 국면이 바뀌어 끊길 때(resolve — 장면
+  // hold가 영원히 걸리지 않게) 풀린다.
+  function playNarration(text, delayMs = 0, gapMs = 0) {
+    stopNarration()
+    if (!text) return Promise.resolve()
+    const run = narrationRun
+    const wait = (ms) =>
+      new Promise((r) => {
+        narrationTimer = setTimeout(() => {
+          narrationTimer = 0
+          r()
+        }, Math.max(0, ms))
+      })
+    const playChunk = (chunk) =>
+      new Promise((resolve) => {
+        const a = new Audio('/api/ghost/tts?text=' + encodeURIComponent(chunk))
+        narrationAudio = a
+        bgMusic.setAgentSpeaking(true) // 발화 중 배경음 덕킹(유령 발화와 동일)
+        // 유령 대화와 같은 목소리 이펙트 체인(부스트·리미터·에코) — 장례식·릴 내레이션의 울림이
+        // 대화 발화와 동일하게 고정된다(2026-08-10, voice-fx.js 공용화). 패닝은 중앙 고정.
+        const detachFx = attachVoiceFx(a)
+        let settled = false
+        // onpause도 done — stopNarration의 pause()에도 promise가 반드시 풀리게(루프가 매달리지 않게)
+        const done = () => {
+          if (settled) return
+          settled = true
+          detachFx()
+          if (narrationAudio === a) {
+            narrationAudio = null
+            bgMusic.setAgentSpeaking(false)
+          }
+          resolve()
+        }
+        a.onended = done
+        a.onerror = done
+        a.onpause = done
+        a.play().catch(done) // 자동재생 차단·TTS 실패 — 그 문장만 건너뛰고 국면은 그대로 진행(§1: 자막 폴백 없음)
+      })
+    return new Promise((resolve) => {
+      narrationResolve = resolve
+      ;(async () => {
+        await wait(delayMs)
+        await warmUpVoiceAudio() // 첫 문장 앞 반 음절 잘림 방지 — 유령 발화와 동일한 워밍업
+        let prevWasText = false
+        for (const seg of narrationSegments(text)) {
+          if (run !== narrationRun) return // stop됨 — resolve는 stopNarration이 이미 했다
+          if (seg.gapMs != null) {
+            await wait(seg.gapMs)
+            prevWasText = false
+            continue
+          }
+          if (prevWasText && gapMs > 0) await wait(gapMs)
+          if (run !== narrationRun) return
+          await playChunk(seg.text)
+          prevWasText = true
+        }
+        if (run === narrationRun && narrationResolve) {
+          narrationResolve()
+          narrationResolve = null
+        }
+      })()
+    })
+  }
+
+  // 릴 내레이션(삶 회고)의 진행 promise — 릴이 먼저 끝나도 reel-done을 이게 풀릴 때까지 미룬다
+  // (서버 전환이 멘트를 중간에 끊지 않게). 기다리는 동안 heartbeat를 계속 보내 서버 deadman이
+  // 강제로 유령 국면으로 넘겨버리는 것도 막는다.
+  let reelNarrationPromise = null
+  async function sendReelDoneAfterNarration() {
+    if (reelNarrationPromise) {
+      const tick = setInterval(() => window.zoetrope.sendReelProgress?.(), 3000)
+      try {
+        await reelNarrationPromise
+      } finally {
+        clearInterval(tick)
+      }
+    }
+    window.zoetrope.sendReelDone?.()
+  }
+
   let lastDemoPhase = null
   async function applyDemo(payload, immediate = false) {
     const phase = payload?.phase ?? 'idle'
@@ -1118,6 +1261,7 @@ async function main() {
     ghostIdleDark = phase === 'ghost' // 유령 idle 배경에서 현재 시점 사진 플레이리스트 차단
     convoVideoActive = false // 국면 전환 시 대화 영상 재생 해제(ghost 대화 tool이 다시 켠다)
     sfx.stop() // 앰비언스는 대화 영상에만 속한다 — 국면이 바뀌면 함께 걷는다
+    stopNarration() // 국면 내레이션도 국면과 함께 끝난다(장례식·주마등 전용)
     spinupSfx.stop() // 천둥은 spinup에만 속한다 — 국면이 바뀌면 끊는다(spinup 진입 시 다시 튼다)
     // 배경음은 체험 차수를 따른다 — 1차(과거)=수중, 2차(분기 미래)=우주 백색소음.
     switchBgMusic(payload?.experience === 'second' ? futureMusic : pastMusic)
@@ -1148,10 +1292,16 @@ async function main() {
       // 더 낮게(0.2) 깔아, 소리의 정체가 드러나기보다 배경으로만 남게 한다.
       sfx.play(FUNERAL_SFX_SLUG, { gain: FUNERAL_SFX_GAIN })
       tweenTo(blur, 0, dur(0.2))
+      // 내레이션(5초 정적 뒤 "여긴 너의 장례식이야" + 조문객 멘트) — 끝날 때까지 장면을 붙든다.
+      const funeralNarr =
+        !immediate && payload?.narration
+          ? playNarration(payload.narration, payload?.narrationDelayMs ?? 0, payload?.narrationGapMs ?? 0)
+          : null
       playFuneralOnce(payload?.url, {
         seekSec: elapsedSec, // 새로고침 재개 — 등속이라 경과 시간이 곧 재생 위치
         blackoutMs: payload?.blackoutMs ?? 1600,
-        sceneMs: payload?.sceneMs ?? FUNERAL_SCENE_MS
+        sceneMs: payload?.sceneMs ?? FUNERAL_SCENE_MS,
+        holdUntil: funeralNarr
       })
     } else if (phase === 'grave') {
       // 장지(안식처) — 장례식 다음, 묻힌 곳의 파노라마 영상(1차 전용). 재생 문법은 장례식과
@@ -1174,11 +1324,23 @@ async function main() {
       ghost.hide()
       ghostVoice?.stop()
       bgMusic.start() // 주마등(reel)에도 같은 배경음(수중 백색소음)을 깐다
+      // 주마등과 동시에 큐레이션 멘트가 흐른다(서버가 narration을 보낼 때만 — 1차=삶 회고,
+      // 2차 체험=분기 미래 큐레이션). 단, 지지직 분기 연출(forkFrom)로 시작하는 릴은 아직
+      // 지난번 미래가 흐르는 중이라, 내레이션은 runReelFork가 분기 릴로 갈아끼운 뒤에 시작한다.
+      const forkIntro = payload?.mode === 'filmstrip' && payload?.forkFrom?.length && elapsedSec < 1
+      if (!immediate && payload?.narration && !forkIntro)
+        reelNarrationPromise = playNarration(
+          payload.narration,
+          0,
+          payload?.narrationGapMs ?? 0
+        ).finally(() => {
+          reelNarrationPromise = null
+        })
       if (payload?.mode === 'filmstrip') {
         rotate = null
         // 2차 체험 릴 분기(지지직): 새 시작이고 forkFrom(1차 미래 릴)이 오면 분기 연출을 거친다.
         // 재개(elapsed 큼)면 분기 연출은 이미 지났다 — 곧장 분기 릴로.
-        if (payload?.forkFrom?.length && elapsedSec < 1) runReelFork(payload)
+        if (forkIntro) runReelFork(payload)
         else startFilmstrip(payload) // reel 전용 3:4 사진 스트립을 필름처럼 연속 스크롤
       } else if (payload?.mode === 'rotate') {
         stopFilmstrip()
@@ -1390,7 +1552,7 @@ async function main() {
         const turns = (nowMs - filmstrip.startMs) / 1000 / effSecPerTurn
         // 한 장씩 등장 — 각 장이 정면에 오기 직전 페이드인(역순 주마등이면 사진도 역순 등장).
         if (filmstrip.texture) updateFilmstripReveal(filmstrip, turns, nowMs)
-        // 1차 주마등 끝 연출(holdLastSec): 마지막 장(탄생)의 중심이 정면(방위 0, vUv.x=0)에 오는
+        // 1차 주마등 끝 연출(holdLastSec): 마지막 장(순방향이라 현 시점)의 중심이 정면(방위 0, vUv.x=0)에 오는
         // 위상에서 스크롤을 멈추고, holdLastSec초 머문 뒤 스트립 전체를 페이드아웃한다. 다 사라지면
         // 즉시 reel-done — 남은 릴이 어둠 속에 마저 돌기를 기다리지 않는다(2026-08-04 텀 단축).
         //  셰이더의 스트립 x = fract((u + cal.yaw + phase) / stripTurns) 이므로,
@@ -1407,7 +1569,7 @@ async function main() {
                 filmstrip.blanked = true
                 setMontageImage(montageMaterial, null) // 이후엔 검정 — 서버 전환까지 아무 이미지도 안 보인다
                 if (filmstrip.onDone) filmstrip.onDone()
-                else window.zoetrope.sendReelDone?.()
+                else sendReelDoneAfterNarration() // 회고 멘트가 아직 흐르면 끝날 때까지 전환을 미룬다
               }
             }
           }
@@ -1421,7 +1583,7 @@ async function main() {
           // onDone이 있으면 이 스트립은 서버 국면이 아니라 대화 흐름이 주인이다(2차 미래 릴) —
           // 서버에 reel-done을 보내면 엉뚱한 국면 전환이 일어나므로 로컬 콜백만 부른다.
           if (filmstrip.onDone) filmstrip.onDone()
-          else window.zoetrope.sendReelDone?.()
+          else sendReelDoneAfterNarration() // 회고 멘트가 아직 흐르면 끝날 때까지 전환을 미룬다
         }
         // 도는 동안 ~3s마다 heartbeat → 서버 안전 폴백(deadman) 리셋(Q로 느려도 안 끊김).
         // 텍스처가 준비된 뒤에만 — 사진 로드가 전부 실패하면 heartbeat를 멈춰 deadman이 유령으로 넘긴다.
@@ -1454,7 +1616,7 @@ async function main() {
         const yaw = turns - Math.floor(turns)
         if (!rotate.doneSent && turns >= rotate.indices.length) {
           rotate.doneSent = true
-          window.zoetrope.sendReelDone?.() // reel당 1회만. 기본 속도면 서버 폴백 타이머와 같은 시점.
+          sendReelDoneAfterNarration() // reel당 1회만. 회고 멘트가 흐르면 끝날 때까지 미룬다.
         }
         // 느린 쪽도 보장: 도는 동안 ~3s마다 heartbeat → 서버 안전 폴백(deadman) 리셋. Q로 느려도 안 끊긴다.
         if (!rotate.doneSent && nowMs - (rotate.lastTickMs || 0) > 3000) {

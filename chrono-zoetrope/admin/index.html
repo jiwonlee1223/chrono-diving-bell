@@ -382,6 +382,13 @@
       .card.failed {
         border-color: rgba(255, 110, 110, 0.4);
       }
+      .card.excluded img {
+        opacity: 0.35;
+        filter: grayscale(60%);
+      }
+      .card.excluded {
+        border-color: rgba(255, 200, 90, 0.35);
+      }
       .card-failed {
         display: flex;
         align-items: center;
@@ -1025,7 +1032,7 @@
       // failed 장(생성 중 타임아웃 등으로 건너뜀)은 플레이스홀더로 표시하고 재생성 버튼을 노출한다.
       function card(entry) {
         const div = document.createElement('div')
-        div.className = 'card' + (entry.failed ? ' failed' : '')
+        div.className = 'card' + (entry.failed ? ' failed' : '') + (entry.excluded ? ' excluded' : '')
         const sub = `${entry.age}살 · ${entry.year}${entry.isPast ? '' : ' (미래)'}`
         // 카드 썸네일 비율을 실제 생성 크기에 맞춘다(파노라마 4:1 등이 잘리지 않게).
         const im = manifest && manifest.image
@@ -1035,10 +1042,12 @@
           : `<img src="${imgUrl(entry)}" loading="lazy" style="aspect-ratio:${ar}" title="${entry.prompt.replaceAll('"', '&quot;')}" />`
         div.innerHTML = `
         ${media}
-        <div class="meta"><span class="id">${entry.id}</span><span class="sub">${sub}</span>${entry.failed ? '<span class="badge error">실패</span>' : ''}</div>
+        <div class="meta"><span class="id">${entry.id}</span><span class="sub">${sub}</span>${entry.failed ? '<span class="badge error">실패</span>' : ''}${entry.excluded ? '<span class="badge stopped">영상 제외</span>' : ''}</div>
         <div class="actions">
           <button class="re" title="Gemini부터 전체 다시 생성">재생성</button>
           <button class="re-dist" title="카메라를 더 멀리 — 인물 작게, 바닥·천장이 잘리지 않게 재생성">거리감↑</button>
+          <button class="re-pro" title="Nano Banana Pro 모델로 21:9 생성 후 4:1 중앙 크롭해 적용">Pro 생성</button>
+          <button class="re-vid" title="이 장면의 영상 클립만 다시 생성해 로컬·Firebase에 덮어쓰기 (이전 판은 남지 않음, 릴은 별도 재생성)">영상 재생성</button>
         </div>`
 
         const imgEl = $('img', div)
@@ -1048,10 +1057,11 @@
             $('#zoom .cap').textContent = `${entry.id} — ${entry.prompt}`
             $('#zoom').classList.add('show')
           })
-        // 재생성(기본) / 거리감↑(distance: 카메라를 더 물려 바닥·천장 포함) 공통 핸들러
-        const wireRegen = (sel, label, distance) => {
+        // 재생성(기본) / 거리감↑(distance) / Pro 생성(pro: 21:9 생성 후 4:1 크롭) 공통 핸들러
+        const wireRegen = (sel, label, body) => {
           $(sel, div).addEventListener('click', async () => {
             const btn = $(sel, div)
+            const orig = btn.textContent
             btn.disabled = true
             btn.textContent = '생성 중…'
             setStatus(`${entry.id} ${label} 중 (~15초)`)
@@ -1059,7 +1069,7 @@
               const out = await api(`/api/personas/${pid}/regen`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ id: entry.id, distance })
+                body: JSON.stringify({ id: entry.id, ...body })
               })
               Object.assign(entry, out.entry)
               delete entry.failed // 서버가 failed 키를 지워 보내므로 로컬에서도 해제
@@ -1068,12 +1078,31 @@
             } catch (e) {
               setStatus(`${label} 실패: ${e.message}`)
               btn.disabled = false
-              btn.textContent = label === '재생성' ? '재생성' : '거리감↑'
+              btn.textContent = orig
             }
           })
         }
-        wireRegen('.re', '재생성', false)
-        wireRegen('.re-dist', '거리감 재생성', true)
+        wireRegen('.re', '재생성', { distance: false })
+        wireRegen('.re-dist', '거리감 재생성', { distance: true })
+        wireRegen('.re-pro', 'Pro 재생성', { pro: true })
+        // 영상 단건 재생성 — 비동기 큐 등록. 완료된 클립은 같은 경로에 덮어써진다(이전 판 미보존).
+        $('.re-vid', div).addEventListener('click', async () => {
+          const btn = $('.re-vid', div)
+          btn.disabled = true
+          btn.textContent = '등록 중…'
+          try {
+            await api(`/api/personas/${pid}/clip-regen`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ id: entry.id })
+            })
+            setStatus(`${entry.id} 영상 재생성 대기열 등록 — 완료되면 클립이 덮어써집니다 (진행: 영상 패널)`)
+          } catch (e) {
+            setStatus(`영상 재생성 등록 실패: ${e.message}`)
+          }
+          btn.disabled = false
+          btn.textContent = '영상 재생성'
+        })
         return div
       }
 
@@ -1145,6 +1174,7 @@
         const buildingClips = b && b.pid === pid && b.kind === 'clips'
         const buildingReel = b && b.pid === pid && b.kind === 'reel'
         const buildingResume = b && b.pid === pid && b.kind === 'resume'
+        const buildingClip = b && b.pid === pid && b.kind === 'clip'
         const qHas = (kind) =>
           videoState && (videoState.queue || []).some((v) => v.pid === pid && v.kind === kind)
 
@@ -1155,6 +1185,10 @@
           clipRow =
             `<span class="video-label">영상 ${unit} <b>${job.done || 0}/${job.total || cs.clipsTotal}</b> 생성 중…</span>` +
             `<button id="video-pause" class="stop-btn">일시정지</button>` +
+            `<button id="video-stop" class="stop-btn">중단</button>`
+        } else if (buildingClip) {
+          clipRow =
+            `<span class="video-label">장면 <b>${b.sceneId || job.id || ''}</b> 영상 재생성 중… (완료 시 덮어쓰기)</span>` +
             `<button id="video-stop" class="stop-btn">중단</button>`
         } else if (buildingResume) {
           const ph = job.phase === 'fetch' ? 'Firebase 회수' : '이어서 생성'
@@ -1353,7 +1387,8 @@
         } else if (!fn) {
           row =
             `<span class="video-label">${L} <b>없음</b></span>` +
-            `<button data-act="funeral-gen" data-force="0"${vAttr}>이미지 생성${fj ? ' (대기열 등록)' : ''}</button>`
+            `<button data-act="funeral-gen" data-force="0"${vAttr}>이미지 생성${fj ? ' (대기열 등록)' : ''}</button>` +
+            `<button data-act="funeral-gen" data-force="0" data-pro="1"${vAttr} title="Nano Banana Pro로 21:9 생성 후 4:1 중앙 크롭">Pro 생성</button>`
         } else if (fn.status === 'error') {
           row =
             `<span class="video-label">${L} <b><span style="color:#e07070">실패 (rev ${fn.rev}${fn.error ? ` — ${fn.error.slice(0, 80)}` : ''})</span></b></span>` +
@@ -1369,13 +1404,15 @@
           row =
             `<span class="video-label">${L} <b>이미지 검토 대기 (rev ${fn.rev})</b> — 아래 이미지를 확인하세요</span>` +
             `<button data-act="funeral-approve" style="background:#2a5a2a"${vAttr}>승인 (영상화 허용)</button>` +
-            `<button data-act="funeral-gen" data-force="1"${vAttr}>이미지 재생성 (새 rev)</button>`
+            `<button data-act="funeral-gen" data-force="1"${vAttr}>이미지 재생성 (새 rev)</button>` +
+            `<button data-act="funeral-gen" data-force="1" data-pro="1"${vAttr} title="Nano Banana Pro로 21:9 생성 후 4:1 중앙 크롭 (새 rev)">Pro 재생성</button>`
         } else if (!fn.video) {
           // 승인됨 — 영상화 대기. 영상화는 이 버튼으로만 시작된다.
           row =
             `<span class="video-label">${L} <b>승인됨 (rev ${fn.rev}${fn.approvedAt ? `, ${fn.approvedAt.slice(0, 16).replace('T', ' ')}` : ''})</b></span>` +
             `<button data-act="funeral-video"${vAttr}>영상화 시작 (Wan2.2)</button>` +
-            `<button data-act="funeral-gen" data-force="1"${vAttr}>이미지 재생성 (새 rev)</button>`
+            `<button data-act="funeral-gen" data-force="1"${vAttr}>이미지 재생성 (새 rev)</button>` +
+            `<button data-act="funeral-gen" data-force="1" data-pro="1"${vAttr} title="Nano Banana Pro로 21:9 생성 후 4:1 중앙 크롭 (새 rev)">Pro 재생성</button>`
         } else {
           // 완료 — Firebase 저장 버튼. 이미 저장했으면 시각 표시(다시 눌러 재저장 가능).
           const saved = fn.firebase
@@ -1385,7 +1422,8 @@
             `<span class="video-label">${L} <b>완료 (rev ${fn.rev}${(fn.videoRev || 1) > 1 ? `, 영상 v${fn.videoRev}` : ''})</b>${saved}</span>` +
             `<button data-act="funeral-upload"${vAttr}${fn.firebase && fn.firebase.rev === fn.rev ? ' title="이미 저장됨 — 다시 누르면 재업로드"' : ''}>Firebase 저장${fn.firebase && fn.firebase.rev === fn.rev ? ' ✓' : ''}</button>` +
             `<button data-act="funeral-video" data-force="1"${vAttr} title="같은 이미지로 영상만 다시 생성 (승인 유지)">영상 재생성</button>` +
-            `<button data-act="funeral-gen" data-force="1"${vAttr}>재생성 (새 rev)</button>`
+            `<button data-act="funeral-gen" data-force="1"${vAttr}>재생성 (새 rev)</button>` +
+            `<button data-act="funeral-gen" data-force="1" data-pro="1"${vAttr} title="Nano Banana Pro로 21:9 생성 후 4:1 중앙 크롭 (새 rev)">Pro 재생성</button>`
         }
 
         // 개인화 조문객 캐스트 — 접이식 한 줄 요약(기본 접힘). 펼치면 명단·행동 상세.
@@ -1813,7 +1851,8 @@
         }
       }
       // 장례식(고인 시선 파노라마 + Wan 영상) 생성/재생성 — 대기열 잡. force=완료 상태에서 새 rev.
-      async function genFuneral(force, variant = 'present') {
+      // pro=true면 Nano Banana Pro로 21:9 생성 후 4:1 중앙 크롭(주마등 파노라마 'Pro 생성'과 동일).
+      async function genFuneral(force, variant = 'present', pro = false) {
         if (!pid) return
         const L = funeralLabel(variant)
         if (
@@ -1827,9 +1866,11 @@
           await api(`/api/personas/${pid}/funeral`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ force: Boolean(force), variant })
+            body: JSON.stringify({ force: Boolean(force), variant, pro: Boolean(pro) })
           })
-          setStatus(`${L} 이미지 생성 대기열 등록 — 완료되면 패널에 떠서 검토·승인할 수 있습니다`)
+          setStatus(
+            `${L} ${pro ? 'Pro ' : ''}이미지 생성 대기열 등록 — 완료되면 패널에 떠서 검토·승인할 수 있습니다`
+          )
           pollQueue()
         } catch (e) {
           setStatus(`${L} 생성 실패: ${e.message}`)
@@ -2095,7 +2136,7 @@
           funeralCastOpen[v] = !funeralCastOpen[v]
           mountVideo()
         } else if (t.dataset.act === 'funeral-gen')
-          genFuneral(t.dataset.force === '1', t.dataset.variant || 'present')
+          genFuneral(t.dataset.force === '1', t.dataset.variant || 'present', t.dataset.pro === '1')
         else if (t.dataset.act === 'funeral-approve') approveFuneral(t.dataset.variant || 'present')
         else if (t.dataset.act === 'funeral-video')
           videoFuneral(t.dataset.force === '1', t.dataset.variant || 'present')

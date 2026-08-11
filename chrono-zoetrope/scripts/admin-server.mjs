@@ -27,7 +27,8 @@ import {
   GeminiClient,
   resolveGeminiApiKey,
   resolveGeminiConfig,
-  nearestGeminiAspect
+  nearestGeminiAspect,
+  cropImageTo41
 } from '../src/main/comfyui/gemini-client.js'
 import {
   buildKontextWorkflow,
@@ -44,6 +45,7 @@ import {
   deleteProfileDoc,
   deleteLifeGraphSession,
   uploadPersonaVideos,
+  uploadPersonaVideoClip,
   uploadPersonaFuneral,
   uploadPersonaGrave,
   downloadPhotos,
@@ -332,7 +334,7 @@ async function regenerate(pid, id, opts = {}) {
   // 재조립되므로 자동으로 원상 복구된다.
   if (opts.distance) entry.prompt += DISTANCE_SUFFIX
 
-  const result = await runRegen(pid, manifest, entry, wf)
+  const result = await runRegen(pid, manifest, entry, wf, opts)
 
   // 재생성된 이미지를 Firebase Storage 정본(generatedPanoramaImages)에 최신본으로 반영한다(best-effort,
   // 순차 await로 doc 경합 없음). manifest는 위 각 경로의 writeManifest가 이미 정본화했다. 이게 없으면
@@ -353,9 +355,9 @@ async function regenerate(pid, id, opts = {}) {
 }
 
 // 워크플로우별 재생성 디스패치 — regenerate()가 프롬프트 재조립 후 부르고, 반환 뒤 Firebase 반영을 얹는다.
-async function runRegen(pid, manifest, entry, wf) {
+async function runRegen(pid, manifest, entry, wf, opts = {}) {
   // equirect·gemini는 순수 Gemini 텍스트→이미지 — ComfyUI(kontext/sdxl)로 보내지 않는다(4:1 자동).
-  if (wf === 'gemini' || wf === 'equirect') return regenerateGemini(pid, manifest, entry)
+  if (wf === 'gemini' || wf === 'equirect') return regenerateGemini(pid, manifest, entry, opts)
   // LEGACY: 기존 seamfix persona 전용 — seamfix-legacy.js가 admin 내부 상태를 deps로 받아 처리한다.
   if (wf === 'seamfix')
     return regenerateSeamfix(pid, manifest, entry, {
@@ -410,7 +412,7 @@ async function runRegen(pid, manifest, entry, wf) {
 // Gemini 백엔드 재생성 — 시드 개념이 없어 확률만 다시 굴린다.
 // 생성 때 얼굴 앵커/실제 사진을 실었으면(entry.referenceFile) 재생성에도 같은 레퍼런스를 실어
 // 프롬프트의 "첨부 사진을 써라" 지시와 어긋나지 않게 한다(없으면 텍스트→이미지).
-async function regenerateGemini(pid, manifest, entry) {
+async function regenerateGemini(pid, manifest, entry, opts = {}) {
   const gclient = new GeminiClient({
     apiKey: await resolveGeminiApiKey(config.gemini),
     model: manifest.gemini?.model || config.gemini?.model,
@@ -420,16 +422,23 @@ async function regenerateGemini(pid, manifest, entry) {
 
   const refBuf = await loadEntryReference(pid, entry, manifest)
   const t0 = Date.now()
-  const data = await gclient.generateImage({
+  let data = await gclient.generateImage({
     prompt: entry.prompt,
     references: refBuf ? [refBuf] : [],
-    aspectRatio: nearestGeminiAspect(manifest.image.width, manifest.image.height),
+    // pro는 4:1을 거부하므로 pro 경로는 지원 최대폭인 21:9로 생성 후 아래에서 4:1 중앙 크롭.
+    aspectRatio: opts.pro
+      ? '21:9'
+      : nearestGeminiAspect(manifest.image.width, manifest.image.height),
     // 현재 config 우선(2026-08-04) — 구 persona manifest에 2K가 기록돼 있어도 재생성은 현행 4K로.
     imageSize: config.gemini?.imageSize || manifest.gemini?.imageSize || '2K',
     // flash(sceneModel) 고정 — pro는 4:1 파노라마를 거부한다. 생성(life-library)과 동일 모델.
     // 현재 config 우선 — config에서 sceneModel을 올리면 구 persona 재생성도 새 모델을 쓴다.
-    model: config.gemini?.sceneModel || manifest.gemini?.sceneModel || undefined
+    // 단 opts.pro(카드의 'Pro 생성' 버튼)면 pro 모델(config.gemini.model)로 강제한다.
+    model: opts.pro
+      ? config.gemini?.model || manifest.gemini?.model
+      : config.gemini?.sceneModel || manifest.gemini?.sceneModel || undefined
   })
+  if (opts.pro) data = await cropImageTo41(data)
   await fs.writeFile(path.join(LIBRARY, pid, entry.file), data)
 
   entry.seed = null
@@ -725,13 +734,13 @@ let funeralJob = null // { pid, name, variant, stage, phase: 'image'|'video', st
 let funeralAbort = null // AbortController
 let funeralLast = null // { pid, name, variant, ok, rev, stage, cancelled?, error?, at }
 
-function enqueueFuneral(pid, { force = false, stage = 'image', variant = 'present' } = {}) {
+function enqueueFuneral(pid, { force = false, stage = 'image', variant = 'present', pro = false } = {}) {
   const v = normalizeVariant(variant)
   if (funeralJob?.pid === pid && funeralJob?.variant === v)
     throw new Error(`이 페르소나의 ${funeralVariantLabel(v)} 생성이 이미 진행 중입니다`)
   if (funeralQueue.some((q) => q.pid === pid && q.variant === v))
     throw new Error('이미 대기열에 있습니다')
-  funeralQueue.push({ pid, variant: v, force, stage })
+  funeralQueue.push({ pid, variant: v, force, stage, pro })
   pumpFuneral() // fire-and-forget — 에러는 pump 내부에서 funeralLast로 기록
   return funeralQueue.length
 }
@@ -739,11 +748,11 @@ function enqueueFuneral(pid, { force = false, stage = 'image', variant = 'presen
 // 동시 1잡 — reelPhoto 펌프와 같은 이유로 잡을 첫 await 전에 동기로 세운다(동시 클릭 경합 차단).
 async function pumpFuneral() {
   if (funeralJob || funeralQueue.length === 0) return
-  const { pid, force, stage, variant } = funeralQueue.shift()
+  const { pid, force, stage, variant, pro } = funeralQueue.shift()
   funeralJob = { pid, name: pid, variant, stage, phase: stage, startedAt: Date.now() }
   funeralAbort = new AbortController()
   try {
-    await runFuneralJob(pid, { force, stage, variant })
+    await runFuneralJob(pid, { force, stage, variant, pro })
   } catch (e) {
     funeralLast = {
       pid,
@@ -762,7 +771,10 @@ async function pumpFuneral() {
   }
 }
 
-async function runFuneralJob(pid, { force = false, stage = 'image', variant = 'present' } = {}) {
+async function runFuneralJob(
+  pid,
+  { force = false, stage = 'image', variant = 'present', pro = false } = {}
+) {
   const vkind = normalizeVariant(variant)
   const vlabel = funeralVariantLabel(vkind)
   await ensurePersonaLocal(pid).catch(() => {})
@@ -771,7 +783,7 @@ async function runFuneralJob(pid, { force = false, stage = 'image', variant = 'p
   const personaDir = path.join(LIBRARY, pid)
   if (funeralJob) funeralJob.name = profile.name || pid
   logAction(
-    `[시작] ${vlabel} ${stage === 'video' ? '영상화' : '이미지 생성'} 시작: ${profile.name || pid}${force ? (stage === 'video' ? ' (영상만 재생성)' : ' (새 rev 재생성)') : ''}`
+    `[시작] ${vlabel} ${stage === 'video' ? '영상화' : `${pro ? 'Pro ' : ''}이미지 생성`} 시작: ${profile.name || pid}${force ? (stage === 'video' ? ' (영상만 재생성)' : ' (새 rev 재생성)') : ''}`
   )
 
   // 얼굴 앵커(영정의 주인 문맥용) — 릴 사진 잡과 같은 후보 순서로 시도, 없으면 텍스트-only.
@@ -866,6 +878,7 @@ async function runFuneralJob(pid, { force = false, stage = 'image', variant = 'p
     branchNarrative,
     faceRef,
     force,
+    pro,
     signal: funeralAbort.signal,
     log: logAction,
     onManifest: async (m) => {
@@ -1103,14 +1116,16 @@ let regenLast = null //  { pid, done, total, ok, err, cancelled, at }
 let videoCancel = false //  현재 작업 중단 요청 (클립 사이에서 확인)
 let videoCancelKind = 'stop' // 'pause' | 'stop' — 사용자에게 보여줄 라벨용
 
-function enqueueVideo(pid, kind) {
+function enqueueVideo(pid, kind, extra = {}) {
   if (!pid) return
-  const dup =
-    videoQueue.some((v) => v.pid === pid && v.kind === kind) ||
-    (videoBuilding?.pid === pid && videoBuilding?.kind === kind)
+  // 단건(kind='clip')은 sceneId까지 같아야 중복 — 다른 장면끼리는 나란히 대기 가능.
+  const same = (v) => v && v.pid === pid && v.kind === kind && v.sceneId === extra.sceneId
+  const dup = videoQueue.some(same) || same(videoBuilding)
   if (dup) return
-  videoQueue.push({ pid, kind })
-  logAction(`영상 대기열 추가: ${kind} ${pid} (대기 ${videoQueue.length})`)
+  videoQueue.push({ pid, kind, ...extra })
+  logAction(
+    `영상 대기열 추가: ${kind}${extra.sceneId ? ` ${extra.sceneId}` : ''} ${pid} (대기 ${videoQueue.length})`
+  )
   pumpVideo()
 }
 
@@ -1133,7 +1148,7 @@ async function pumpVideo() {
     const personaDir = path.join(LIBRARY, pid)
     // scene 순서(출생→죽음). 루프 프롬프트에 age가 필요하므로 함께 싣는다.
     const scenes = (manifest.images || [])
-      .filter((im) => !im.failed)
+      .filter((im) => !im.failed && !im.excluded) // excluded: admin에서 영상화 제외한 장면
       .map((im) => ({
         id: im.id,
         absPath: path.join(personaDir, im.file),
@@ -1175,6 +1190,37 @@ async function pumpVideo() {
           logAction(`  ↑ Firebase 영상 업로드: ${up.count}개 → 'generatedVideos'/${up.key}`)
         } catch (e) {
           logAction(`  [경고] Firebase 영상 업로드 실패(로컬 보존됨): ${e.message}`)
+          videoLast = { ...(videoLast || {}), firebaseWarn: `클립 업로드 실패: ${e.message}` }
+        }
+      }
+    } else if (kind === 'clip') {
+      // 단건 재생성: 장면 1개만 강제로 새로 만들어 로컬 videos/<id>.mp4와 Firebase 정본을
+      // 같은 경로에 덮어쓴다 — 이전 판은 어디에도 남지 않는다. 릴은 파생물이라 낡은 상태가 된다.
+      const scene = scenes.find((s) => s.id === job.sceneId)
+      if (!scene) throw new Error(`장면 없음(실패·영상 제외 장면 불가): ${job.sceneId}`)
+      videoJob = { pid, kind, phase: 'clip', done: 0, total: 1, id: scene.id }
+      logAction(
+        `[시작] 영상 단건 재생성 [${mode}]: ${manifest.profile?.name || pid} — 장면 ${scene.id}`
+      )
+      const out = await regenerator.regenerate(scene, {
+        force: true,
+        onProgress: (e) => (videoJob = { pid, kind, id: scene.id, ...e })
+      })
+      if (!out) throw new Error('영상 생성 결과 없음 (mock 모드거나 백엔드 실패)')
+      videoLast = { pid, kind, id: scene.id, ok: true, at: Date.now() }
+      logAction(`[완료] 영상 단건 재생성 완료: ${pid} — ${scene.id} (릴에 반영하려면 릴 재생성)`)
+      if (firebaseReady && config.firebase?.uploadGenerated !== false) {
+        try {
+          const im = (manifest.images || []).find((x) => x.id === scene.id) || {}
+          const up = await uploadPersonaVideoClip({
+            profile: manifest.profile,
+            personaId: pid,
+            dir: personaDir,
+            image: { id: scene.id, age: im.age, year: im.year, scene: im.scene, isPast: im.isPast }
+          })
+          logAction(`  ↑ Firebase 클립 덮어쓰기: ${scene.id} → 'generatedVideos'/${up.key}`)
+        } catch (e) {
+          logAction(`  [경고] Firebase 클립 업로드 실패(로컬 보존됨): ${e.message}`)
           videoLast = { ...(videoLast || {}), firebaseWarn: `클립 업로드 실패: ${e.message}` }
         }
       }
@@ -1354,7 +1400,7 @@ async function pumpVideo() {
 // 사전 생성된 영상 개수(파일 기준) — UI가 "영상 N/총" 표시에 쓴다. 장면당 1개(루프 또는 Wan 클립).
 function clipStatus(pid, manifest) {
   const dir = path.join(LIBRARY, pid, 'videos')
-  const imgs = (manifest.images || []).filter((im) => !im.failed)
+  const imgs = (manifest.images || []).filter((im) => !im.failed && !im.excluded)
   let done = 0
   for (const im of imgs) if (existsSync(path.join(dir, `${im.id}.mp4`))) done++
   return { clipsDone: done, clipsTotal: imgs.length, mode: montage.regen.mode }
@@ -2203,15 +2249,31 @@ const server = http.createServer(async (req, res) => {
         })
       }
 
-      // 재생성: { id, distance? } — 동기 처리(장당 ~15초). distance=true면 거리감 강조 프롬프트를 덧붙인다.
+      // 재생성: { id, distance?, pro? } — 동기 처리(장당 ~15초). distance=true면 거리감 강조 프롬프트,
+      // pro=true면 pro 모델로 21:9 생성 후 4:1 중앙 크롭.
       if (req.method === 'POST' && parts[3] === 'regen') {
-        const { id, distance } = await readBody(req)
-        logAction(`${pid}  [재실행] ${distance ? '거리감 ' : ''}재생성 시작  장면 ${id}`)
-        const result = await regenerate(pid, id, { distance })
+        const { id, distance, pro } = await readBody(req)
+        logAction(`${pid}  [재실행] ${distance ? '거리감 ' : ''}${pro ? 'Pro ' : ''}재생성 시작  장면 ${id}`)
+        const result = await regenerate(pid, id, { distance, pro })
         logAction(
           `${pid}  [재실행] 재생성 완료  장면 ${id}  (${(result.entry.elapsedMs / 1000).toFixed(1)}s${result.entry.seed != null ? `, seed ${result.entry.seed}` : ''})`
         )
         return send(res, 200, result)
+      }
+
+      // 영상화 제외 토글: { id, excluded } — excluded:true면 그 장면은 클립 생성·릴 합성·최종
+      // 재생목록(library-loader)에서 전부 빠진다. 파노라마 이미지·manifest 기록은 그대로 남아
+      // 언제든 해제할 수 있다.
+      if (req.method === 'POST' && parts[3] === 'exclude') {
+        const { id, excluded } = await readBody(req)
+        const m = await readManifest(pid)
+        const entry = (m.images || []).find((im) => im.id === id)
+        if (!entry) return send(res, 404, { error: `장면 없음: ${id}` })
+        if (excluded) entry.excluded = true
+        else delete entry.excluded // 해제 시 키 자체를 지워 manifest를 깨끗하게 유지
+        await writeManifest(pid, m)
+        logAction(`${pid}  장면 ${id} 영상화 ${excluded ? '제외' : '제외 해제'}`)
+        return send(res, 200, { ok: true, entry })
       }
 
       // 전체 재생성: persona의 전 장면을 순차 재생성(백그라운드). 진행은 /api/queue의 regenAll로 폴링.
@@ -2282,13 +2344,14 @@ const server = http.createServer(async (req, res) => {
       // 모든 엔드포인트는 body의 { variant: 'present'|'future' }로 어느 장례식인지 고른다
       // (없으면 present — 기존 클라이언트 호환).
 
-      // ① POST /funeral { force, variant } → 이미지(파노라마) 생성 대기열 등록. force=새 rev 재생성(승인 리셋).
+      // ① POST /funeral { force, variant, pro } → 이미지(파노라마) 생성 대기열 등록. force=새 rev 재생성(승인 리셋).
+      // pro=true면 pro 모델로 21:9 생성 후 4:1 중앙 크롭(주마등 파노라마의 'Pro 생성'과 동일 방식).
       if (req.method === 'POST' && parts[3] === 'funeral' && parts.length === 4) {
         if (VIEW_ONLY) return send(res, 400, { error: '뷰어 모드에서는 생성 불가' })
-        const { force = false, variant = 'present' } = await readBody(req)
+        const { force = false, variant = 'present', pro = false } = await readBody(req)
         const v = normalizeVariant(variant)
         try {
-          const position = enqueueFuneral(pid, { force, stage: 'image', variant: v })
+          const position = enqueueFuneral(pid, { force, stage: 'image', variant: v, pro })
           return send(res, 200, { queued: true, pid, force, variant: v, stage: 'image', position })
         } catch (e) {
           return send(res, 400, { error: e.message })
@@ -2470,6 +2533,21 @@ const server = http.createServer(async (req, res) => {
         await readManifest(pid) // 존재 확인 (없으면 throw → 404/500)
         enqueueVideo(pid, 'clips')
         return send(res, 200, { queued: true, pid, kind: 'clips' })
+      }
+
+      // 영상 단건 재생성 — { id }: 그 장면 클립만 강제 재생성해 로컬·Firebase 같은 경로에
+      // 덮어쓴다(이전 판 미보존). 비동기 큐 등록, 진행은 /api/queue의 video로 폴링.
+      if (req.method === 'POST' && parts[3] === 'clip-regen') {
+        if (VIEW_ONLY) return send(res, 400, { error: '뷰어 모드에서는 재생성 불가' })
+        const { id } = await readBody(req)
+        if (!id) return send(res, 400, { error: 'id가 필요합니다' })
+        const m = await readManifest(pid)
+        const entry = (m.images || []).find((im) => im.id === id)
+        if (!entry) return send(res, 404, { error: `장면 없음: ${id}` })
+        if (entry.failed || entry.excluded)
+          return send(res, 400, { error: '실패·영상 제외 장면은 영상화할 수 없습니다' })
+        enqueueVideo(pid, 'clip', { sceneId: id })
+        return send(res, 200, { queued: true, pid, kind: 'clip', id })
       }
 
       // 주마등 릴 합성 — Firebase 정본 클립(없으면 로컬)으로 90초 릴 합성.

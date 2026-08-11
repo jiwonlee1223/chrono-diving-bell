@@ -49,7 +49,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ComfyUIClient } from './client.js'
 import { buildWan22I2VWorkflow } from './workflows.js'
-import { nearestGeminiAspect } from './gemini-client.js'
+import { nearestGeminiAspect, cropImageTo41 } from './gemini-client.js'
 import { agedPortrait } from './aged-anchor.js'
 import { AGES, resolveAgePoint } from './life-graph-plan.js'
 import { FULL_BODY_RULE } from './prompt-builder.js'
@@ -634,7 +634,9 @@ export function buildFuneralPrompt(
             `REFERENCE IMAGE ${portraitNo} = THE PORTRAIT PHOTO. It is the photograph that goes inside the memorial` +
               ` picture frame on the altar, and nothing else. Take ONLY the person's face and likeness from it;` +
               ` take nothing about the room, background, framing or lighting from it, and do not place this person` +
-              ` anywhere else in the scene.`,
+              ` anywhere else in the scene. This person is the DECEASED — they are dead and cannot stand in the` +
+              ` room. Their face appears in exactly ONE place: inside the memorial picture frame. No mourner, no` +
+              ` chief mourner, no bystander may share or even resemble that face.`,
           hasLayoutRef &&
             `REFERENCE IMAGE ${layoutNo} = THE LAYOUT REFERENCE. It is a real 360 equirectangular photograph of an` +
               ` actual Korean funeral hall, provided ONLY as a guide to composition, spatial depth, scale, room` +
@@ -672,7 +674,9 @@ export function buildFuneralPrompt(
     `Their expressions and postures vary — do NOT make everyone bow or weep. Some gaze at the portrait with` +
     ` distant, wistful eyes; some look sorrowful yet lost in fond memories; one has the faint trace of a smile` +
     ` while recalling something; some speak to each other in hushed voices; a few simply stand still, looking down.` +
-    ` Only one or two actually bow or wipe tears. `
+    ` Only one or two actually bow or wipe tears.` +
+    ` None of the people in the hall is the deceased — the deceased's face exists ONLY inside the framed` +
+    ` memorial portrait on the altar, never on a living body. `
   // 상주가 제단 옆에 따로 서므로, 뒤쪽 조문객 명단에서는 상주를 뺀다(같은 사람이 두 번 나오면 안 된다).
   const rearCast =
     wishes?.chiefMourner && cast
@@ -709,7 +713,12 @@ export function buildFuneralPrompt(
       ` the chief mourner's traditional plain armband — a black band with two thin white stripes and absolutely` +
       ` no text or letters on it — on their left upper arm, standing quietly at the mourner's` +
       ` position where condolences are received, their face turned slightly toward the portrait. This person` +
-      ` appears ONLY here, beside the altar — not again among the mourners behind the viewer. `
+      ` appears ONLY here, beside the altar — not again among the mourners behind the viewer.` +
+      // 상주는 영정 바로 옆이라 flash가 액자 속 얼굴을 상주에게 흘리기 쉽다(2026-08-06 실증) — 명시 차단.
+      (hasFaceRef
+        ? ` The chief mourner is a DIFFERENT, LIVING person — absolutely NOT the deceased: their face must not` +
+          ` match or resemble the face in REFERENCE IMAGE ${portraitNo} (the portrait in the frame beside them). `
+        : ` The chief mourner is a different, living person — not the deceased whose portrait stands beside them. `)
     : ''
   // 스케일·깊이(실측 360 장례식장 사진 레퍼런스, 2026-08-03): 기존 프롬프트엔 거리 지시가 없어
   // 모델이 제단을 화면 가득 채워 그렸다. 실제 equirectangular 사진에서는 카메라가 제단에서
@@ -849,6 +858,7 @@ async function writeManifest(personaDir, manifest, onManifest) {
  * @param {Buffer}   [p.faceRef]    얼굴 레퍼런스(영정의 주인 — 문맥용, 화면엔 등장 안 함이 원칙)
  * @param {boolean}  [p.force]      [image 단계] 새 rev로 처음부터(재생성, 승인 리셋).
  *                                  [video 단계] 같은 rev의 영상만 재생성(승인 유지, 이전 영상은 videoHistory로)
+ * @param {boolean}  [p.pro]        [image 단계] pro 모델로 21:9 생성 후 4:1 중앙 크롭(pro는 4:1 거부)
  * @param {AbortSignal} [p.signal]
  * @param {(msg:string)=>void} [p.log]
  * @param {(m:object)=>void|Promise} [p.onManifest]  manifest 저장마다 호출(Firebase 정본 upsert용)
@@ -865,6 +875,7 @@ export async function runFuneralWorkflow({
   branchNarrative = null, // 분기(3차) 장례식: 대화 기반 분기 연대기 — 조문객 캐스트의 노년 근거
   faceRef = null,
   force = false,
+  pro = false,
   signal,
   log = () => {},
   onManifest,
@@ -1012,18 +1023,23 @@ export async function runFuneralWorkflow({
         )
         if (!sceneRef) log(`  [경고] 장례식: 레퍼런스 사진 없음 — 영정 얼굴이 임의로 생성된다`)
         const pano = config.panorama || { width: 4096, height: 1024 }
-        const model = fcfg.model || config.gemini?.sceneModel // flash — pro는 4:1 거부(기존 파노라마와 동일)
+        // flash — pro는 4:1 거부(기존 파노라마와 동일). 단 pro 요청(admin 'Pro 생성' 버튼)이면
+        // pro 모델로 지원 최대폭 21:9를 생성한 뒤 아래에서 4:1 중앙 크롭해 규격을 맞춘다.
+        const model = pro ? config.gemini?.model : fcfg.model || config.gemini?.sceneModel
         onProgress({ phase: 'image', variant: vkind })
-        log(`  [장례식] ${vlabel} 파노라마 생성 (rev ${rev}, ${pano.width}×${pano.height})`)
+        log(
+          `  [장례식] ${vlabel} 파노라마 생성 (rev ${rev}, ${pano.width}×${pano.height}${pro ? ', pro 21:9→4:1 크롭' : ''})`
+        )
         const t0 = Date.now()
-        const data = await gclient.generateImage({
+        let data = await gclient.generateImage({
           prompt,
           references,
-          aspectRatio: nearestGeminiAspect(pano.width, pano.height), // 4096×1024 → '4:1'
+          aspectRatio: pro ? '21:9' : nearestGeminiAspect(pano.width, pano.height), // 4096×1024 → '4:1'
           imageSize: fcfg.imageSize || config.gemini?.imageSize || '2K',
           model,
           signal
         })
+        if (pro) data = await cropImageTo41(data)
         await fs.writeFile(path.join(personaDir, imageFile), data)
         hist.imageFile = imageFile
         hist.prompt = prompt
