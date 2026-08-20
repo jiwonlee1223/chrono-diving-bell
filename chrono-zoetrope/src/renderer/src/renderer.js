@@ -143,6 +143,7 @@ async function main() {
   const threadSpeedMul = makeTween(1) // 실타래 시간 배속(가속 연출).
   let threadClock = 0 //                로컬 적분 실타래 시계(배속 변화에도 위상 점프 없음).
   let lastFrameMs = performance.now()
+  let frameCounter = 0 // 임시 진단(2026-08-14) — 렌더 루프 생존 확인용
 
   let videoEl = null
   let videoTexture = null
@@ -305,6 +306,7 @@ async function main() {
   // 장례식 장면을 머무는 시간(ms). Wan 클립 자체는 ~5초라 이 시간까지 loop로 돈다.
   // 서버가 국면 payload로 실제 값을 내려주면 그걸 쓰고, 없으면 이 기본값.
   const FUNERAL_SCENE_MS = 15000
+  const FUNERAL_PLAYBACK_RATE = 0.1 // 장례식 영상 배속 — 느린 애도의 결(2026-08-16, 0.3→0.1)
 
   // 상태 진입 연출. immediate = 부트스트랩 시 트윈 없이 그 국면으로 점프.
   function applyState(state, meta = {}, immediate = false) {
@@ -558,7 +560,7 @@ async function main() {
     videoEl.preload = 'auto'
     videoEl.crossOrigin = 'anonymous'
     videoEl.src = url
-    videoEl.playbackRate = 1 // 장례식은 배속하지 않는다 — 느린 애도의 결이 연출의 전부다
+    videoEl.playbackRate = FUNERAL_PLAYBACK_RATE // 느린 애도의 결 — 0.3배속(2026-08-16)
     const el = videoEl
     let guard = setTimeout(finish, sceneMs + 15000) // 로드 자체가 안 되는 경우의 상한
     el.addEventListener(
@@ -577,13 +579,19 @@ async function main() {
         // 반환점(처음/끝 프레임)에서 끝나므로 움직임이 중간에 잘리지 않는다.
         // (pp 변환본은 파일 한 바퀴가 왕복 한 사이클이라 정수 사이클로 잡는다.)
         // 길이를 못 읽으면 sceneMs를 그대로 쓴다.
-        const halves = durSec ? Math.max(1, Math.round(sceneMs / 1000 / durSec)) : 0
-        const totalMs = halves ? halves * durSec * 1000 : sceneMs
+        // 저배속이라 반주기의 벽시계 길이는 durSec / rate — 장면 길이 계산도 그 기준.
+        // 단, 편도 한 번이 sceneMs를 이미 넘으면(저배속에선 흔함) 반환점을 기다리지 않고
+        // sceneMs에서 그냥 끝낸다 — 이 속도에선 화면이 거의 정지라 중간 컷이 안 보이고,
+        // 어차피 암전(tvOff)이 이음매를 덮는다.
+        const effDurSec = durSec / FUNERAL_PLAYBACK_RATE
+        const oneHalfMs = effDurSec * 1000
+        const halves = durSec ? Math.max(1, Math.round(sceneMs / 1000 / effDurSec)) : 0
+        const totalMs = !halves ? sceneMs : oneHalfMs >= sceneMs ? sceneMs : halves * oneHalfMs
         let reversing = false
         if (isPP) {
           el.loop = true
           // 새로고침 재개 — 파일 자체가 왕복이라 경과 시간을 그냥 사영한다.
-          if (seekSec > 0 && durSec) el.currentTime = seekSec % durSec
+          if (seekSec > 0 && durSec) el.currentTime = (seekSec * FUNERAL_PLAYBACK_RATE) % durSec
         } else {
           // 핑퐁 드라이버 — 정방향은 네이티브 재생, 끝에 닿으면 rAF로 currentTime을 되감고,
           // 처음에 닿으면 다시 정방향 재생으로 복귀한다.
@@ -593,7 +601,7 @@ async function main() {
             let lastMs = performance.now()
             const step = (nowMs) => {
               if (settled || videoEl !== el) return
-              const dt = (nowMs - lastMs) / 1000
+              const dt = ((nowMs - lastMs) / 1000) * FUNERAL_PLAYBACK_RATE // 역방향도 같은 배속
               lastMs = nowMs
               const t = el.currentTime - dt
               if (t <= 0) {
@@ -612,7 +620,7 @@ async function main() {
           })
           // 새로고침 재개 — 경과 시간을 핑퐁 삼각파에 사영해 위치·방향을 복원한다.
           if (seekSec > 0 && durSec) {
-            const p = seekSec % (2 * durSec)
+            const p = (seekSec * FUNERAL_PLAYBACK_RATE) % (2 * durSec)
             if (p <= durSec) el.currentTime = p
             else {
               el.currentTime = 2 * durSec - p
@@ -1509,6 +1517,13 @@ async function main() {
   }
 
   function frame() {
+    frameCounter++
+    // 영상 텍스처 강제 갱신(2026-08-14): three VideoTexture는 requestVideoFrameCallback에
+    // 의존하는데, Chromium은 DOM에 없는(화면에 합성되지 않는) video의 rVFC를 재생 시작 직후
+    // 몇 프레임 만에 멈출 수 있다(브라우저 업데이트로 발현) — 영상은 재생 중인데 실린더 위
+    // 텍스처만 첫 프레임에 얼어붙는다. rAF마다 강제 업로드해 rVFC와 무관하게 만든다.
+    // (paused여도 갱신 — 장례식 비-pp 폴백은 pause 상태에서 currentTime 역방향 시킹으로 그린다)
+    if (videoTexture && videoEl && videoEl.readyState >= 2) videoTexture.needsUpdate = true
     const eff = effSeconds()
     // 실타래 시계를 배속만큼 적분(가속 연출). 배속이 변해도 위상 점프 없음.
     const nowMs = performance.now()
@@ -1723,6 +1738,34 @@ async function main() {
     renderer.setScissorTest(false)
   }
   renderer.setAnimationLoop(frame)
+
+  // ── 임시 진단(2026-08-14, 원인 확정 후 제거) — 돔 영상 정지 추적: 2초마다 비디오·렌더 상태 로그 ──
+  let dbgLastFrame = 0
+  setInterval(() => {
+    const fps = (frameCounter - dbgLastFrame) / 2
+    dbgLastFrame = frameCounter
+    if (!videoEl) {
+      console.log('[zoe-dbg]', JSON.stringify({ video: null, phase: demoPhase, convo: convoVideoActive, fps }))
+      return
+    }
+    console.log(
+      '[zoe-dbg]',
+      JSON.stringify({
+        t: +videoEl.currentTime.toFixed(2),
+        paused: videoEl.paused,
+        ended: videoEl.ended,
+        ready: videoEl.readyState,
+        net: videoEl.networkState,
+        err: videoEl.error?.code ?? null,
+        mix: +videoMix.v.toFixed(2),
+        phase: demoPhase,
+        convo: convoVideoActive,
+        tex: !!videoTexture,
+        fps,
+        src: (videoEl.currentSrc || '').split('/').pop()
+      })
+    )
+  }, 2000)
 
   // 리프트 신호 경로(§9 미결). 지금은 수신만 하고 horizon-lock 훅에 전달. 기본 no-op.
   window.zoetrope.onLift?.(({ position } = {}) => {

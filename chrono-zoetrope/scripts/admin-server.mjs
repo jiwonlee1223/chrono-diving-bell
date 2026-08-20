@@ -81,7 +81,8 @@ import {
 import {
   synthesizeAgeScenes,
   synthesizeBranchedScenes,
-  collectSessionPhotoURLs
+  collectSessionPhotoURLs,
+  collectStagePhotoURLs
 } from '../src/main/comfyui/life-graph-plan.js'
 import { prefixForEntry } from '../src/main/comfyui/face-anchor.js'
 import { ensureEntryAgedAnchor } from '../src/main/comfyui/aged-anchor.js'
@@ -133,7 +134,46 @@ async function readManifest(pid) {
   const p = path.join(LIBRARY, pid, 'manifest.json')
   return JSON.parse(await fs.readFile(p, 'utf-8'))
 }
-async function writeManifest(pid, manifest) {
+// 별도 잡이 소유하는 공유 키 — 이 함수를 지나는 쓰기는 이 키들을 "보존"만 할 뿐 수정하지 않는
+// 것이 기본이다(수정하는 호출자는 ownKeys로 소유를 선언). life-library FOREIGN_KEYS와 같은 원리.
+const SHARED_MANIFEST_KEYS = [
+  'funeral',
+  'funeralFuture',
+  'funeralBranched',
+  'grave',
+  'graveBranched',
+  'reelPhotos',
+  'reelPhotosFuture',
+  'reelPhotosBranched',
+  'lifeCuration',
+  'clips'
+]
+async function writeManifest(pid, manifest, ownKeys = []) {
+  // lost-update 방지(2026-08-17~18): 오래 달린 잡(재생성 등)이 시작 때 읽어둔 사본으로 전체를
+  // 되쓰면, 그 사이 다른 잡이 기록한 것들이 읽던 시점의 값으로 회귀했다 — 분기 alt 장면 유실
+  // (신용걸 alt-71/84/90), 분기 장례식·장지가 "생성됐다가 사라지는" 증상. 쓰기 직전 디스크
+  // 판을 다시 읽어: images는 id 병합(디스크에만 있는 항목 보존), 공유 키는 소유자가 아니면
+  // 디스크 판을 그대로 미러링한다(디스크에 없으면 stale 사본이 부활시키지 않게 지운다).
+  try {
+    const disk = JSON.parse(
+      await fs.readFile(path.join(LIBRARY, pid, 'manifest.json'), 'utf-8')
+    )
+    if (Array.isArray(disk.images) && Array.isArray(manifest.images)) {
+      const mem = new Map(manifest.images.map((i) => [i.id, i]))
+      const diskIds = new Set(disk.images.map((i) => i.id))
+      manifest.images = [
+        ...disk.images.map((i) => mem.get(i.id) || i),
+        ...manifest.images.filter((i) => !diskIds.has(i.id))
+      ]
+    }
+    for (const k of SHARED_MANIFEST_KEYS) {
+      if (ownKeys.includes(k)) continue
+      if (k in disk) manifest[k] = disk[k]
+      else delete manifest[k]
+    }
+  } catch {
+    /* 디스크 판 없음/깨짐 — in-memory 그대로 */
+  }
   await fs.writeFile(path.join(LIBRARY, pid, 'manifest.json'), JSON.stringify(manifest, null, 2))
   // Firebase 정본 동기화 — 생성/재생성/성별수정이 전부 이 함수를 지나므로 여기 한 곳이면 커버된다.
   // 실패해도 로컬 저장은 유지(정본 동기화는 best-effort). 다른 머신에서 hydrate로 복원된다.
@@ -151,7 +191,7 @@ async function writeManifest(pid, manifest) {
 async function patchManifest(pid, patch) {
   const m = await readManifest(pid)
   Object.assign(m, patch)
-  await writeManifest(pid, m)
+  await writeManifest(pid, m, Object.keys(patch)) // patch한 키는 이 호출이 소유
   return m
 }
 
@@ -181,8 +221,10 @@ async function hydratePersona(docKey) {
   if (!firebaseReady) throw new Error('Firebase 미연결')
   const manifest = await fetchPersonaManifest(docKey)
   if (!manifest) throw new Error(`Firebase에 manifest 정본이 없다: ${docKey}`)
-  const pid = manifest.personaId
-  if (!pid) throw new Error(`manifest에 personaId가 없다: ${docKey}`)
+  // 로컬 폴더명은 정본 문서 키(docKey)를 따른다 — manifest.personaId 필드는 p-해시로
+  // 오염돼 있을 수 있어(과거 pid 미전달 버그) 그대로 쓰면 빈 껍데기 이중 폴더가 복원된다.
+  const pid = docKey
+  if (manifest.personaId !== docKey) manifest.personaId = docKey
   const dir = path.join(LIBRARY, pid)
   await fs.mkdir(dir, { recursive: true })
   await writeManifestLocalOnly(pid, manifest) // 정본에서 받은 걸 다시 정본에 쓰지 않게 로컬만 저장
@@ -578,7 +620,7 @@ async function runReelPhotosJob(pid, { force = false, variant = 'past' } = {}) {
       .catch(() => {})
     if (manifest[mKey]) {
       delete manifest[mKey]
-      await writeManifest(pid, manifest)
+      await writeManifest(pid, manifest, [mKey]) // force 삭제가 병합에 되살아나지 않게 소유 선언
     }
   }
 
@@ -1025,6 +1067,8 @@ const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
   '.json': 'application/json',
   '.mp4': 'video/mp4'
 }
@@ -2085,8 +2129,11 @@ const server = http.createServer(async (req, res) => {
         if (!dirent.isDirectory()) continue
         try {
           const m = await readManifest(dirent.name)
-          byPid.set(m.personaId, {
-            personaId: m.personaId,
+          // pid는 폴더명이 진실이다 — manifest.personaId 필드는 릴이 파노라마보다 먼저 돈 경우
+          // p-해시로 어긋나 있을 수 있고(reel-photos.js derivePersonaId), 그 값을 따르면
+          // 같은 Firestore 문서에 빈 껍데기 폴더가 이중으로 물린다.
+          byPid.set(dirent.name, {
+            personaId: dirent.name,
             name: m.profile?.name || null,
             createdAt: m.createdAt || null,
             workflow: m.workflow || null,
@@ -2249,6 +2296,152 @@ const server = http.createServer(async (req, res) => {
         })
       }
 
+      // 제출 사진 목록(2026-08-13): 본인 사진 교체 모달의 재료 — 이 참가자가 Firebase에 올린 사진을
+      // 전부 모아 /img URL 목록으로 준다. Firestore 문서의 photoURLs(occupation)와 각 세션 점 사진
+      // (collectStagePhotoURLs)을 _photo-picker/로 내려받는다(_input의 photo-N 얼굴 앵커를 덮지 않게
+      // 폴더 분리 — downloadPhotos는 항상 photo-0..N으로 쓴다). 로컬 _input·_stage-photos도 합친다.
+      if (req.method === 'GET' && parts[3] === 'photos') {
+        if (!(await ensurePersonaLocal(pid).catch(() => false)))
+          return send(res, 404, { error: `persona 없음: ${pid}` })
+        const personaDir = path.join(LIBRARY, pid)
+        const IMG_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp'])
+        const listDir = async (rel, label) => {
+          const files = await fs.readdir(path.join(personaDir, rel)).catch(() => [])
+          return files
+            .filter(
+              (f) => IMG_EXT.has(path.extname(f).toLowerCase()) && !f.startsWith('00-admin-face')
+            )
+            .sort()
+            .map((f) => ({ file: `${rel}/${f}`, url: `/img/${pid}/${rel}/${f}`, source: label }))
+        }
+        if (firebaseReady) {
+          try {
+            const manifest = await readManifest(pid).catch(() => null)
+            const doc = profiles.find((p) => p.id === (manifest?.profile?.id || pid)) || null
+            if (doc) {
+              const urls = new Set(Array.isArray(doc.photoURLs) ? doc.photoURLs : [])
+              for (const k of ['first', 'second', 'third'])
+                if (doc[k])
+                  for (const u of Object.values(collectStagePhotoURLs(doc[k], doc))) urls.add(u)
+              const wanted = [...urls]
+              const pickerDir = path.join(personaDir, '_photo-picker')
+              const have = (await fs.readdir(pickerDir).catch(() => [])).length
+              if (wanted.length && have < wanted.length)
+                await downloadPhotos({ id: pid, photoURLs: wanted }, pickerDir)
+            }
+          } catch (e) {
+            logAction(`${pid}  [경고] 제출 사진 다운로드 실패(로컬 캐시만 표시): ${e.message}`)
+          }
+        }
+        const photos = [
+          ...(await listDir('_photo-picker', 'Firebase 제출 사진')),
+          ...(await listDir('_input', '생성 시 레퍼런스')),
+          ...(await listDir('_stage-photos', '시기별 제출 사진'))
+        ]
+        return send(res, 200, { photos })
+      }
+
+      // 본인 얼굴 사진 교체(2026-08-13): 가족 사진에서 다른 인물(예: 딸)이 얼굴 앵커로 잡혔을 때,
+      // 어드민이 본인 단독 사진을 올려 모든 생성의 얼굴 기준을 바꾼다. body { image: dataURL } 또는 { reset: true }.
+      // 저장: _input/00-admin-face.<ext> — 릴·장례식의 _input 정렬 스캔에서 첫 후보('0'<'p')가 되고,
+      // manifest.referenceImage.local(재생성 폴백)과 manifest.profile.photos[0](분기 미래 faceRef)도 이 파일로.
+      // 이전 얼굴로 만들어진 파생 캐시(_aged 나이 앵커, funeral/portrait*.png 영정)를 비워 다음
+      // 장례식 생성(force)·전체 재생성이 새 얼굴로 다시 만들게 한다 — 이미지 자체는 기존 버튼으로 돌린다.
+      if (req.method === 'POST' && parts[3] === 'face') {
+        if (VIEW_ONLY) return send(res, 400, { error: '뷰어 모드에서는 수정 불가' })
+        const { image = null, images = null, reset = false } = await readBody(req)
+        if (!(await ensurePersonaLocal(pid).catch(() => false)))
+          return send(res, 404, { error: `persona 없음: ${pid}` })
+        const manifest = await readManifest(pid)
+        const personaDir = path.join(LIBRARY, pid)
+        const inputDir = path.join(personaDir, '_input')
+        const invalidateFaceCaches = async () => {
+          await fs
+            .rm(path.join(personaDir, '_aged'), { recursive: true, force: true })
+            .catch(() => {})
+          for (const f of ['portrait.png', 'portrait-future.png'])
+            await fs.rm(path.join(personaDir, 'funeral', f), { force: true }).catch(() => {})
+        }
+        const removeAdminFace = async () => {
+          const olds = (await fs.readdir(inputDir).catch(() => [])).filter((f) =>
+            f.startsWith('00-admin-face')
+          )
+          for (const f of olds) await fs.rm(path.join(inputDir, f), { force: true }).catch(() => {})
+          if (manifest.profile?.photos)
+            manifest.profile.photos = manifest.profile.photos.filter(
+              (p) => !path.basename(String(p)).startsWith('00-admin-face')
+            )
+        }
+
+        if (reset) {
+          await removeAdminFace()
+          if (manifest.referenceImageOriginal) {
+            manifest.referenceImage = manifest.referenceImageOriginal
+            delete manifest.referenceImageOriginal
+          }
+          delete manifest.adminFace
+          await invalidateFaceCaches()
+          await writeManifest(pid, manifest)
+          logAction(`${pid}  본인 사진 교체 해제 — 원본 제출 사진 기준 복귀 (영정·나이 앵커 캐시 비움)`)
+          return send(res, 200, { ok: true, reset: true })
+        }
+
+        // 1~2장 — 배열(images: 제출 사진 크롭 모달) 또는 단일(image: PC 파일 업로드 하위호환).
+        // 첫 장이 대표(얼굴 앵커 1순위 00-admin-face), 둘째는 00-admin-face-2로 예비 보관
+        // (파이프라인들은 첫 후보만 싣는다 — 둘째는 첫 장이 유실됐을 때의 폴백·기록용).
+        const list = (Array.isArray(images) && images.length ? images : image ? [image] : []).slice(
+          0,
+          2
+        )
+        if (!list.length) return send(res, 400, { error: 'image 또는 images가 필요합니다' })
+        const parsed = []
+        for (const im of list) {
+          const dm = /^data:(image\/(png|jpe?g|webp));base64,(.+)$/.exec(String(im || ''))
+          if (!dm) return send(res, 400, { error: 'image는 png/jpeg/webp data URL이어야 함' })
+          const buf = Buffer.from(dm[3], 'base64')
+          if (!buf.length || buf.length > 20 * 1024 * 1024)
+            return send(res, 400, { error: '이미지가 비었거나 20MB를 넘습니다' })
+          parsed.push({
+            buf,
+            ext: dm[1] === 'image/png' ? 'png' : dm[1] === 'image/webp' ? 'webp' : 'jpg'
+          })
+        }
+        await fs.mkdir(inputDir, { recursive: true })
+        await removeAdminFace()
+        const facePaths = []
+        for (let i = 0; i < parsed.length; i++) {
+          const p = path.join(
+            inputDir,
+            `00-admin-face${i === 0 ? '' : `-${i + 1}`}.${parsed[i].ext}`
+          )
+          await fs.writeFile(p, parsed[i].buf)
+          facePaths.push(p)
+        }
+        // 원본 기준은 한 번만 보관(연속 교체해도 최초 제출 사진으로 되돌릴 수 있게).
+        if (!manifest.referenceImageOriginal && manifest.referenceImage)
+          manifest.referenceImageOriginal = manifest.referenceImage
+        manifest.referenceImage = { local: facePaths[0] }
+        manifest.profile = manifest.profile || {}
+        manifest.profile.photos = [...facePaths, ...(manifest.profile.photos || [])]
+        manifest.adminFace = {
+          file: path.relative(personaDir, facePaths[0]),
+          files: facePaths.map((p) => path.relative(personaDir, p)),
+          uploadedAt: new Date().toISOString(),
+          bytes: parsed.reduce((s, p) => s + p.buf.length, 0)
+        }
+        await invalidateFaceCaches()
+        await writeManifest(pid, manifest)
+        logAction(
+          `${pid}  본인 사진 교체 (${parsed.length}장, ${(manifest.adminFace.bytes / 1024).toFixed(0)}KB) — 영정·나이 앵커 캐시 비움, 이후 생성/재생성은 이 얼굴 기준`
+        )
+        return send(res, 200, {
+          ok: true,
+          file: manifest.adminFace.file,
+          files: manifest.adminFace.files,
+          note: '영정·나이 앵커 캐시를 비웠습니다. 장례식은 "새로 생성", 파노라마·릴은 전체 재생성을 실행해야 반영됩니다.'
+        })
+      }
+
       // 재생성: { id, distance?, pro? } — 동기 처리(장당 ~15초). distance=true면 거리감 강조 프롬프트,
       // pro=true면 pro 모델로 21:9 생성 후 4:1 중앙 크롭.
       if (req.method === 'POST' && parts[3] === 'regen') {
@@ -2372,7 +2565,7 @@ const server = http.createServer(async (req, res) => {
         f.approved = true
         f.approvedAt = new Date().toISOString()
         if (!f.video && f.status !== 'video') f.status = 'review' // 구버전 상태 정규화
-        await writeManifest(pid, manifest)
+        await writeManifest(pid, manifest, [vkey])
         logAction(
           `[완료] ${funeralVariantLabel(variant)} 이미지 승인: ${manifest.profile?.name || pid} (rev ${f.rev}) — 영상화 가능`
         )
@@ -2433,7 +2626,7 @@ const server = http.createServer(async (req, res) => {
             imageUrl: up.imageUrl,
             videoUrl: up.videoUrl
           }
-          await writeManifest(pid, manifest)
+          await writeManifest(pid, manifest, [funeralManifestKey(v)])
           logAction(
             `[Firebase] ${funeralVariantLabel(v)} 저장: ${manifest.profile?.name || pid} (rev ${up.rev}) → 'generatedFunerals'/${up.key}`
           )
@@ -2467,7 +2660,7 @@ const server = http.createServer(async (req, res) => {
         g.approved = true
         g.approvedAt = new Date().toISOString()
         if (!g.video && g.status !== 'video') g.status = 'review'
-        await writeManifest(pid, manifest)
+        await writeManifest(pid, manifest, [graveManifestKey(variant)])
         logAction(
           `[완료] ${graveVariantLabel(variant)} 이미지 승인: ${manifest.profile?.name || pid} (rev ${g.rev}) — 영상화 가능`
         )
@@ -2518,7 +2711,7 @@ const server = http.createServer(async (req, res) => {
             imageUrl: up.imageUrl,
             videoUrl: up.videoUrl
           }
-          await writeManifest(pid, manifest)
+          await writeManifest(pid, manifest, [graveManifestKey(variant)])
           logAction(
             `[Firebase] ${graveVariantLabel(variant)} 저장: ${manifest.profile?.name || pid} (rev ${up.rev}) → 'generatedFunerals'/${up.key}`
           )

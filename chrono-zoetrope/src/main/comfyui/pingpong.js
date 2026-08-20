@@ -43,6 +43,23 @@ export function pingpongPathFor(srcPath) {
  * @param {string} srcPath  원본 클립 절대경로
  * @returns {Promise<string>} pingpong 파일 절대경로 (실패 시 throw — 호출측이 원본 폴백)
  */
+/**
+ * 생성/재생성 직후 훅 — 낡은 pp 변환본을 지우고 백그라운드로 새 변환을 시작한다(fire-and-forget).
+ * 서버의 preparePingpongClips는 참가자 선택 시점에만 돌아서, 세션 중 재생성된 클립은
+ * pp 없이 체험에 들어가 renderer가 rAF 역방향 시킹 폴백(끊김)으로 떨어졌다(2026-08-14).
+ * 실패해도 재생은 원본 loop 폴백이므로 throw하지 않는다.
+ */
+export function refreshPingpongClip(srcPath) {
+  const outPath = pingpongPathFor(srcPath)
+  return fs
+    .rm(outPath, { force: true })
+    .then(() => ensurePingpongClip(srcPath))
+    .then(
+      () => console.log(`[pingpong] 변환 완료: ${outPath}`),
+      (e) => console.warn(`[pingpong] 변환 실패(원본 loop 폴백): ${srcPath} — ${e.message}`)
+    )
+}
+
 export async function ensurePingpongClip(srcPath) {
   const outPath = pingpongPathFor(srcPath)
   if (await fileExists(outPath)) return outPath

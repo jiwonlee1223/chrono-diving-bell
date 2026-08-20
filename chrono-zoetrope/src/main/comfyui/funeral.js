@@ -48,11 +48,12 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ComfyUIClient } from './client.js'
-import { buildWan22I2VWorkflow } from './workflows.js'
+import { buildWan22I2VWorkflow, WAN_NEGATIVE } from './workflows.js'
 import { nearestGeminiAspect, cropImageTo41 } from './gemini-client.js'
 import { agedPortrait } from './aged-anchor.js'
 import { AGES, resolveAgePoint } from './life-graph-plan.js'
 import { FULL_BODY_RULE } from './prompt-builder.js'
+import { refreshPingpongClip } from './pingpong.js'
 
 export const FUNERAL_DIR = 'funeral'
 
@@ -100,12 +101,23 @@ const DEFAULT_VIDEO = { width: 1920, height: 480, length: 81, fps: 16, steps: 4,
 // 시네마그래프 지시(2026-08-04) — 4:1 equirect에서 인물 사지를 움직이면 상하체 분리가 난다
 // (montage.json regen.wan.promptPrefix와 같은 원칙). 조문객은 제자리에 고정하고 표정·시선의
 // 미세 변화까지만 허용, 큰 움직임은 향 연기·촛불·꽃잎 등 비인물 요소에만 준다.
+// 장례식 전용 네거티브(2026-08-16) — 프롬프트의 "no bowing" 부정문은 Wan이 자주 무시한다
+// (오히려 'bowing' 단어가 힌트가 되기도). 루프 재생이라 절이 반복되면 특히 거슬려서,
+// 절·큰절·무릎꿇기·허리 굽힘·큰 동작을 네거티브에서 직접 누른다(중국어 병기 — Wan 표준 네거티브와 같은 결).
+const FUNERAL_WAN_NEGATIVE =
+  WAN_NEGATIVE +
+  ', bowing, bow, deep bow, repeated bowing, kneeling, prostrating, bending at the waist, ' +
+  'bending over, torso leaning forward, large gestures, waving arms, walking, ' +
+  '鞠躬，反复鞠躬，跪拜，磕头，下跪，弯腰，大幅度动作'
+
 const DEFAULT_MOTION_PROMPT =
   'A living photograph, cinemagraph style: the Korean funeral hall is almost completely still, solemn like a held breath, ' +
   'keeping the fixed first-person viewpoint at the center of the hall — the altar and memorial portrait in front, mourners behind. ' +
-  'Every mourner stays exactly in place — no walking, no bowing, no gestures, no limb movement; bodies keep their exact pose and position. ' +
-  'Only their faces barely change: one slowly blinks, gazing at the portrait with distant, wistful eyes; ' +
-  'another’s faint sorrowful smile forms and fades; one stands perfectly still. ' +
+  'Every mourner stays exactly in place — no walking, absolutely no bowing (no jeol, no deep bows), no large gestures; ' +
+  'standing mourners stay standing, seated mourners stay seated, each keeping their position. ' +
+  'Their only movements are small and quiet: one slowly lowers their head and holds it there; ' +
+  'two speak to each other in a hushed voice, lips barely moving; one slowly dabs tears from their eyes with a handkerchief, the hand moving only slightly; ' +
+  'a seated one blinks slowly, staring into empty space with hollow eyes; another gazes at the portrait; one stays perfectly still. ' +
   'All visible motion comes from the air itself: incense smoke rises and curls slowly, candle flames waver softly, ' +
   'white chrysanthemum petals tremble faintly. ' +
   'The camera is completely locked and static. Cinematic, realistic, extremely understated and solemn motion.'
@@ -450,14 +462,19 @@ export async function synthesizeFuneralCast(
     `\n- "who": their relationship to the deceased (grounded in the notes)` +
     `\n- "appearance": age range (an explicit number or range, consistent with the guidance above),` +
     ` clothing (black funeral suit / black hanbok / mourning armband...), one physical detail` +
-    `\n- "imageAction": what they are doing in a still photograph of this moment. AVOID the cliché of everyone` +
-    ` bowing or weeping — vary the texture of mourning: gazing at the portrait with distant, wistful eyes;` +
-    ` sorrowful yet lost in a fond memory; the faint trace of a smile while recalling something; quietly holding` +
-    ` an object tied to the deceased's life; speaking to another mourner in a hushed voice; standing still,` +
-    ` looking down. At most ONE of them may be bowing or in tears.` +
-    `\n- "videoAction": one subtle continuous motion for a short video, matching that same varied texture` +
-    ` (a slow blink with distant eyes, a faint smile forming and fading, lips moving in a quiet exchange,` +
-    ` fingers slowly turning a kept object, incense smoke drifting past them...)` +
+    `\n- "imageAction": what they are doing in a still photograph of this moment. Do NOT make them all stand facing` +
+    ` the altar — vary posture and placement like a real funeral hall: greeting another mourner with a quiet nod;` +
+    ` speaking to another in a hushed voice, half-turned toward them; SEATED on a chair, staring into empty space` +
+    ` with hollow, despairing eyes; seated with shoulders sunk and hands clasped; gazing at the portrait with` +
+    ` distant, wistful eyes; the faint trace of a smile while recalling something; quietly holding an object tied` +
+    ` to the deceased's life; standing still, head lowered. NO ONE performs the Korean funeral bow (jeol) — no` +
+    ` deep bow, no kneeling prostration. At most ONE may be in tears.` +
+    `\n- "videoAction": one subtle continuous motion for a short video — nearly still, never a bow, never a large` +
+    ` gesture, and matching their imageAction pose (a seated mourner stays seated). Choose from this register:` +
+    ` slowly lowering the head and holding it there; lips moving in a hushed exchange with another mourner;` +
+    ` a small nod of greeting toward another mourner; slowly dabbing tears with a handkerchief; seated,` +
+    ` blinking slowly while staring into empty space; a faint smile forming and fading; fingers slowly turning` +
+    ` a kept object` +
     `\nReturn ONLY JSON: {"mourners":[{"who":"...","appearance":"...","imageAction":"...","videoAction":"..."}]}`
   try {
     const out = await gclient.generateText({
@@ -671,10 +688,14 @@ export function buildFuneralPrompt(
       ` with a black mourning ribbon, surrounded by white chrysanthemums. `
   // 조문객 — 시점 뒤쪽(파노라마 좌우 끝 쪽). 표정·자세의 결을 다양하게 — 애도 클리셰 금지.
   const moodGuide =
-    `Their expressions and postures vary — do NOT make everyone bow or weep. Some gaze at the portrait with` +
-    ` distant, wistful eyes; some look sorrowful yet lost in fond memories; one has the faint trace of a smile` +
-    ` while recalling something; some speak to each other in hushed voices; a few simply stand still, looking down.` +
-    ` Only one or two actually bow or wipe tears.` +
+    `They are NOT lined up all facing the altar — arrange them naturally, in loose small clusters, the way a real` +
+    ` funeral hall breathes: two greeting each other with a quiet nod of the head; a few speaking to each other in` +
+    ` hushed voices, half-turned toward one another rather than the altar; some SEATED on the hall's chairs,` +
+    ` staring into empty space with hollow, despairing eyes; one seated with shoulders sunk, hands clasped;` +
+    ` one gazing at the portrait with distant, wistful eyes; one with the faint trace of a smile while recalling` +
+    ` something; one quietly wiping tears with a handkerchief; a few simply standing still, heads lowered.` +
+    ` But NO ONE performs the Korean funeral bow (jeol) toward the altar — no deep bow, no kneeling prostration,` +
+    ` no bent-over posture.` +
     ` None of the people in the hall is the deceased — the deceased's face exists ONLY inside the framed` +
     ` memorial portrait on the altar, never on a living body. `
   // 상주가 제단 옆에 따로 서므로, 뒤쪽 조문객 명단에서는 상주를 뺀다(같은 사람이 두 번 나오면 안 된다).
@@ -685,9 +706,9 @@ export function buildFuneralPrompt(
   const mourners =
     rearCast && rearCast.length
       ? `BEHIND the viewer — spread across the rear half of the panorama, to the far left and far right of the` +
-        ` image — stand the specific mourners of this person's life, several meters away and small in the frame,` +
-        ` full-figure with the floor and wall clearly visible around and between them, their faces visible as they` +
-        ` look toward the altar (and thus toward the camera): ` +
+        ` image — are the specific mourners of this person's life, several meters away and small in the frame,` +
+        ` full-figure with the floor and wall clearly visible around and between them, their faces visible to the` +
+        ` camera even when they are turned toward each other or seated: ` +
         rearCast
           .map(
             (m) =>
@@ -697,9 +718,9 @@ export function buildFuneralPrompt(
         `. A few other anonymous mourners in black wait further back. ` +
         moodGuide
       : `BEHIND the viewer — spread across the rear half of the panorama, to the far left and far right of the` +
-        ` image — a small number of mourners in black funeral suits and black hanbok stand and kneel several meters` +
-        ` away on the wide floor of the hall, small in the frame and full-figure with plenty of empty floor and` +
-        ` visible wall around them, their faces visible as they look toward the altar (and thus toward the camera). ` +
+        ` image — a small number of mourners in black funeral suits and black hanbok are scattered several meters` +
+        ` away on the wide floor of the hall — some standing, some seated on chairs — small in the frame and` +
+        ` full-figure with plenty of empty floor and visible wall around them, their faces visible to the camera. ` +
         moodGuide
   // 상주(사용자가 답한 "상주는 누가 되었으면 하나요?") — 한국 장례식장의 실제 관습대로 제단 옆
   // 상주석에 세운다. 조문객 무리(뒤쪽)와 달리 상주만은 제단 곁, 즉 파노라마 정면 근처에 있어
@@ -828,12 +849,15 @@ export function buildFuneralPrompt(
 async function readManifest(personaDir) {
   return JSON.parse(await fs.readFile(path.join(personaDir, 'manifest.json'), 'utf-8'))
 }
-async function writeManifest(personaDir, manifest, onManifest) {
-  // read-merge-write(2026-08-05): 이 잡이 도는 동안 다른 잡이 디스크에 더한 키(grave 등)를
-  // 지우지 않게, 디스크에만 있는 키를 흡수한 뒤 쓴다(이 잡이 쥔 키는 in-memory가 이긴다).
+async function writeManifest(personaDir, manifest, onManifest, ownKeys = []) {
+  // read-merge-write 강화(2026-08-14): 종전 병합(메모리에 없는 키만 디스크에서 흡수)은 병렬
+  // 잡들이 각자의 오래된 사본으로 같은 키를 되써서 서로의 완료 기록을 지웠다(lost update —
+  // graveBranched.video가 완료 후 null로 회귀). 디스크 판을 기준으로 삼고 이 잡이 소유한
+  // 키(ownKeys)만 in-memory가 이긴다. ownKeys가 비면 종전 동작.
   try {
     const disk = JSON.parse(await fs.readFile(path.join(personaDir, 'manifest.json'), 'utf-8'))
-    for (const k of Object.keys(disk)) if (!(k in manifest)) manifest[k] = disk[k]
+    for (const k of Object.keys(disk))
+      if (ownKeys.length ? !ownKeys.includes(k) : !(k in manifest)) manifest[k] = disk[k]
   } catch {
     /* 디스크 판 없음/깨짐 — in-memory 그대로 */
   }
@@ -919,7 +943,7 @@ export async function runFuneralWorkflow({
         }
       ]
     }
-    await writeManifest(personaDir, manifest, onManifest)
+    await writeManifest(personaDir, manifest, onManifest, [mkey])
   }
   if (!f)
     return {
@@ -940,7 +964,7 @@ export async function runFuneralWorkflow({
     f.video = null
     f.firebase = null
     f.status = 'video'
-    await writeManifest(personaDir, manifest, onManifest)
+    await writeManifest(personaDir, manifest, onManifest, [mkey])
   }
   const vk = f.videoRev || 1 // 1 = 구명명(<prefix>-r<rev>.mp4) 유지 — 기존 파일과 호환
   const videoFile =
@@ -953,7 +977,7 @@ export async function runFuneralWorkflow({
     hist.status = status
     if (patch.error !== undefined) hist.error = patch.error
     if (status === 'done') hist.doneAt = new Date().toISOString()
-    await writeManifest(personaDir, manifest, onManifest)
+    await writeManifest(personaDir, manifest, onManifest, [mkey])
   }
 
   try {
@@ -976,7 +1000,7 @@ export async function runFuneralWorkflow({
               })
             : null
           hist.cast = f.cast
-          await writeManifest(personaDir, manifest, onManifest)
+          await writeManifest(personaDir, manifest, onManifest, [mkey])
         }
         // 원하는 장례식(상주·장례 방식·안식처 등) — doc에서 매번 다시 읽는다(결정적이라 캐시 불필요).
         const wishes = doc ? collectFuneralWishes(doc) : null
@@ -985,7 +1009,7 @@ export async function runFuneralWorkflow({
         if (f.venue === undefined) {
           f.venue = wishes ? await synthesizeFuneralVenue(gclient, wishes, { signal, log }) : null
           hist.venue = f.venue
-          await writeManifest(personaDir, manifest, onManifest)
+          await writeManifest(personaDir, manifest, onManifest, [mkey])
         }
         // 영정 포트레이트 프리패스(pro) — 원본 사진 대신 정식 영정 포트레이트를 레퍼런스로 실어
         // 파노라마(flash)는 얼굴을 새로 그리지 않고 액자에 배치만 하게 한다(ensureFuneralPortrait 주석).
@@ -1087,6 +1111,7 @@ export async function runFuneralWorkflow({
         const workflow = buildWan22I2VWorkflow({
           // 이미지 생성 때 합성해 둔 캐스트(f.cast)로 조문객별 움직임까지 개인화한다.
           prompt: buildFuneralMotionPrompt(f.cast, fcfg.motionPrompt, vkind),
+          negative: FUNERAL_WAN_NEGATIVE, // 절·큰 동작을 네거티브로 직접 억제(루프 재생 대비)
           startImage: uploaded.name,
           width: v.width,
           height: v.height,
@@ -1101,6 +1126,7 @@ export async function runFuneralWorkflow({
           onProgress: (e) => onProgress({ phase: 'video', variant: vkind, ...e })
         })
         await fs.writeFile(path.join(personaDir, videoFile), videos[0].data)
+        void refreshPingpongClip(path.join(personaDir, videoFile)) // 세션 중 재생성 대비, 백그라운드
         hist.videoFile = videoFile
         await setState('done', {
           error: null,

@@ -34,17 +34,20 @@ export const NO_TEXT_DIRECTIVE =
 // 건축·인테리어·소품·주변 인물까지 한국 컨텍스트를 유지시킨다.
 // 시대 규칙(2026-08-10 개편, composeReelPhotoPrompt의 era와 동일 원칙):
 //   과거 — 정확한 연도를 프롬프트에 박아 그 해의 분위기를 고증한다(그 해에 없던 물건 금지).
-//   미래 — 연도를 밝히되 "조용히 진보한 그럴듯한 근미래"로: 오늘 이미 사라져가는 물건(종이 신문 등)이
-//   미래 장면에 나오면 관람객의 몰입이 깨진다(사용자 피드백). 단 홀로그램·플라잉카식 SF는 여전히 금지.
+//   미래 — 연도를 밝히되 "오늘의 한국과 거의 똑같아 보이는 미래"로(2026-08-11 사용자 피드백:
+//   futuristic·SF풍 결과가 나와 "조용히 진보" 문구를 폐기 — 진보를 그리라는 긍정 지시가 미래풍
+//   스타일링을 유도했다). 미래풍 건축·화면 범람·로봇·컨셉카를 명시 금지하되, 오늘 이미 사라져가는
+//   물건(종이 신문 등)이 나오면 몰입이 깨지므로(기존 피드백) 그 금지는 유지.
 export function koreanContextFor(item = {}) {
   const hasYear = Number.isFinite(item.year)
   const decade = hasYear ? Math.floor(item.year / 10) * 10 : null
   const where =
     item.isPast === false
       ? (hasYear ? `South Korea in the year ${item.year} — ` : 'South Korea some decades from now — ') +
-        'a PLAUSIBLE NEAR FUTURE: everyday life is still recognisably ordinary, but technology and objects have quietly advanced with the years — slimmer ambient devices and displays, electric vehicles, evolved fashions and storefronts. ' +
-        'Objects that are already fading from daily life today must NOT appear (no paper newspapers, no cash handling, no bulky old TVs or appliances, no visibly dated cars or phones). ' +
-        'Still NOT science fiction: no holograms, no flying vehicles, no sleek sci-fi styling'
+        'a future that looks almost exactly like PRESENT-DAY Korea: the same ordinary streets, apartment complexes, shops and interiors as today, filmed as a plain contemporary photograph. ' +
+        'The image must NOT look futuristic in any way — no futuristic or high-tech architecture, no walls of screens or glowing panels, no ambient displays, no robots, no concept-car or streamlined vehicles; any technology visible is ordinary, current-day and inconspicuous. ' +
+        'Objects that are already fading from daily life today must NOT appear either (no paper newspapers, no cash handling, no bulky old TVs or appliances, no visibly dated cars or phones). ' +
+        'Absolutely NOT science fiction: no holograms, no flying vehicles, no sleek sci-fi styling'
       : hasYear
         ? `South Korea in the year ${item.year} (the ${decade}s) — with period-accurate everyday Korean details of that exact time: the architecture, interiors, clothing, hairstyles, vehicles and objects of ${item.year}, and NOTHING that did not exist yet in that year`
         : 'South Korea'
@@ -333,10 +336,12 @@ export function composeReelPhotoPrompt(profile, item, { orientation = 'portrait'
   const decade = Math.floor(item.year / 10) * 10
   const era =
     item.isPast === false
-      ? `Korea in the year ${item.year} — a plausible near future: everyday life still recognisably ordinary,` +
-        ` but technology, devices, vehicles and fashions quietly advanced with the years; nothing that is already` +
-        ` fading from daily life today (no paper newspapers, no cash, no dated appliances or cars), yet NOT` +
-        ` science fiction: no holograms, no flying vehicles, no sleek sci-fi styling`
+      ? `Korea in the year ${item.year} — a future that looks almost exactly like present-day Korea:` +
+        ` the same ordinary streets, buildings, interiors, vehicles and fashions as today, nothing futuristic` +
+        ` or high-tech looking (no walls of screens, no glowing panels, no robots, no concept-car vehicles);` +
+        ` nothing that is already fading from daily life today either (no paper newspapers, no cash,` +
+        ` no dated appliances or cars), and absolutely NOT science fiction: no holograms, no flying vehicles,` +
+        ` no sleek sci-fi styling`
       : `Korea in the year ${item.year} (the ${decade}s) — everyday period-accurate details of that exact time` +
         ` and place, with nothing that did not exist yet in ${item.year}`
   const extra = (profile?.descriptors || []).join(', ')

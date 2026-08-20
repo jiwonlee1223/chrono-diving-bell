@@ -19,6 +19,7 @@ import {
   buildSeedanceFLFWorkflow,
   composeSeedanceLoopPrompt
 } from './workflows.js'
+import { refreshPingpongClip } from './pingpong.js'
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -59,6 +60,7 @@ export class VideoRegenerator {
     await mkdir(this.videosDir, { recursive: true })
     const outPath = join(this.videosDir, `${id}.mp4`)
     await writeFile(outPath, data)
+    void refreshPingpongClip(outPath) // 재생성 시 낡은 pp 교체 포함, 백그라운드
     return outPath
   }
 

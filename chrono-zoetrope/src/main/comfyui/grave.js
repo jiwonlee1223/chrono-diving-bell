@@ -23,6 +23,7 @@ import { ComfyUIClient } from './client.js'
 import { buildWan22I2VWorkflow } from './workflows.js'
 import { nearestGeminiAspect } from './gemini-client.js'
 import { collectFuneralWishes, resolveDeceasedAge } from './funeral.js'
+import { refreshPingpongClip } from './pingpong.js'
 
 export const GRAVE_DIR = 'grave'
 export const GRAVE_MANIFEST_KEY = 'grave'
@@ -42,9 +43,15 @@ export function graveVariantLabel(variant = 'present') {
 const DEFAULT_VIDEO = { width: 1920, height: 480, length: 81, fps: 16, steps: 4, shift: 5.0 }
 
 // 시네마그래프 모션 — 무인 풍경이라 인물 보호 지시는 불필요. 움직임은 자연 요소에만.
+// 비석 무각인(2026-08-12 사용자 피드백): 영상화 과정에서 Wan이 빈 비석에 글자를 만들어 새겼다 —
+// 비석은 원본 이미지 그대로 빈 채 유지돼야 하므로 표면 불변·무문자 지시를 프롬프트에 강제한다.
 const DEFAULT_MOTION_PROMPT =
   'A living photograph, cinemagraph style: a quiet resting place, completely still and solemn, ' +
   'the fixed viewpoint locked at the center facing the grave marker. ' +
+  'The grave marker stone is completely BLANK and stays completely blank for the entire video: ' +
+  'its smooth, unmarked, uncarved surface never changes — absolutely no text, no letters, ' +
+  'no characters, no numbers, no engravings, no inscriptions ever appear on the stone ' +
+  'or anywhere else in the scene. ' +
   'All visible motion comes from nature itself: grass and leaves sway gently in a soft breeze, ' +
   'clouds drift almost imperceptibly across the sky, light shifts subtly, ' +
   'a few petals or leaves tremble on the ground. ' +
@@ -273,12 +280,15 @@ export async function inscribeMarker(imagePath, { name, epitaph }, icfg = {}, lo
 async function readManifest(personaDir) {
   return JSON.parse(await fs.readFile(path.join(personaDir, 'manifest.json'), 'utf-8'))
 }
-async function writeManifest(personaDir, manifest, onManifest) {
-  // read-merge-write(2026-08-05): 이 잡이 도는 동안 다른 잡이 디스크에 더한 키를 지우지 않게,
-  // 디스크에만 있는 키를 흡수한 뒤 쓴다(이 잡이 쥔 grave/graveBranched는 in-memory가 이긴다).
+async function writeManifest(personaDir, manifest, onManifest, ownKeys = []) {
+  // read-merge-write 강화(2026-08-14): 종전 병합(메모리에 없는 키만 디스크에서 흡수)은 병렬
+  // 잡들이 각자의 오래된 사본으로 같은 키를 되써서 서로의 완료 기록을 지웠다(lost update —
+  // graveBranched.video가 완료 후 null로 회귀). 디스크 판을 기준으로 삼고 이 잡이 소유한
+  // 키(ownKeys)만 in-memory가 이긴다. ownKeys가 비면 종전 동작.
   try {
     const disk = JSON.parse(await fs.readFile(path.join(personaDir, 'manifest.json'), 'utf-8'))
-    for (const k of Object.keys(disk)) if (!(k in manifest)) manifest[k] = disk[k]
+    for (const k of Object.keys(disk))
+      if (ownKeys.length ? !ownKeys.includes(k) : !(k in manifest)) manifest[k] = disk[k]
   } catch {
     /* 디스크 판 없음/깨짐 — in-memory 그대로 */
   }
@@ -339,7 +349,7 @@ export async function runGraveWorkflow({
         }
       ]
     }
-    await writeManifest(personaDir, manifest, onManifest)
+    await writeManifest(personaDir, manifest, onManifest, [mkey])
   }
   if (!g) return { ok: false, error: '장지 이미지가 아직 없다 — 먼저 이미지 생성 단계를 실행하라' }
   const rev = g.rev
@@ -352,7 +362,7 @@ export async function runGraveWorkflow({
     g.video = null
     g.firebase = null
     g.status = 'video'
-    await writeManifest(personaDir, manifest, onManifest)
+    await writeManifest(personaDir, manifest, onManifest, [mkey])
   }
   const vk = g.videoRev || 1
   const videoFile =
@@ -363,7 +373,7 @@ export async function runGraveWorkflow({
     hist.status = status
     if (patch.error !== undefined) hist.error = patch.error
     if (status === 'done') hist.doneAt = new Date().toISOString()
-    await writeManifest(personaDir, manifest, onManifest)
+    await writeManifest(personaDir, manifest, onManifest, [mkey])
   }
 
   try {
@@ -389,7 +399,7 @@ export async function runGraveWorkflow({
                 })
               : null
           hist.setting = g.setting
-          await writeManifest(personaDir, manifest, onManifest)
+          await writeManifest(personaDir, manifest, onManifest, [mkey])
         }
         const prompt = buildGravePrompt(profile, wishes, g.setting)
         const pano = config.panorama || { width: 4096, height: 1024 }
@@ -472,6 +482,7 @@ export async function runGraveWorkflow({
           onProgress: (e) => onProgress({ phase: 'video', ...e })
         })
         await fs.writeFile(path.join(personaDir, videoFile), videos[0].data)
+        void refreshPingpongClip(path.join(personaDir, videoFile)) // 세션 중 재생성 대비, 백그라운드
         hist.videoFile = videoFile
         await setState('done', {
           error: null,

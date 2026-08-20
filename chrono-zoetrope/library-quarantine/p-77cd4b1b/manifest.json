@@ -1,0 +1,221 @@
+{
+  "createdAt": "2026-07-30T07:12:02.152Z",
+  "images": [],
+  "personaId": "p-77cd4b1b",
+  "profile": {
+    "firstStatus": "generating",
+    "name": "이광수",
+    "id": "이광수_850714",
+    "birthDate": "1985-07-14",
+    "personaId": "이광수_850714",
+    "photos": [],
+    "age": 41,
+    "first": {
+      "responsibility": {
+        "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EC%9D%B4%EA%B4%91%EC%88%98_850714%2Fresponsibility.jpg?alt=media&token=a956b26e-d779-433b-9d73-972af8daa73b",
+        "x": 4,
+        "text": "예능보다는 배우 활동에 더욱 집중하며 다양한 장르의 작품에 도전하고 있다.\n오랜 동료들과의 인연을 이어가는 한편, 가족과 연인을 소중히 여기며 일과 삶의 균형을 만들어 가고 있다."
+      },
+      "future-settlement": {
+        "imageURL": null,
+        "x": 4,
+        "text": ""
+      },
+      "growth": {
+        "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EC%9D%B4%EA%B4%91%EC%88%98_850714%2Fgrowth.jpg?alt=media&token=ab7d31ba-80ad-48a1-b9a8-5ddfb81dd005",
+        "x": 4,
+        "text": "학교에서는 친구들과 어울리는 것을 좋아해 분위기 메이커 역할을 자주 맡았고, 운동과 모델 활동에도 관심을 보였다.\n가족은 안정적인 진로를 바랐지만, 그는 연예계에 도전하고 싶다는 꿈을 품으며 조금씩 자신의 길을 준비했다."
+      },
+      "protect": {
+        "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EC%9D%B4%EA%B4%91%EC%88%98_850714%2Fprotect.jpg?alt=media&token=83ac8ac6-ab58-46be-b485-a580334130fc",
+        "x": 4,
+        "text": "부모님과 함께 평범하지만 화목한 가정에서 자라며, 사람들을 웃기는 것을 좋아하는 장난꾸러기 아이였다.\n가족들과 보내는 시간이 가장 즐거웠고, 친척들 앞에서 익살스러운 모습을 보일 때마다 칭찬을 받으며 자신감을 키워 갔다."
+      },
+      "independence": {
+        "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EC%9D%B4%EA%B4%91%EC%88%98_850714%2Findependence.jpg?alt=media&token=429ddb83-69d5-4e68-b8fb-941d9cf3d365",
+        "x": 2,
+        "text": "모델로 데뷔한 뒤 배우 생활을 시작했지만 오랜 무명 시절을 보내며 가족과 친구들의 응원에 의지했다.\n예능 프로그램 런닝맨에 합류하면서 유재석, 김종국, 송지효 등과 끈끈한 우정을 쌓았고, '기린' 캐릭터로 대중의 사랑을 받기 시작했다."
+      },
+      "settling": {
+        "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EC%9D%B4%EA%B4%91%EC%88%98_850714%2Fsettling.jpg?alt=media&token=aaa87fee-2c4b-4e0e-be41-45e4cef3fa0f",
+        "x": 4,
+        "text": "드라마와 영화, 예능을 오가며 활발히 활동했고, 배우들과 스태프들에게 성실하고 배려 깊은 동료라는 평가를 받았다.\n배우 이선빈과 공개 연애를 시작하며 많은 사람들의 응원을 받았고, 교통사고 이후에도 가족과 동료들의 응원 속에서 건강을 회복하며 활동을 이어갔다."
+      },
+      "future-transition": {
+        "imageURL": null,
+        "x": 3,
+        "text": ""
+      }
+    },
+    "createdAt": {
+      "_nanoseconds": 645000000,
+      "_seconds": 1785395340
+    },
+    "firstSubmittedAt": {
+      "_nanoseconds": 645000000,
+      "_seconds": 1785395340
+    },
+    "updatedAt": {
+      "_nanoseconds": 645000000,
+      "_seconds": 1785395340
+    }
+  },
+  "reelPhotos": [
+    {
+      "idx": 1,
+      "id": "r-1",
+      "age": 3,
+      "year": 1988,
+      "isPast": true,
+      "scene": "Spinning in circles on a polished wooden floor, arms wide, while family members watch from comfortable chairs.",
+      "prompt": "The attached photograph is a real photo of this moment. Use it as the source for this person’s facial identity and for the real place, objects and colors of the scene, keeping them recognizable. But their clothing, facial expression and pose should follow what the person is actively doing in this reimagined 360° scene, not be flatly copied from the photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 3-year-old child in this moment — Spinning in circles on a polished wooden floor, arms wide, while family members watch from comfortable chairs.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect 1980s Korea — everyday period-accurate details of that time and place. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, shallow depth of field with gentle swirly bokeh, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-1-age3.png",
+      "referenceKind": "stage",
+      "referenceFile": "_stage-photos\\photo-0.jpg",
+      "elapsedMs": 26108
+    },
+    {
+      "idx": 2,
+      "id": "r-2",
+      "age": 6,
+      "year": 1991,
+      "isPast": true,
+      "scene": "Hiding behind a patterned curtain, a small person peeking out at adults chatting in a sunlit living room.",
+      "prompt": "The attached photograph is a real photo of this moment. Use it as the source for this person’s facial identity and for the real place, objects and colors of the scene, keeping them recognizable. But their clothing, facial expression and pose should follow what the person is actively doing in this reimagined 360° scene, not be flatly copied from the photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 6-year-old child in this moment — Hiding behind a patterned curtain, a small person peeking out at adults chatting in a sunlit living room.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect 1990s Korea — everyday period-accurate details of that time and place. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, shallow depth of field with gentle swirly bokeh, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-2-age6.png",
+      "referenceKind": "stage",
+      "referenceFile": "_stage-photos\\photo-0.jpg",
+      "elapsedMs": 27537
+    },
+    {
+      "idx": 3,
+      "id": "r-3",
+      "age": 10,
+      "year": 1995,
+      "isPast": true,
+      "scene": "Standing in front of a tall mirror in a bedroom, turning from side to side, adjusting a loose-fitting t-shirt.",
+      "prompt": "The attached photograph is a real photo of this moment. Use it as the source for this person’s facial identity and for the real place, objects and colors of the scene, keeping them recognizable. But their clothing, facial expression and pose should follow what the person is actively doing in this reimagined 360° scene, not be flatly copied from the photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 10-year-old child in this moment — Standing in front of a tall mirror in a bedroom, turning from side to side, adjusting a loose-fitting t-shirt.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect 1990s Korea — everyday period-accurate details of that time and place. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, shallow depth of field with gentle swirly bokeh, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-3-age10.png",
+      "referenceKind": "stage",
+      "referenceFile": "_stage-photos\\photo-1.jpg",
+      "elapsedMs": 26372
+    },
+    {
+      "idx": 4,
+      "id": "r-4",
+      "age": 13,
+      "year": 1998,
+      "isPast": true,
+      "scene": "Gesturing animatedly to a group of friends in a brightly lit school hallway, laughter echoing softly.",
+      "prompt": "The attached photograph is a real photo of this moment. Use it as the source for this person’s facial identity and for the real place, objects and colors of the scene, keeping them recognizable. But their clothing, facial expression and pose should follow what the person is actively doing in this reimagined 360° scene, not be flatly copied from the photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 13-year-old child in this moment — Gesturing animatedly to a group of friends in a brightly lit school hallway, laughter echoing softly.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect 1990s Korea — everyday period-accurate details of that time and place. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, shallow depth of field with gentle swirly bokeh, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-4-age13.png",
+      "referenceKind": "stage",
+      "referenceFile": "_stage-photos\\photo-1.jpg",
+      "elapsedMs": 24230
+    },
+    {
+      "idx": 5,
+      "id": "r-5",
+      "age": 17,
+      "year": 2002,
+      "isPast": true,
+      "scene": "Practicing a confident walk across the empty stage of a school auditorium, morning light through high windows.",
+      "prompt": "The attached photograph is a real photo of this moment. Use it as the source for this person’s facial identity and for the real place, objects and colors of the scene, keeping them recognizable. But their clothing, facial expression and pose should follow what the person is actively doing in this reimagined 360° scene, not be flatly copied from the photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 17-year-old person in this moment — Practicing a confident walk across the empty stage of a school auditorium, morning light through high windows.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect 2000s Korea — everyday period-accurate details of that time and place. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, shallow depth of field with gentle swirly bokeh, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-5-age17.png",
+      "referenceKind": "stage",
+      "referenceFile": "_stage-photos\\photo-1.jpg",
+      "elapsedMs": 24158
+    },
+    {
+      "idx": 6,
+      "id": "r-6",
+      "age": 20,
+      "year": 2005,
+      "isPast": true,
+      "scene": "Standing still under intense studio lights, a large camera lens slowly adjusting its focus.",
+      "prompt": "The attached photograph is a real photo of this moment. Use it as the source for this person’s facial identity and for the real place, objects and colors of the scene, keeping them recognizable. But their clothing, facial expression and pose should follow what the person is actively doing in this reimagined 360° scene, not be flatly copied from the photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 20-year-old person in this moment — Standing still under intense studio lights, a large camera lens slowly adjusting its focus.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect 2000s Korea — everyday period-accurate details of that time and place. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, shallow depth of field with gentle swirly bokeh, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-6-age20.png",
+      "referenceKind": "stage",
+      "referenceFile": "_stage-photos\\photo-2.jpg",
+      "elapsedMs": 27279
+    },
+    {
+      "idx": 7,
+      "id": "r-7",
+      "age": 24,
+      "year": 2009,
+      "isPast": true,
+      "scene": "Running across a wide-open grassy field, other people moving quickly alongside, cameras tracking their path.",
+      "prompt": "The attached photograph is a real photo of this moment. Use it as the source for this person’s facial identity and for the real place, objects and colors of the scene, keeping them recognizable. But their clothing, facial expression and pose should follow what the person is actively doing in this reimagined 360° scene, not be flatly copied from the photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 24-year-old person in this moment — Running across a wide-open grassy field, other people moving quickly alongside, cameras tracking their path.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect 2000s Korea — everyday period-accurate details of that time and place. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, shallow depth of field with gentle swirly bokeh, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-7-age24.png",
+      "referenceKind": "stage",
+      "referenceFile": "_stage-photos\\photo-2.jpg",
+      "elapsedMs": 26097
+    },
+    {
+      "idx": 8,
+      "id": "r-8",
+      "age": 27,
+      "year": 2012,
+      "isPast": true,
+      "scene": "Sitting in a director's chair, a script open on his lap, a makeup artist touching up his face.",
+      "prompt": "The attached photograph is a real photo of this moment. Use it as the source for this person’s facial identity and for the real place, objects and colors of the scene, keeping them recognizable. But their clothing, facial expression and pose should follow what the person is actively doing in this reimagined 360° scene, not be flatly copied from the photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 27-year-old person in this moment — Sitting in a director's chair, a script open on his lap, a makeup artist touching up his face.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect 2010s Korea — everyday period-accurate details of that time and place. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, shallow depth of field with gentle swirly bokeh, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-8-age27.png",
+      "referenceKind": "stage",
+      "referenceFile": "_stage-photos\\photo-3.jpg",
+      "elapsedMs": 28210
+    },
+    {
+      "idx": 9,
+      "id": "r-9",
+      "age": 31,
+      "year": 2016,
+      "isPast": true,
+      "scene": "Walking cautiously down a hospital corridor, one leg in a supportive brace, leaning lightly on a companion's arm.",
+      "prompt": "The attached photograph is a real photo of this moment. Use it as the source for this person’s facial identity and for the real place, objects and colors of the scene, keeping them recognizable. But their clothing, facial expression and pose should follow what the person is actively doing in this reimagined 360° scene, not be flatly copied from the photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 31-year-old person in this moment — Walking cautiously down a hospital corridor, one leg in a supportive brace, leaning lightly on a companion's arm.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect 2010s Korea — everyday period-accurate details of that time and place. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, shallow depth of field with gentle swirly bokeh, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-9-age31.png",
+      "referenceKind": "stage",
+      "referenceFile": "_stage-photos\\photo-3.jpg",
+      "elapsedMs": 26959
+    },
+    {
+      "idx": 10,
+      "id": "r-10",
+      "age": 34,
+      "year": 2019,
+      "isPast": true,
+      "scene": "Discussing a scene with a director on a busy film set, large light diffusers hanging overhead.",
+      "prompt": "The attached photograph is a real photo of this moment. Use it as the source for this person’s facial identity and for the real place, objects and colors of the scene, keeping them recognizable. But their clothing, facial expression and pose should follow what the person is actively doing in this reimagined 360° scene, not be flatly copied from the photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 34-year-old person in this moment — Discussing a scene with a director on a busy film set, large light diffusers hanging overhead.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect 2010s Korea — everyday period-accurate details of that time and place. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, shallow depth of field with gentle swirly bokeh, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-10-age34.png",
+      "referenceKind": "stage",
+      "referenceFile": "_stage-photos\\photo-3.jpg",
+      "elapsedMs": 26439
+    },
+    {
+      "idx": 11,
+      "id": "r-11",
+      "age": 38,
+      "year": 2023,
+      "isPast": true,
+      "scene": "Walking through a park with another person, hands clasped, fallen autumn leaves crunching underfoot.",
+      "prompt": "The attached photograph is a real photo of this moment. Use it as the source for this person’s facial identity and for the real place, objects and colors of the scene, keeping them recognizable. But their clothing, facial expression and pose should follow what the person is actively doing in this reimagined 360° scene, not be flatly copied from the photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 38-year-old person in this moment — Walking through a park with another person, hands clasped, fallen autumn leaves crunching underfoot.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect 2020s Korea — everyday period-accurate details of that time and place. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, shallow depth of field with gentle swirly bokeh, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-11-age38.png",
+      "referenceKind": "stage",
+      "referenceFile": "_stage-photos\\photo-4.jpg",
+      "elapsedMs": 27932
+    },
+    {
+      "idx": 12,
+      "id": "r-12",
+      "age": 41,
+      "year": 2026,
+      "isPast": true,
+      "scene": "Performing a intense scene on a dimly lit set, artificial rain streaking down a windowpane behind him.",
+      "prompt": "The attached photograph is a real photo of this moment. Use it as the source for this person’s facial identity and for the real place, objects and colors of the scene, keeping them recognizable. But their clothing, facial expression and pose should follow what the person is actively doing in this reimagined 360° scene, not be flatly copied from the photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 41-year-old person in this moment — Performing a intense scene on a dimly lit set, artificial rain streaking down a windowpane behind him.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect 2020s Korea — everyday period-accurate details of that time and place. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, shallow depth of field with gentle swirly bokeh, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-12-age41.png",
+      "referenceKind": "stage",
+      "referenceFile": "_stage-photos\\photo-4.jpg",
+      "elapsedMs": 29377
+    }
+  ]
+}

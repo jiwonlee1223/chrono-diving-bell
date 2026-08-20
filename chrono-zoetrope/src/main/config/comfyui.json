@@ -30,7 +30,7 @@
   "gemini": {
     "model": "gemini-3-pro-image",
     "sceneModel": "gemini-3.1-flash-image",
-    "textModel": "gemini-2.5-flash",
+    "textModel": "gemini-3.6-flash",
     "apiKeyPath": "./secrets/gemini-api-key.txt",
     "$imageSize": "4K 실험 중(2026-08-04) — 4:1 파노라마에서 인물 픽셀 4배로 인체 깨짐 완화 확인용. 비용·시간 증가가 크면 2K로 복귀.",
     "imageSize": "4K"

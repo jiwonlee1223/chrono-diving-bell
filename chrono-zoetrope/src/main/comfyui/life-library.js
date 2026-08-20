@@ -188,12 +188,33 @@ export async function generateLifeLibrary(profile, opts = {}) {
     images: []
   }
   const writeManifestNow = async () => {
-    // read-merge-write(2026-08-05): 생성이 도는 동안 admin이 디스크에 더한 키(grave·funeral·
-    // reelPhotos 등)를 이 흐름의 stale 전체 덮어쓰기가 지우지 않게, 디스크에만 있는 키를
-    // in-memory manifest로 먼저 흡수한 뒤 쓴다(이 흐름이 쥔 키는 in-memory가 이긴다).
+    // read-merge-write 강화(2026-08-14): 종전 병합(메모리에 없는 키만 흡수)은 이 흐름이 시작
+    // 시점의 prior 사본으로 쥔 키(graveBranched 등)를 되써서, 병렬로 돌던 장지/장례식 잡의
+    // 완료 기록을 지웠다(graveBranched.video가 완료 후 null로 회귀). 별도 잡이 소유하는
+    // 키는 디스크 판이 이긴다 — 이 흐름은 보존만 할 뿐 수정하지 않는 키들이다.
+    const FOREIGN_KEYS = [
+      'funeral',
+      'funeralFuture',
+      'funeralBranched',
+      'grave',
+      'graveBranched',
+      'reelPhotos',
+      'reelPhotosFuture',
+      'reelPhotosBranched',
+      'lifeCuration',
+      'clips' // 영상화 잡(admin patchManifest)이 소유 — 생성 중 stale 사본이 완료 기록을 되돌리지 않게
+    ]
     try {
       const disk = JSON.parse(await fs.readFile(manifestPath, 'utf-8'))
-      for (const k of Object.keys(disk)) if (!(k in manifest)) manifest[k] = disk[k]
+      for (const k of Object.keys(disk))
+        if (!(k in manifest) || FOREIGN_KEYS.includes(k)) manifest[k] = disk[k]
+      // images lost-update 방지(2026-08-17): 이 흐름의 images는 진행분(results)만 담고 있어,
+      // 통째로 덮으면 디스크에만 있는 장면(분기 alt 등 다른 잡·이전 실행의 성공분)이 지워졌다
+      // (신용걸 alt-71/84/90 유실 사고). 이 흐름이 아직 안 다룬 id는 디스크 판을 보존한다 —
+      // 생성 중 재생목록이 일시적으로 줄어 보이던 증상도 함께 사라진다.
+      const memIds = new Set(manifest.images.map((i) => i.id))
+      const diskOnly = (disk.images || []).filter((i) => i && !memIds.has(i.id))
+      if (diskOnly.length) manifest.images = [...manifest.images, ...diskOnly]
     } catch {
       /* 디스크 판이 없거나 깨졌으면 in-memory 그대로 쓴다 */
     }

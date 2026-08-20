@@ -661,6 +661,142 @@
       }
 
       /* 확대 보기 */
+      /* 본인 사진 교체 — 제출 사진 선택+크롭 모달 */
+      #facepick {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.88);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 60;
+      }
+      #facepick.show {
+        display: flex;
+      }
+      #facepick .fp-box {
+        background: #16161a;
+        border: 1px solid #333;
+        border-radius: 10px;
+        width: min(880px, 94vw);
+        max-height: 92vh;
+        display: flex;
+        flex-direction: column;
+        padding: 14px 16px;
+        gap: 10px;
+      }
+      #facepick .fp-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      #facepick .fp-head b {
+        color: #e8d9b8;
+      }
+      #facepick .fp-hint {
+        font-size: 12px;
+        color: #999;
+        flex: 1;
+      }
+      #facepick .fp-grid {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        overflow-y: auto;
+        min-height: 120px;
+      }
+      #facepick .fp-grid figure {
+        margin: 0;
+        cursor: pointer;
+        text-align: center;
+      }
+      #facepick .fp-grid img {
+        height: 140px;
+        border-radius: 6px;
+        border: 2px solid transparent;
+        display: block;
+      }
+      #facepick .fp-grid img:hover {
+        border-color: #c9a86a;
+      }
+      #facepick .fp-grid figcaption {
+        font-size: 11px;
+        color: #888;
+        margin-top: 3px;
+        max-width: 180px;
+      }
+      #facepick .fp-stage {
+        position: relative;
+        align-self: center;
+        cursor: crosshair;
+        user-select: none;
+        max-width: 100%;
+      }
+      #facepick .fp-stage img {
+        max-width: 100%;
+        max-height: 58vh;
+        display: block;
+        pointer-events: none;
+      }
+      #facepick .fp-sel {
+        position: absolute;
+        border: 2px dashed #c9a86a;
+        background: rgba(201, 168, 106, 0.15);
+        pointer-events: none;
+      }
+      #facepick .fp-actions,
+      #facepick .fp-foot {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      #facepick .fp-foot {
+        border-top: 1px solid #2a2a2e;
+        padding-top: 10px;
+      }
+      #facepick .fp-picks {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        flex: 1;
+        font-size: 12px;
+        color: #999;
+      }
+      #facepick .fp-picks .pick {
+        position: relative;
+      }
+      #facepick .fp-picks img {
+        height: 52px;
+        border-radius: 4px;
+        border: 1px solid #444;
+        display: block;
+      }
+      #facepick .fp-picks .rm {
+        position: absolute;
+        top: -6px;
+        right: -6px;
+        width: 16px;
+        height: 16px;
+        line-height: 14px;
+        border-radius: 50%;
+        background: #333;
+        color: #ddd;
+        border: 1px solid #555;
+        font-size: 10px;
+        padding: 0;
+        cursor: pointer;
+      }
+      #facepick .fp-picks .tag {
+        position: absolute;
+        left: 2px;
+        bottom: 2px;
+        font-size: 10px;
+        color: #e8d9b8;
+        background: rgba(0, 0, 0, 0.65);
+        border-radius: 3px;
+        padding: 0 3px;
+      }
       #zoom {
         position: fixed;
         inset: 0;
@@ -748,6 +884,24 @@
             >
               인생그래프 요약 업로드
             </button>
+            <button
+              id="face-upload"
+              title="가족 사진에서 다른 인물이 얼굴로 잡혔을 때, 본인 단독 사진을 올려 얼굴 기준을 교체합니다. 영정·나이 변환 캐시가 비워지며, 이후 장례식 '새로 생성'과 전체 재생성을 돌려야 이미지에 반영됩니다"
+            >
+              본인 사진 교체
+            </button>
+            <button
+              id="face-reset"
+              title="교체한 본인 사진을 지우고 원래 제출 사진 기준으로 되돌립니다 (캐시도 다시 비움)"
+            >
+              사진 교체 해제
+            </button>
+            <input
+              type="file"
+              id="face-file"
+              accept="image/png,image/jpeg,image/webp"
+              class="hidden"
+            />
           </span>
         </header>
         <section id="queue-panel" class="hidden">
@@ -762,6 +916,33 @@
       </div>
     </div>
     <div id="status"></div>
+    <div id="facepick">
+      <div class="fp-box">
+        <div class="fp-head">
+          <b>본인 사진 교체</b>
+          <span class="fp-hint" id="fp-hint">제출 사진에서 본인 얼굴이 잘 나온 사진을 골라 크롭하세요 (최대 2장 — 첫 장이 대표 얼굴)</span>
+          <button id="fp-close">닫기</button>
+        </div>
+        <div class="fp-grid" id="fp-grid"></div>
+        <div class="fp-crop hidden" id="fp-crop">
+          <div class="fp-stage" id="fp-stage">
+            <img id="fp-img" draggable="false" />
+            <div class="fp-sel hidden" id="fp-sel"></div>
+          </div>
+          <div class="fp-actions">
+            <span style="font-size:12px;color:#999">드래그로 본인 얼굴(상반신) 영역을 그리세요</span>
+            <button id="fp-add-crop">선택 영역 담기</button>
+            <button id="fp-add-full">원본 그대로 담기</button>
+            <button id="fp-back">← 사진 목록</button>
+          </div>
+        </div>
+        <div class="fp-foot">
+          <span class="fp-picks" id="fp-picks">담은 사진 없음</span>
+          <button id="fp-file" title="제출 사진에 쓸 만한 게 없을 때 PC의 이미지 파일로 교체합니다">PC 파일 업로드</button>
+          <button id="fp-apply" disabled>이 사진으로 교체</button>
+        </div>
+      </div>
+    </div>
     <div id="zoom">
       <img />
       <div class="cap"></div>
@@ -1793,6 +1974,220 @@
           btn.disabled = false
         }
       }
+      // 본인 얼굴 사진 교체 — 가족 사진에서 다른 인물(예: 딸)이 얼굴 앵커로 잡혔을 때 본인 단독
+      // 사진으로 기준을 바꾼다. 서버가 영정(portrait*.png)·나이 앵커(_aged) 캐시를 비우므로,
+      // 이후 장례식 '새로 생성'과 전체 재생성을 돌려야 이미지에 반영된다.
+      async function uploadFace(file) {
+        if (!pid || !file) return
+        if (
+          !confirm(
+            `${manifest?.profile?.name || pid}의 얼굴 기준 사진을 이 파일로 교체합니다.\n` +
+              `영정·나이 변환 캐시가 비워지며, 이후 장례식 '새로 생성'과 전체 재생성을 돌려야 반영됩니다. 진행할까요?`
+          )
+        )
+          return
+        const dataURL = await new Promise((ok, no) => {
+          const r = new FileReader()
+          r.onload = () => ok(r.result)
+          r.onerror = () => no(new Error('파일 읽기 실패'))
+          r.readAsDataURL(file)
+        })
+        setStatus('본인 사진 업로드 중…')
+        try {
+          const r = await api(`/api/personas/${pid}/face`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image: dataURL })
+          })
+          $('#facepick').classList.remove('show') // 모달의 'PC 파일 업로드' 경유였으면 닫는다
+          setStatus(`본인 사진 교체 완료 — ${r.note || ''}`)
+          loadManifest()
+        } catch (e) {
+          setStatus(`본인 사진 교체 실패: ${e.message}`)
+        }
+      }
+      // ── 본인 사진 교체 모달: 제출 사진(Firebase)에서 골라 크롭 → 최대 2장 → /face로 전송 ──
+      // 첫 장이 대표(얼굴 앵커 1순위). 서버가 _photo-picker/로 제출 사진을 내려받아 목록으로 준다.
+      let fpPicks = [] // { dataURL } — 담아둔 크롭 결과 (최대 2)
+      let fpSel = null // 크롭 화면의 선택 영역 { x, y, w, h } — 표시 좌표 기준
+      async function openFacePicker() {
+        if (!pid) return
+        fpPicks = []
+        fpSel = null
+        renderFpPicks()
+        $('#fp-crop').classList.add('hidden')
+        const grid = $('#fp-grid')
+        grid.classList.remove('hidden')
+        grid.innerHTML = '<p style="color:#888">제출 사진 불러오는 중… (Firebase에서 내려받는 중일 수 있습니다)</p>'
+        $('#facepick').classList.add('show')
+        try {
+          const r = await api(`/api/personas/${pid}/photos`)
+          if (!r.photos?.length) {
+            grid.innerHTML =
+              '<p style="color:#c9a86a">이 참가자의 제출 사진을 찾지 못했습니다 — 아래 "PC 파일 업로드"를 이용하세요.</p>'
+            return
+          }
+          grid.innerHTML = r.photos
+            .map(
+              (p, i) =>
+                `<figure data-i="${i}" data-url="${p.url}"><img src="${p.url}" loading="lazy" /><figcaption>${p.source || ''}</figcaption></figure>`
+            )
+            .join('')
+        } catch (e) {
+          grid.innerHTML = `<p style="color:#e07b7b">사진 목록 로딩 실패: ${e.message}</p>`
+        }
+      }
+      function fpOpenCrop(url) {
+        fpSel = null
+        $('#fp-sel').classList.add('hidden')
+        $('#fp-img').src = url
+        $('#fp-grid').classList.add('hidden')
+        $('#fp-crop').classList.remove('hidden')
+      }
+      function fpBackToGrid() {
+        $('#fp-crop').classList.add('hidden')
+        $('#fp-grid').classList.remove('hidden')
+      }
+      function renderFpPicks() {
+        const el = $('#fp-picks')
+        if (!fpPicks.length) el.textContent = '담은 사진 없음'
+        else
+          el.innerHTML = fpPicks
+            .map(
+              (p, i) =>
+                `<span class="pick"><img src="${p.dataURL}" /><span class="tag">${i === 0 ? '대표' : '예비'}</span><button class="rm" data-i="${i}" title="빼기">×</button></span>`
+            )
+            .join('')
+        $('#fp-apply').disabled = !fpPicks.length
+      }
+      function fpAddCurrent(useFull) {
+        if (fpPicks.length >= 2) {
+          setStatus('최대 2장까지만 담을 수 있습니다 — 기존 것을 ×로 빼고 다시 담으세요')
+          return
+        }
+        const img = $('#fp-img')
+        if (!img.naturalWidth) return
+        const scaleX = img.naturalWidth / img.clientWidth
+        const scaleY = img.naturalHeight / img.clientHeight
+        let sx = 0
+        let sy = 0
+        let sw = img.naturalWidth
+        let sh = img.naturalHeight
+        if (!useFull) {
+          if (!fpSel || fpSel.w < 10 || fpSel.h < 10) {
+            setStatus('먼저 드래그로 얼굴 영역을 그리세요 (원본 전체를 쓰려면 "원본 그대로 담기")')
+            return
+          }
+          sx = fpSel.x * scaleX
+          sy = fpSel.y * scaleY
+          sw = fpSel.w * scaleX
+          sh = fpSel.h * scaleY
+        }
+        const c = document.createElement('canvas')
+        c.width = Math.max(1, Math.round(sw))
+        c.height = Math.max(1, Math.round(sh))
+        c.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, c.width, c.height)
+        fpPicks.push({ dataURL: c.toDataURL('image/jpeg', 0.92) })
+        renderFpPicks()
+        fpBackToGrid()
+      }
+      async function applyFacePicks() {
+        if (!pid || !fpPicks.length) return
+        if (
+          !confirm(
+            `${manifest?.profile?.name || pid}의 얼굴 기준 사진을 담아둔 ${fpPicks.length}장으로 교체합니다.\n` +
+              `영정·나이 변환 캐시가 비워지며, 이후 장례식 '새로 생성'과 전체 재생성을 돌려야 반영됩니다. 진행할까요?`
+          )
+        )
+          return
+        const btn = $('#fp-apply')
+        btn.disabled = true
+        setStatus('본인 사진 교체 중…')
+        try {
+          const r = await api(`/api/personas/${pid}/face`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ images: fpPicks.map((p) => p.dataURL) })
+          })
+          $('#facepick').classList.remove('show')
+          setStatus(`본인 사진 교체 완료 — ${r.note || ''}`)
+          loadManifest()
+        } catch (e) {
+          setStatus(`본인 사진 교체 실패: ${e.message}`)
+        } finally {
+          btn.disabled = false
+        }
+      }
+      // 크롭 드래그 — 표시 좌표로 사각형을 그리고 fpSel에 저장(스케일 환산은 담을 때).
+      {
+        const stage = $('#fp-stage')
+        let dragFrom = null
+        const pos = (e) => {
+          const r = $('#fp-img').getBoundingClientRect()
+          return {
+            x: Math.min(Math.max(e.clientX - r.left, 0), r.width),
+            y: Math.min(Math.max(e.clientY - r.top, 0), r.height)
+          }
+        }
+        stage.addEventListener('mousedown', (e) => {
+          dragFrom = pos(e)
+          e.preventDefault()
+        })
+        window.addEventListener('mousemove', (e) => {
+          if (!dragFrom) return
+          const p = pos(e)
+          fpSel = {
+            x: Math.min(dragFrom.x, p.x),
+            y: Math.min(dragFrom.y, p.y),
+            w: Math.abs(p.x - dragFrom.x),
+            h: Math.abs(p.y - dragFrom.y)
+          }
+          const sel = $('#fp-sel')
+          sel.classList.remove('hidden')
+          sel.style.left = fpSel.x + 'px'
+          sel.style.top = fpSel.y + 'px'
+          sel.style.width = fpSel.w + 'px'
+          sel.style.height = fpSel.h + 'px'
+        })
+        window.addEventListener('mouseup', () => {
+          dragFrom = null
+        })
+        $('#fp-grid').addEventListener('click', (e) => {
+          const fig = e.target.closest('figure')
+          if (fig?.dataset.url) fpOpenCrop(fig.dataset.url)
+        })
+        $('#fp-picks').addEventListener('click', (e) => {
+          const rm = e.target.closest('.rm')
+          if (!rm) return
+          fpPicks.splice(Number(rm.dataset.i), 1)
+          renderFpPicks()
+        })
+        $('#fp-close').addEventListener('click', () => $('#facepick').classList.remove('show'))
+        $('#fp-back').addEventListener('click', fpBackToGrid)
+        $('#fp-add-crop').addEventListener('click', () => fpAddCurrent(false))
+        $('#fp-add-full').addEventListener('click', () => fpAddCurrent(true))
+        $('#fp-apply').addEventListener('click', applyFacePicks)
+        $('#fp-file').addEventListener('click', () => {
+          const fin = $('#face-file')
+          fin.value = ''
+          fin.click()
+        })
+      }
+      async function resetFace() {
+        if (!pid) return
+        if (!confirm('교체한 본인 사진을 지우고 원래 제출 사진 기준으로 되돌립니다. 진행할까요?')) return
+        try {
+          await api(`/api/personas/${pid}/face`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reset: true })
+          })
+          setStatus('본인 사진 교체 해제 — 원본 제출 사진 기준으로 복귀했습니다 (반영은 재생성 필요)')
+          loadManifest()
+        } catch (e) {
+          setStatus(`사진 교체 해제 실패: ${e.message}`)
+        }
+      }
       const stopRegenAll = () =>
         postGen(
           '/api/regen-all/stop',
@@ -2161,6 +2556,8 @@
         else if (t.id === 'gen-stop') stopGen()
         else if (t.id === 'regen-all') regenAll()
         else if (t.id === 'journey-upload') uploadFutureJourney()
+        else if (t.id === 'face-upload') openFacePicker()
+        else if (t.id === 'face-reset') resetFace()
         else if (t.id === 'regenall-stop') stopRegenAll()
         else if (t.classList.contains('retry-btn')) retryProfile(t.dataset.id, t)
         else if (t.classList.contains('resume-btn')) resumeProfile(t.dataset.id, t)
@@ -2187,6 +2584,10 @@
           return
         }
         loadManifest() // 클라우드 정본만 있으면 서버가 자동으로 받아온다(hydrate)
+      })
+      $('#face-file').addEventListener('change', (e) => {
+        const f = e.target.files && e.target.files[0]
+        if (f) uploadFace(f)
       })
       $('#persona-search').addEventListener('input', (e) => {
         personaFilter = e.target.value

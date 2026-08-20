@@ -1,0 +1,146 @@
+{
+  "createdAt": "2026-08-03T14:14:39.228Z",
+  "images": [],
+  "personaId": "p-c5c24416",
+  "profile": {
+    "firstError": null,
+    "firstStatus": "generating",
+    "birthDate": "1985-07-14",
+    "photos": [],
+    "name": "이광수수깡",
+    "id": "이광수수깡_850714",
+    "job": "배우",
+    "personaId": "이광수수깡_850714",
+    "age": 41,
+    "first": {
+      "age-47": {
+        "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EC%9D%B4%EA%B4%91%EC%88%98%EC%88%98%EA%B9%A1_850714%2Fage-47.jpg?alt=media&token=35c56d63-1417-490a-a08e-4e98e9de464c",
+        "x": 2,
+        "text": "오랜 동료들과의 인연을 이어가는 한편, 가족과 연인을 소중히 여기며 일과 삶의 균형을 만들어 가고 있다."
+      },
+      "age-15": {
+        "imageURL": null,
+        "x": 2,
+        "text": "학교에서는 친구들과 어울리는 것을 좋아해 분위기 메이커 역할을 자주 맡았고, 운동과 모델 활동에도 관심을 보였다."
+      },
+      "age-3": {
+        "imageURL": null,
+        "x": 4,
+        "text": "부모님과 함께 평범하지만 화목한 가정에서 자라며, 사람들을 웃기는 것을 좋아하는 장난꾸러기 아이였다."
+      },
+      "selections": {
+        "influential": {
+          "reason": "배우로서의 새로운 시작",
+          "stageId": "age-40"
+        },
+        "best": {
+          "reason": "소소한 행복\n",
+          "stageId": "age-28"
+        },
+        "worst": {
+          "reason": "학창시절은 힘들어",
+          "stageId": "age-15"
+        }
+      },
+      "age-28": {
+        "imageURL": null,
+        "x": 4,
+        "text": "모델로 데뷔한 뒤 배우 생활을 시작했지만 오랜 무명 시절을 보내며 가족과 친구들의 응원에 의지했다."
+      },
+      "myLife": {
+        "motto": "웃음을 주자",
+        "bucketList": "할리우드 진출"
+      },
+      "funeral": {
+        "epitaph": "여기서 잠들다",
+        "messages": [
+          {
+            "to": "엄마",
+            "text": "고마워"
+          },
+          {
+            "to": "아빠",
+            "text": "ㅅㄹㅎ"
+          }
+        ]
+      },
+      "age-40": {
+        "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EC%9D%B4%EA%B4%91%EC%88%98%EC%88%98%EA%B9%A1_850714%2Fage-40.jpg?alt=media&token=a4711a66-7728-402d-8ddc-c88d904888a1",
+        "x": 6,
+        "text": "드라마와 영화, 예능을 오가며 활발히 활동했고, 배우들과 스태프들에게 성실하고 배려 깊은 동료라는 평가를 받았다.\n배우 이선빈과 공개 연애를 시작하며 많은 사람들의 응원을 받았고, 교통사고 이후에도 가족과 동료들의 응원 속에서 건강을 회복하며 활동을 이어갔다."
+      },
+      "age-9": {
+        "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EC%9D%B4%EA%B4%91%EC%88%98%EC%88%98%EA%B9%A1_850714%2Fage-9.jpg?alt=media&token=5313f074-a908-4c47-b106-ae3834fe8902",
+        "x": 5,
+        "text": "가족들과 보내는 시간이 가장 즐거웠고, 친척들 앞에서 익살스러운 모습을 보일 때마다 칭찬을 받으며 자신감을 키워 갔다."
+      },
+      "age-22": {
+        "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EC%9D%B4%EA%B4%91%EC%88%98%EC%88%98%EA%B9%A1_850714%2Fage-22.jpg?alt=media&token=5cfdff34-5f5d-47e4-b02f-ed7f721e994a",
+        "x": 4,
+        "text": "가족은 안정적인 진로를 바랐지만, 그는 연예계에 도전하고 싶다는 꿈을 품으며 조금씩 자신의 길을 준비했다."
+      },
+      "age-34": {
+        "imageURL": null,
+        "x": 2,
+        "text": "예능 프로그램 런닝맨에 합류하면서 유재석, 김종국, 송지효 등과 끈끈한 우정을 쌓았고, '기린' 캐릭터로 대중의 사랑을 받기 시작했다."
+      }
+    },
+    "createdAt": {
+      "_nanoseconds": 852000000,
+      "_seconds": 1785757441
+    },
+    "firstGenerationStartedAt": {
+      "_nanoseconds": 707000000,
+      "_seconds": 1785766325
+    },
+    "firstSubmittedAt": {
+      "_nanoseconds": 818000000,
+      "_seconds": 1785757605
+    },
+    "updatedAt": {
+      "_nanoseconds": 779000000,
+      "_seconds": 1785766371
+    }
+  },
+  "reelPhotos": [
+    {
+      "idx": 1,
+      "id": "r-1",
+      "age": 3,
+      "year": 1988,
+      "isPast": true,
+      "scene": "A child making a funny face at a seated adult, bright kitchen light shining from behind.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, as they looked at 3 years old, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 3-year-old child in this moment — A child making a funny face at a seated adult, bright kitchen light shining from behind.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect 1980s Korea — everyday period-accurate details of that time and place. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, shallow depth of field with gentle swirly bokeh, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-1-age3.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 25455
+    },
+    {
+      "idx": 2,
+      "id": "r-2",
+      "age": 6,
+      "year": 1991,
+      "isPast": true,
+      "scene": "A small child giggling while rolling a colorful ball across a living room floor.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, as they looked at 6 years old, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 6-year-old child in this moment — A small child giggling while rolling a colorful ball across a living room floor.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect 1990s Korea — everyday period-accurate details of that time and place. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, shallow depth of field with gentle swirly bokeh, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-2-age6.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 25657
+    },
+    {
+      "idx": 3,
+      "id": "r-3",
+      "age": 10,
+      "year": 1995,
+      "isPast": true,
+      "scene": "A child laughing loudly during a board game played around a large dining table with other family members.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, as they looked at 10 years old, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 10-year-old child in this moment — A child laughing loudly during a board game played around a large dining table with other family members.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect 1990s Korea — everyday period-accurate details of that time and place. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, shallow depth of field with gentle swirly bokeh, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-3-age10.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 29768
+    }
+  ]
+}

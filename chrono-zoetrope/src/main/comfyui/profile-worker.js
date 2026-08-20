@@ -288,6 +288,9 @@ export async function processProfile(
     const result = await generateLifeLibrary(genProfile, {
       host: config.host,
       outDir,
+      // pid를 명시하지 않으면 personaId(profile) 해시(p-*)로 폴더가 새로 생겨 같은 Firestore
+      // 문서에 로컬 라이브러리가 2개 물린다(2026-08-12 실측 — 7명 발현). 다른 흐름과 동일하게 고정.
+      pid,
       workflow: config.workflow,
       perStage: config.perStage,
       plan, // 위에서 확정한 플랜(aged 프리패스와 동일 플랜을 생성 루프도 쓰게)
@@ -540,7 +543,15 @@ export async function processLifeGraphSession(
     // 호출부(retry·resume·manifest 기록)는 generateLifeLibrary 내부 코드 그대로 — 안 건드림.
     const t0 = Date.now()
     const result = await generateLifeLibrary(
-      { name: profile.name, birthDate: profile.birthDate, photos: photoPaths },
+      // id를 빼먹으면 manifest.profile이 id 없이 굳어 이후 Firestore 쓰기가 이름+생년월일
+      // 폴백 키로 갈린다(동명이인이면 남의 정본을 덮는다) — 반드시 문서 id를 보존한다.
+      {
+        id: profile.id,
+        name: profile.name,
+        birthDate: profile.birthDate,
+        gender: profile.gender,
+        photos: photoPaths
+      },
       {
         host: config.host,
         outDir,
@@ -793,7 +804,14 @@ export async function processBranchedFuture(
     const mergedPlan = [...manifest.images.map((im) => ({ ...im })), ...branchedPlan]
     const t0 = Date.now()
     const result = await generateLifeLibrary(
-      { name: profile.name, birthDate: profile.birthDate, photos: photoPaths },
+      // id 보존 — 빼먹으면 manifest.profile이 id 없이 굳어 이름+생년월일 폴백 키로 쓰기가 갈린다.
+      {
+        id: profile.id,
+        name: profile.name,
+        birthDate: profile.birthDate,
+        gender: profile.gender,
+        photos: photoPaths
+      },
       {
         host: config.host,
         outDir,

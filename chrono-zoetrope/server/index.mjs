@@ -51,7 +51,8 @@ import {
   fetchRuntimeSession,
   listenRuntimeSession,
   upsertGhostTranscript,
-  fetchExtrapolationRecord
+  fetchExtrapolationRecord,
+  upsertLifeCuration
 } from '../src/main/comfyui/firestore-source.js'
 import { GeminiClient, resolveGeminiApiKey } from '../src/main/comfyui/gemini-client.js'
 import { ensurePingpongClip, pingpongPathFor } from '../src/main/comfyui/pingpong.js'
@@ -837,8 +838,9 @@ const RECAP_TAIL =
   '지금의 너는, 이미 죽었지만… 만약 너의 살아온 과거의 한 순간을 볼 수 있다면, 언제로 돌아가고 싶어? 말해봐. 내가 그때로 데려다줄게.'
 // 장례식 국면(1차)에서 에이전트가 건네는 고정 내레이션 머리 — 2초 정적은 <break>로.
 // 뒤에 조문객 멘트("○○도 왔고, ○○도 왔네…", composeFuneralNarration)가 이어 붙는다.
+// "맞아"는 대본에서 뺐다(2026-08-14) — TTS(flash v2.5)가 받침 연음을 뭉개 [마야]로 들린다.
 const FUNERAL_NARRATION =
-  '잘 보이니? 너를 그리워하는 사람들이 이곳에 모였어. <break time="2s" /> 맞아. 여긴 너의 장례식이야.'
+  '잘 보이니? 너를 그리워하는 사람들이 이곳에 모였어. <break time="2s" /> 여긴 너의 장례식이야.'
 const FUNERAL_NARRATION_DELAY_MS = 5000 // 장례식 장면이 뜨고 이만큼 정적 뒤에 첫 마디
 const recapPromises = new Map() // personaId → Promise<string> (세션 재발급 대비 캐시)
 
@@ -989,6 +991,7 @@ async function composeFuneralNarration(personaId) {
     `말투: 삶과 죽음의 문턱에서 오래 지켜본 존재의 목소리. 담담하고 낮게.\n\n` +
     `제약(반드시 지킬 것):\n` +
     `- 아래 재료에 실제로 등장하는 사람(이름·호칭·관계)만 쓴다 — '혼자' 같은 비인물 표현은 건너뛴다. 두세 명이면 충분하다.\n` +
+    `- 이름은 성을 뗀 이름만 친근하게 부른다 — "민지현도 왔네"가 아니라 "지현이도 왔네". 호칭·관계(고모, 엄마 등)는 그대로 쓴다.\n` +
     `- 없는 인물을 지어내지 않는다. 슬픔을 과장하거나 판정하지 않는다 — 사실로만.\n` +
     `- 낮은 입말 1~2문장. 질문 금지. 답은 그 문장만(다른 설명 없이).\n` +
     `- 재료에 사람이 전혀 등장하지 않으면 문장을 지어내지 말고 "NONE"이라고만 답한다.\n\n` +
@@ -1049,12 +1052,29 @@ async function composeRecapFirstMessage(personaId) {
   }
 }
 
+// 완성된 큐레이션 멘트를 Firestore lifeCuration 컬렉션에 남긴다(best-effort, 재생은 막지 않는다).
+// variant: 'past'=1차 과거 회귀 릴 | 'future'=2차 부정미래 릴 | 'branched'=3차 분기미래 릴.
+function persistLifeCuration(personaId, variant, text, fallback = false) {
+  if (!firebaseReady || !currentProfile || !text) return
+  upsertLifeCuration({
+    profile: currentProfile,
+    personaId,
+    variant,
+    text,
+    sentences: narrationChunks(text),
+    fallback
+  })
+    .then(({ key, branch }) =>
+      console.log(`[server] 릴 큐레이션 멘트 저장 — lifeCuration/${key}.${branch}`)
+    )
+    .catch((e) => console.warn(`[server] 릴 큐레이션 멘트 저장 실패(${variant}): ${e.message}`))
+}
+
 function recapFor(personaId) {
   if (!recapPromises.has(personaId)) {
-    recapPromises.set(
-      personaId,
-      composeRecapFirstMessage(personaId).catch(() => recapFallback())
-    )
+    const p = composeRecapFirstMessage(personaId).catch(() => recapFallback())
+    recapPromises.set(personaId, p)
+    p.then((t) => persistLifeCuration(personaId, 'past', t, t === recapFallback()))
   }
   return recapPromises.get(personaId)
 }
@@ -1158,6 +1178,7 @@ function futureRecapFor(personaId, kind = 'future') {
   if (!futureRecapPromises.has(key)) {
     const p = composeFutureRecapMessage(personaId, kind).catch(() => null)
     futureRecapPromises.set(key, p)
+    p.then((t) => t && persistLifeCuration(personaId, kind, t))
     // 폴백(null)으로 끝났으면 캐시하지 않는다 — 프리워밍 시점에 재료(narrative)가
     // 아직 없었어도 다음 호출이 다시 시도하게.
     p.then((t) => {
@@ -1175,6 +1196,9 @@ function prepareGhostPastAssets(personaId) {
   // 내레이션류는 클라이언트가 문장 단위 GET으로 요청하므로 예열도 문장 단위 — 캐시 키가 맞는다.
   const prewarmChunks = (t) =>
     t && narrationChunks(t).forEach((c) => elevenTtsBuffer(c).catch(() => {}))
+  // pingpong 변환은 flow와 무관하게 항상 — 2차(future)도 분기 장면·장례식 클립을 재생하는데,
+  // 아래 future 조기 return 뒤에 있어 2차에서 변환이 통째로 빠졌었다(2026-08-14).
+  void preparePingpongClips()
   // 세션 flow 판정은 ghostSessionPayload와 같은 규칙 — admin이 2차 체험을 지정했으면 config flow가 'past'여도 future.
   if (currentExperience === 'second' || vcfg.flow === 'future') {
     // 2차 체험(flow 'future') — 분기 릴 위 내레이션(큐레이션)을 미리 만들어 둔다(원문 그대로 —
@@ -1206,7 +1230,6 @@ function prepareGhostPastAssets(personaId) {
     elevenTtsBuffer(RECAP_TAIL).catch(() => {}) //     유령 개막 질문(고정문)
     elevenTtsBuffer(FUTURE_ASK).catch(() => {}) //     2장 개막 질문(고정문)
   }
-  void preparePingpongClips()
 }
 
 // ── 유령 음성 대화 세션 (ghost.voice) ────────────────────────────────

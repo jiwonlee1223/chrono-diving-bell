@@ -36,7 +36,9 @@ export const PANORAMA_NEGATIVE =
 export const WAN_NEGATIVE =
   '色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走，' +
   'split body, severed torso, detached lower body, body separating, broken anatomy, disconnected limbs, ' +
-  'torso and legs splitting apart, melting body, warping distorted person, duplicated person, body horror'
+  'torso and legs splitting apart, melting body, warping distorted person, duplicated person, body horror, ' +
+  // 무문자 방침(프로젝트 공통) — 특히 장지 영상화에서 빈 비석에 글자가 새겨지는 아티팩트 억제(2026-08-12).
+  'text, letters, words, writing, characters, numbers, inscription, engraving, carved text on stone, calligraphy'
 
 export function randomSeed() {
   return Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)

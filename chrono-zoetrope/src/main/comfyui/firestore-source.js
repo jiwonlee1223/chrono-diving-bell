@@ -558,6 +558,64 @@ export async function upsertFutureLifeJourney({ profile, personaId, variant, ite
   return { key, branch, count: items.length }
 }
 
+// 주마등 릴 큐레이션 멘트 정본 — 릴이 흐르는 동안 곁에서 들려주는 내레이션(한 단락)을
+// 사용자별 1문서에 담는다. 문서 키는 다른 정본과 동일(이름_생년월일6자). 세 번의 주마등이
+// 각각 다른 필드로 갈린다: past(1차 과거 회귀) / negative(2차 부정미래 'future' 릴) /
+// positive(3차 분기·긍정미래 'branched' 릴). merge라 한 릴을 다시 생성해도 다른 릴은 남는다.
+export const COLLECTION_LIFE_CURATION = 'lifeCuration'
+
+/** 릴 variant → lifeCuration 필드명. past=1차, future=2차(negative), branched=3차(positive). */
+export function lifeCurationBranchKey(variant) {
+  if (variant === 'past') return 'past'
+  return futureJourneyBranchKey(variant)
+}
+
+/**
+ * 한 릴의 큐레이션 멘트를 lifeCuration에 기록한다. merge라 다른 릴 필드는 남는다.
+ * @param {object} p
+ * @param {object} p.profile   { name, birthDate }
+ * @param {string} p.personaId
+ * @param {'past'|'future'|'branched'} p.variant  릴 종류 — past/negative/positive 필드로 매핑
+ * @param {string} p.text      멘트 전문(한 단락)
+ * @param {string[]} [p.sentences]  문장 단위 분할(클라이언트 재생 단위) — 없으면 생략
+ * @param {boolean} [p.fallback]    생성 실패로 고정 폴백문이 저장됐는지
+ * @returns {Promise<{key:string, branch:string}>}
+ */
+export async function upsertLifeCuration({ profile, personaId, variant, text, sentences, fallback }) {
+  if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  const key = panoramaDocKey(profile)
+  const branch = lifeCurationBranchKey(variant)
+  const reel = variant === 'past' ? 1 : variant === 'future' ? 2 : 3
+  await db
+    .collection(COLLECTION_LIFE_CURATION)
+    .doc(key)
+    .set(
+      {
+        name: profile.name || null,
+        birthDate: profile.birthDate || null,
+        personaId,
+        [branch]: {
+          reel,
+          variant,
+          text,
+          ...(sentences?.length ? { sentences } : {}),
+          fallback: !!fallback,
+          updatedAt: new Date().toISOString()
+        },
+        updatedAt: FieldValue.serverTimestamp()
+      },
+      { merge: true }
+    )
+  return { key, branch }
+}
+
+/** lifeCuration 문서 조회. 없으면 null. */
+export async function fetchLifeCuration(profile) {
+  if (!db) throw new Error('initFirebase 먼저 호출해야 한다')
+  const snap = await db.collection(COLLECTION_LIFE_CURATION).doc(panoramaDocKey(profile)).get()
+  return snap.exists ? snap.data() : null
+}
+
 /** futureLifeJourneyGraph 문서 조회. 없으면 null. */
 export async function fetchFutureLifeJourney(profile) {
   if (!db) throw new Error('initFirebase 먼저 호출해야 한다')

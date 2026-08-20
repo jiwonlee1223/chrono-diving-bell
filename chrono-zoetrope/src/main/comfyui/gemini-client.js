@@ -116,7 +116,7 @@ export class GeminiClient {
   constructor({
     apiKey,
     model = 'gemini-3-pro-image',
-    textModel = 'gemini-2.5-flash',
+    textModel = 'gemini-3.6-flash', // 2.5-flash는 2026-08 신규 사용자에게 404 — 실측 가용 flash로 교체
     timeoutMs = 300000,
     host = API_HOST
   } = {}) {
@@ -254,7 +254,8 @@ export class GeminiClient {
    * @param {object} p
    * @param {string} p.prompt
    * @param {string} [p.model]  기본 this.textModel
-   * @param {number} [p.thinkingBudget]  2.5 계열 thinking 토큰 상한. 0=끄기(저지연 대화용).
+   * @param {number} [p.thinkingBudget]  thinking 상한 의도. 0=끄기(저지연 대화용). 2.5 계열엔
+   *   thinkingBudget 그대로, 3.x 계열엔 thinkingLevel(minimal/low)로 번역해 보낸다.
    *   미지정이면 모델 기본(생성 파이프라인 등 품질 우선 호출은 그대로 둔다).
    * @param {boolean} [p.responseJson]  true면 응답을 JSON으로 강제(responseMimeType).
    * @param {AbortSignal} [p.signal]
@@ -263,7 +264,15 @@ export class GeminiClient {
   async generateText({ prompt, model = this.textModel, thinkingBudget, responseJson, signal }) {
     const body = { contents: [{ parts: [{ text: prompt }] }] }
     if (thinkingBudget !== undefined) {
-      body.generationConfig = { thinkingConfig: { thinkingBudget } }
+      // 2.5 계열은 thinkingBudget(토큰 수), 3.x 계열은 thinkingLevel(단계)만 받는다 —
+      // 3.x에 thinkingBudget을 보내면 HTTP 400 INVALID_ARGUMENT(2026-08-16 실측).
+      // 호출부 의도(0=끄기/저지연, 그 외=제한적 사고)를 세대에 맞게 번역한다.
+      const isGen3 = /^gemini-[3-9]/.test(String(model))
+      body.generationConfig = {
+        thinkingConfig: isGen3
+          ? { thinkingLevel: thinkingBudget === 0 ? 'minimal' : 'low' }
+          : { thinkingBudget }
+      }
     }
     // JSON을 기대하는 호출은 응답 MIME을 고정해 형식 이탈(설명 문장·코드펜스·키 누락)을 줄인다.
     if (responseJson) {

@@ -1,0 +1,635 @@
+{
+  "createdAt": "2026-08-11T14:26:02.765Z",
+  "images": [],
+  "personaId": "p-e1ea6db5",
+  "profile": {
+    "firstStatus": "generating",
+    "name": "이여진",
+    "id": "이여진_700214",
+    "job": "주부",
+    "birthDate": "1970-02-14",
+    "personaId": "이여진_700214",
+    "photos": [],
+    "age": 57,
+    "first": {
+      "myLife": [
+        {
+          "bucketList": "호기심이 많은 나는 세상 곳곳 가보려고 한다\n또 해보지 않았던 것에도 도전하고 싶다. 스킨스쿠버등",
+          "createdAt": "2026-08-10T09:07:17.818Z",
+          "motto": "하나님이 만드신 아름다운 세상을 잘 누리다 가자"
+        }
+      ],
+      "age-40": [
+        {
+          "age": 34,
+          "x": 1,
+          "event": "우울증",
+          "imageURL": null,
+          "place": "목동",
+          "companion": "엄마.시어머니.시누."
+        },
+        {
+          "x": 4,
+          "age": 35,
+          "event": "대전으로이사",
+          "imageURL": null,
+          "place": "어은동",
+          "companion": "남편.대전에서 만난 친구들"
+        }
+      ],
+      "age-62": [
+        {
+          "x": 4,
+          "event": "큰딸 결혼",
+          "age": 55,
+          "place": "서울 삼성동 웨딩홀",
+          "companion": "큰딸,사위,남편,작은딸",
+          "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EC%9D%B4%EC%97%AC%EC%A7%84_700214%2Fage-62-0.jpg?alt=media&token=bb2f9c37-770a-43ed-816d-11a9f75f835e"
+        }
+      ],
+      "age-10": [
+        {
+          "companion": "엄마.친구들",
+          "event": "유치원에서 엄마랑 소풍을 갔어요",
+          "x": 5,
+          "age": 7,
+          "imageURL": null,
+          "place": "담양 교외의 어느 유원지에요"
+        },
+        {
+          "event": "담양에서 살 때 옆집 동네친구랑 딸기밭에 갔어요",
+          "age": 8,
+          "imageURL": null,
+          "companion": "옆집 사는 남자아이",
+          "x": 3,
+          "place": "담양의 딸기밭"
+        },
+        {
+          "event": "서울로 전학왔어요",
+          "age": 8,
+          "x": 6,
+          "imageURL": null,
+          "place": "담양의 집",
+          "companion": "우리 가족 모두"
+        }
+      ],
+      "age-54": [
+        {
+          "x": 5,
+          "event": "작은딸 교사임용",
+          "age": 51,
+          "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EC%9D%B4%EC%97%AC%EC%A7%84_700214%2Fage-54-0.jpg?alt=media&token=ada1ba92-5af1-4c63-b654-55088ea5e243",
+          "place": "수원 초교",
+          "companion": "작은딸"
+        },
+        {
+          "imageURL": null,
+          "event": "코로나사태",
+          "age": 50,
+          "companion": "한빛아파트친구들",
+          "place": "한빛아파트",
+          "x": 1
+        },
+        {
+          "place": "서울집",
+          "age": 53,
+          "x": 0,
+          "imageURL": null,
+          "event": "서울로 이사",
+          "companion": "남편"
+        }
+      ],
+      "age-33": [
+        {
+          "companion": "우리 가족 4",
+          "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EC%9D%B4%EC%97%AC%EC%A7%84_700214%2Fage-33-0.jpg?alt=media&token=dc5f04df-36a5-4f33-8218-7fa6d6a5854e",
+          "x": 6,
+          "place": "hec mba스쿨",
+          "event": "남편 mba공부로 가족모두 파리근교 학교 기숙사로 이사",
+          "age": 31
+        },
+        {
+          "place": "세브르시 병원",
+          "companion": "남편.엄마",
+          "age": 29,
+          "x": 5,
+          "event": "작은 딸 출산",
+          "imageURL": null
+        },
+        {
+          "age": 32,
+          "event": "남편 mba 졸업. 졸업파티",
+          "companion": "남편의 친구들.그배우자 나의 친구들",
+          "imageURL": null,
+          "place": "hec",
+          "x": 6
+        }
+      ],
+      "age-23": [
+        {
+          "imageURL": null,
+          "event": "아빠가 돌아가심",
+          "companion": "엄마.친척들.동생들",
+          "place": "서울아산병원 암환자입원실",
+          "x": 0,
+          "age": 20
+        },
+        {
+          "place": "한국외환은행 면접장소",
+          "age": 22,
+          "companion": "추천서를 써준 교수님",
+          "x": 6,
+          "imageURL": null,
+          "event": "대학졸업후 바로 은행취업"
+        }
+      ],
+      "age-6": [
+        {
+          "event": "막내동생이 3살 터울로 태어났어요",
+          "companion": "아빠와 병원에 간 것 같아요",
+          "age": 4,
+          "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EC%9D%B4%EC%97%AC%EC%A7%84_700214%2Fage-6-0.jpg?alt=media&token=10d4d02a-6382-4d0c-bb54-5a053554d3bf",
+          "place": "김해로 알고있는 장소의 병원이에요",
+          "x": 5
+        }
+      ],
+      "age-14": [
+        {
+          "companion": "엄마.외할아버지",
+          "x": 1,
+          "imageURL": null,
+          "place": "서울사당동의 집. 1026사건과 장례식을 뉴스로 보던 방.",
+          "age": 11,
+          "event": "1026사건 바로 이후 외할아버지가 돌아가셨어요"
+        },
+        {
+          "place": "서울의 여러집들",
+          "age": 12,
+          "imageURL": null,
+          "x": 2,
+          "companion": "가족",
+          "event": "잦은 이사"
+        },
+        {
+          "imageURL": null,
+          "companion": "선생님들.체육,음악등",
+          "place": "서문여중",
+          "event": "중학교 폭력적인 선생님들",
+          "age": 13,
+          "x": 2
+        }
+      ],
+      "age-48": [
+        {
+          "place": "서울대",
+          "companion": "큰딸",
+          "imageURL": null,
+          "age": 45,
+          "event": "큰애 서울대입학",
+          "x": 5
+        },
+        {
+          "companion": "남편, 큰딸,작은 딸",
+          "imageURL": null,
+          "event": "가족 유럽여행",
+          "place": "파리 살던 아파트 ,hec",
+          "age": 47,
+          "x": 4
+        }
+      ],
+      "selections": {
+        "influential": {
+          "reason": "남편의 mba 유학으로 파리근교 작은 기숙사에 살며 \n세계 여러나라의 친구들을 사귀고 문화를 익혔으며\n성공한 미래에 대한 꿈을 꿨음",
+          "index": 2,
+          "stageId": "age-33"
+        },
+        "best": {
+          "reason": "자연의 캠퍼스에서 마음껏 아이들을 키우고 매주 세계 여러나라의 친구들과 만나며 요리도 서로 가르쳐주고 파티에도 참여하는 등 즐거웠음",
+          "index": 2,
+          "stageId": "age-33"
+        },
+        "worst": {
+          "reason": "서울에 와서 잘 적응하지 못했고 정신적으로 아팠는데 그 뒤로 나약해진 것 같음",
+          "index": 0,
+          "stageId": "age-40"
+        }
+      },
+      "age-28": [
+        {
+          "companion": "남편.가족",
+          "imageURL": null,
+          "x": 4,
+          "event": "결혼식",
+          "place": "청담동 웨딩홀",
+          "age": 24
+        },
+        {
+          "event": "큰애 출산",
+          "imageURL": null,
+          "age": 26,
+          "place": "이대목동병원",
+          "companion": "큰딸.남편.엄마",
+          "x": 5
+        },
+        {
+          "imageURL": null,
+          "place": "파리외곽의 아파트",
+          "x": 6,
+          "companion": "남편.큰딸",
+          "age": 27,
+          "event": "남편 파리주재원발령"
+        }
+      ],
+      "age-19": [
+        {
+          "companion": "정신여고친구들",
+          "x": 4,
+          "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EC%9D%B4%EC%97%AC%EC%A7%84_700214%2Fage-19-0.jpg?alt=media&token=11737702-57f7-4d0d-ad37-9dd92e624bde",
+          "place": "잠실올림픽 주경기장",
+          "event": "고등학생때 아시안게임 매스게임참여",
+          "age": 16
+        },
+        {
+          "age": 18,
+          "x": 5,
+          "place": "대학 강당.인문관등",
+          "event": "대학에 입학",
+          "companion": "가족들.신입생친구들",
+          "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EC%9D%B4%EC%97%AC%EC%A7%84_700214%2Fage-19-1.jpg?alt=media&token=36470a17-748a-4266-9f04-c392f18fee10"
+        },
+        {
+          "event": "고3때 원서쓸 때",
+          "x": 2,
+          "companion": "혼자",
+          "age": 17,
+          "place": "대학 공중전화기",
+          "imageURL": null
+        }
+      ],
+      "funeral": {
+        "epitaph": "호모루덴스가 되고자 했던 삶을 아름다운 유희로 즐겁고 행복한 나날로 채웠던 유쾌한 여진씨 여기 잠들다",
+        "funeralMethod": "교회",
+        "chiefMourner": "송수빈",
+        "messages": [
+          {
+            "to": "남편",
+            "text": "예민하고 나약한 나와 여정을 함께 해줘서 고맙고 언제나 내 곁을 지켜줘서 나의 진정한 친구라고 생각해요"
+          },
+          {
+            "to": "큰 딸",
+            "text": "나에겐 과분한 하늘이 내린 보물 내 아가야 너로 인해 기쁘고 많이 행복했어 잘 커주고 세상 스윗한 짝과 맺어져서 너무 대견해"
+          },
+          {
+            "text": "태어나서 지금까지도 항상 연결되어 있는 것 같고 항상 우리 남매들을 지켜주고 건재해주셔서 감사해요",
+            "to": "엄마"
+          },
+          {
+            "text": "많이 싸우기도 하고 우여곡절도 있었지만 인생 한 방향 보고 가는 내 진정한 친구! 항상 고마워요",
+            "to": "남편"
+          }
+        ],
+        "burialSite": "서울 근교의 수목장"
+      }
+    },
+    "createdAt": {
+      "_nanoseconds": 224000000,
+      "_seconds": 1786343627
+    },
+    "firstSubmittedAt": {
+      "_nanoseconds": 971000000,
+      "_seconds": 1786352445
+    },
+    "updatedAt": {
+      "_nanoseconds": 292000000,
+      "_seconds": 1786352947
+    }
+  },
+  "reelPhotos": [
+    {
+      "idx": 0,
+      "id": "r-birth",
+      "age": 0,
+      "year": 1970,
+      "isPast": true,
+      "scene": "birth — mother cradling her newborn in a maternity hospital delivery room",
+      "prompt": "A portrait-orientation candid snapshot photograph (taller than wide) of the very first moment of a life — the first thing a newborn ever sees: a young Korean mother in a hospital delivery room, just after giving birth, cradling her swaddled newborn baby in her arms and gazing down at the baby's face. The photograph is taken from close to the newborn's point of view, looking up at the mother, so the mother's tired, gentle face and the wrapped baby are at the exact CENTER of the frame. The setting is a maternity hospital delivery room in 1970s South Korea, with period-accurate everyday Korean hospital details of that time — warm soft hospital lighting, blankets and simple medical equipment softly out of the way. It must NOT default to American or European looks; everyone present is Korean. Any nurses are only background bystanders. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-birth-age0.png",
+      "referenceKind": "none",
+      "elapsedMs": 33267
+    },
+    {
+      "idx": 1,
+      "id": "r-1",
+      "age": 3,
+      "year": 1973,
+      "isPast": true,
+      "scene": "A father holding a small child's hand, walking into a softly lit hospital hallway in Gimhae.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, as they looked at 3 years old, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 3-year-old Korean child in this moment — A father holding a small child's hand, walking into a softly lit hospital hallway in Gimhae.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 1973 (the 1970s) — everyday period-accurate details of that exact time and place, with nothing that did not exist yet in 1973 — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-1-age3.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 35680
+    },
+    {
+      "idx": 2,
+      "id": "r-2",
+      "age": 8,
+      "year": 1978,
+      "isPast": true,
+      "scene": "A group of children playing a bouncing ball game on a narrow dirt path between houses in a Damyang village.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, as they looked at 8 years old, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 8-year-old Korean child in this moment — A group of children playing a bouncing ball game on a narrow dirt path between houses in a Damyang village.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 1978 (the 1970s) — everyday period-accurate details of that exact time and place, with nothing that did not exist yet in 1978 — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-2-age8.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 36235
+    },
+    {
+      "idx": 3,
+      "id": "r-3",
+      "age": 13,
+      "year": 1983,
+      "isPast": true,
+      "scene": "Hundreds of young women in matching uniforms performing synchronized movements on the vast green field of Jamsil Olympic Stadium in Seoul.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, as they looked at 13 years old, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 13-year-old Korean child in this moment — Hundreds of young women in matching uniforms performing synchronized movements on the vast green field of Jamsil Olympic Stadium in Seoul.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 1983 (the 1980s) — everyday period-accurate details of that exact time and place, with nothing that did not exist yet in 1983 — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-3-age13.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 34010
+    },
+    {
+      "idx": 4,
+      "id": "r-4",
+      "age": 18,
+      "year": 1988,
+      "isPast": true,
+      "scene": "A high school student sitting at a classroom desk, focused on a notebook, with afternoon sunlight streaming through a window in a Korean high school.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, as they looked at 18 years old, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 18-year-old Korean person in this moment — A high school student sitting at a classroom desk, focused on a notebook, with afternoon sunlight streaming through a window in a Korean high school.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 1988 (the 1980s) — everyday period-accurate details of that exact time and place, with nothing that did not exist yet in 1988 — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-4-age18.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 40891
+    },
+    {
+      "idx": 5,
+      "id": "r-5",
+      "age": 23,
+      "year": 1993,
+      "isPast": true,
+      "scene": "A bride in a flowing white gown walking gracefully down a long, flower-lined aisle towards a decorated stage in a wedding hall in Cheongdam-dong, Seoul.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, as they looked at 23 years old, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 23-year-old Korean person in this moment — A bride in a flowing white gown walking gracefully down a long, flower-lined aisle towards a decorated stage in a wedding hall in Cheongdam-dong, Seoul.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 1993 (the 1990s) — everyday period-accurate details of that exact time and place, with nothing that did not exist yet in 1993 — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-5-age23.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 32160
+    },
+    {
+      "idx": 6,
+      "id": "r-6",
+      "age": 28,
+      "year": 1998,
+      "isPast": true,
+      "scene": "A woman pushing a baby stroller along a winding path in a park in a Paris suburb, the baby sleeping under a canopy.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, as they looked at 28 years old, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 28-year-old Korean person in this moment — A woman pushing a baby stroller along a winding path in a park in a Paris suburb, the baby sleeping under a canopy.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 1998 (the 1990s) — everyday period-accurate details of that exact time and place, with nothing that did not exist yet in 1998 — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-6-age28.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 36659
+    },
+    {
+      "idx": 7,
+      "id": "r-7",
+      "age": 32,
+      "year": 2002,
+      "isPast": true,
+      "scene": "Guests in festive attire mingling with drinks in a spacious, decorated hall on the HEC campus in a Paris suburb, celebrating a graduation.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, as they looked at 32 years old, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 32-year-old Korean person in this moment — Guests in festive attire mingling with drinks in a spacious, decorated hall on the HEC campus in a Paris suburb, celebrating a graduation.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 2002 (the 2000s) — everyday period-accurate details of that exact time and place, with nothing that did not exist yet in 2002 — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-7-age32.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 37756
+    },
+    {
+      "idx": 8,
+      "id": "r-8",
+      "age": 37,
+      "year": 2007,
+      "isPast": true,
+      "scene": "Children playing with a ball on a large grassy area of the HEC campus in a Paris suburb, while two women share food at a picnic table nearby.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, as they looked at 37 years old, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 37-year-old Korean person in this moment — Children playing with a ball on a large grassy area of the HEC campus in a Paris suburb, while two women share food at a picnic table nearby.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 2007 (the 2000s) — everyday period-accurate details of that exact time and place, with nothing that did not exist yet in 2007 — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-8-age37.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 36425
+    },
+    {
+      "idx": 9,
+      "id": "r-9",
+      "age": 42,
+      "year": 2012,
+      "isPast": true,
+      "scene": "a seasoned worker at work, showing something to a younger colleague",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, as they looked at 42 years old, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 42-year-old Korean person in this moment — a seasoned worker at work, showing something to a younger colleague. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 2012 (the 2010s) — everyday period-accurate details of that exact time and place, with nothing that did not exist yet in 2012 — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-9-age42.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 37209
+    },
+    {
+      "idx": 10,
+      "id": "r-10",
+      "age": 47,
+      "year": 2017,
+      "isPast": true,
+      "scene": "Residents of a high-rise apartment complex chatting casually in an outdoor communal garden area, maintaining a comfortable distance in South Korea.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, as they looked at 47 years old, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 47-year-old Korean person in this moment — Residents of a high-rise apartment complex chatting casually in an outdoor communal garden area, maintaining a comfortable distance in South Korea.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 2017 (the 2010s) — everyday period-accurate details of that exact time and place, with nothing that did not exist yet in 2017 — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-10-age47.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 46105
+    },
+    {
+      "idx": 11,
+      "id": "r-11",
+      "age": 52,
+      "year": 2022,
+      "isPast": true,
+      "scene": "A large gathering of elegantly dressed guests seated at round tables, watching a couple on a brightly lit stage in a grand wedding hall in Samsung-dong, Seoul.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, as they looked at 52 years old, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 52-year-old Korean person in this moment — A large gathering of elegantly dressed guests seated at round tables, watching a couple on a brightly lit stage in a grand wedding hall in Samsung-dong, Seoul.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 2022 (the 2020s) — everyday period-accurate details of that exact time and place, with nothing that did not exist yet in 2022 — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-11-age52.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 39824
+    },
+    {
+      "idx": 12,
+      "id": "r-12",
+      "age": 57,
+      "year": 2027,
+      "isPast": true,
+      "scene": "Gently rocking an infant in a smart bassinet, a tablet glowing with a news article beside her on a soft armchair in a bright Seoul living room.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, as they looked at 57 years old, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 57-year-old Korean person in this moment — Gently rocking an infant in a smart bassinet, a tablet glowing with a news article beside her on a soft armchair in a bright Seoul living room.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 2027 (the 2020s) — everyday period-accurate details of that exact time and place, with nothing that did not exist yet in 2027 — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-12-age57.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 37243
+    }
+  ],
+  "reelPhotosFuture": [
+    {
+      "idx": 1,
+      "id": "rf-1",
+      "age": 58,
+      "year": 2028,
+      "isPast": false,
+      "scene": "Laughing with a group of women at a community center, her hands moving over a holographic display during a digital art class.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, naturally aged to 58 years old as they would realistically look in the future, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 58-year-old Korean person in this moment — Laughing with a group of women at a community center, her hands moving over a holographic display during a digital art class.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 2028 — a future that looks almost exactly like present-day Korea: the same ordinary streets, buildings, interiors, vehicles and fashions as today, nothing futuristic or high-tech looking (no walls of screens, no glowing panels, no robots, no concept-car vehicles); nothing that is already fading from daily life today either (no paper newspapers, no cash, no dated appliances or cars), and absolutely NOT science fiction: no holograms, no flying vehicles, no sleek sci-fi styling — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel-future/rf-1-age58.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 41086
+    },
+    {
+      "idx": 2,
+      "id": "rf-2",
+      "age": 61,
+      "year": 2031,
+      "isPast": false,
+      "scene": "Gently rocking an infant in a smart bassinet, a tablet glowing with a news article beside her on a soft armchair in a bright Seoul living room.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, naturally aged to 61 years old as they would realistically look in the future, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 61-year-old Korean person in this moment — Gently rocking an infant in a smart bassinet, a tablet glowing with a news article beside her on a soft armchair in a bright Seoul living room.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 2031 — a future that looks almost exactly like present-day Korea: the same ordinary streets, buildings, interiors, vehicles and fashions as today, nothing futuristic or high-tech looking (no walls of screens, no glowing panels, no robots, no concept-car vehicles); nothing that is already fading from daily life today either (no paper newspapers, no cash, no dated appliances or cars), and absolutely NOT science fiction: no holograms, no flying vehicles, no sleek sci-fi styling — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel-future/rf-2-age61.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 38093
+    },
+    {
+      "idx": 3,
+      "id": "rf-3",
+      "age": 64,
+      "year": 2034,
+      "isPast": false,
+      "scene": "A vibrant, slightly dusty travel guide titled \"Exploring Southeast Asia\" resting atop a high-tech smart suitcase in a quiet guest room, sunlight touching its spine.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, naturally aged to 64 years old as they would realistically look in the future, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 64-year-old Korean person in this moment — A vibrant, slightly dusty travel guide titled \"Exploring Southeast Asia\" resting atop a high-tech smart suitcase in a quiet guest room, sunlight touching its spine.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 2034 — a future that looks almost exactly like present-day Korea: the same ordinary streets, buildings, interiors, vehicles and fashions as today, nothing futuristic or high-tech looking (no walls of screens, no glowing panels, no robots, no concept-car vehicles); nothing that is already fading from daily life today either (no paper newspapers, no cash, no dated appliances or cars), and absolutely NOT science fiction: no holograms, no flying vehicles, no sleek sci-fi styling — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel-future/rf-3-age64.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 38851
+    },
+    {
+      "idx": 4,
+      "id": "rf-4",
+      "age": 67,
+      "year": 2037,
+      "isPast": false,
+      "scene": "Carefully preparing pre-portioned medication in a smart dispenser on a clean kitchen counter, a soft meal steaming gently on an induction hob.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, naturally aged to 67 years old as they would realistically look in the future, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 67-year-old Korean person in this moment — Carefully preparing pre-portioned medication in a smart dispenser on a clean kitchen counter, a soft meal steaming gently on an induction hob.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 2037 — a future that looks almost exactly like present-day Korea: the same ordinary streets, buildings, interiors, vehicles and fashions as today, nothing futuristic or high-tech looking (no walls of screens, no glowing panels, no robots, no concept-car vehicles); nothing that is already fading from daily life today either (no paper newspapers, no cash, no dated appliances or cars), and absolutely NOT science fiction: no holograms, no flying vehicles, no sleek sci-fi styling — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel-future/rf-4-age67.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 36657
+    },
+    {
+      "idx": 5,
+      "id": "rf-5",
+      "age": 70,
+      "year": 2040,
+      "isPast": false,
+      "scene": "Resting quietly in an armchair with a woven blanket, listening to her daughters and husband's cheerful conversation over tea at the living room's low table.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, naturally aged to 70 years old as they would realistically look in the future, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 70-year-old Korean person in this moment — Resting quietly in an armchair with a woven blanket, listening to her daughters and husband's cheerful conversation over tea at the living room's low table.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 2040 — a future that looks almost exactly like present-day Korea: the same ordinary streets, buildings, interiors, vehicles and fashions as today, nothing futuristic or high-tech looking (no walls of screens, no glowing panels, no robots, no concept-car vehicles); nothing that is already fading from daily life today either (no paper newspapers, no cash, no dated appliances or cars), and absolutely NOT science fiction: no holograms, no flying vehicles, no sleek sci-fi styling — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel-future/rf-5-age70.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 37295
+    },
+    {
+      "idx": 6,
+      "id": "rf-6",
+      "age": 73,
+      "year": 2043,
+      "isPast": false,
+      "scene": "Gently assisting her frail mother, propped in a comfortable recliner, to sip water from a smart cup in a warm, sunlit corner of their Seoul home.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, naturally aged to 73 years old as they would realistically look in the future, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 73-year-old Korean person in this moment — Gently assisting her frail mother, propped in a comfortable recliner, to sip water from a smart cup in a warm, sunlit corner of their Seoul home.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 2043 — a future that looks almost exactly like present-day Korea: the same ordinary streets, buildings, interiors, vehicles and fashions as today, nothing futuristic or high-tech looking (no walls of screens, no glowing panels, no robots, no concept-car vehicles); nothing that is already fading from daily life today either (no paper newspapers, no cash, no dated appliances or cars), and absolutely NOT science fiction: no holograms, no flying vehicles, no sleek sci-fi styling — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel-future/rf-6-age73.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 36277
+    },
+    {
+      "idx": 7,
+      "id": "rf-7",
+      "age": 75,
+      "year": 2045,
+      "isPast": false,
+      "scene": "Sitting calmly in an ergonomic chair in a modern medical clinic waiting area, her gaze fixed on a tranquil digital nature scene projected on a wall, a health monitoring wristband visible.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, naturally aged to 75 years old as they would realistically look in the future, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 75-year-old Korean person in this moment — Sitting calmly in an ergonomic chair in a modern medical clinic waiting area, her gaze fixed on a tranquil digital nature scene projected on a wall, a health monitoring wristband visible.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 2045 — a future that looks almost exactly like present-day Korea: the same ordinary streets, buildings, interiors, vehicles and fashions as today, nothing futuristic or high-tech looking (no walls of screens, no glowing panels, no robots, no concept-car vehicles); nothing that is already fading from daily life today either (no paper newspapers, no cash, no dated appliances or cars), and absolutely NOT science fiction: no holograms, no flying vehicles, no sleek sci-fi styling — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel-future/rf-7-age75.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 38360
+    },
+    {
+      "idx": 8,
+      "id": "rf-8",
+      "age": 78,
+      "year": 2048,
+      "isPast": false,
+      "scene": "Watching her two adolescent grandchildren, completely absorbed in a holographic gaming experience, sprawled comfortably on the living room floor.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, naturally aged to 78 years old as they would realistically look in the future, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 78-year-old Korean person in this moment — Watching her two adolescent grandchildren, completely absorbed in a holographic gaming experience, sprawled comfortably on the living room floor.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 2048 — a future that looks almost exactly like present-day Korea: the same ordinary streets, buildings, interiors, vehicles and fashions as today, nothing futuristic or high-tech looking (no walls of screens, no glowing panels, no robots, no concept-car vehicles); nothing that is already fading from daily life today either (no paper newspapers, no cash, no dated appliances or cars), and absolutely NOT science fiction: no holograms, no flying vehicles, no sleek sci-fi styling — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel-future/rf-8-age78.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 35472
+    },
+    {
+      "idx": 9,
+      "id": "rf-9",
+      "age": 81,
+      "year": 2051,
+      "isPast": false,
+      "scene": "Sitting calmly in an ergonomic chair in a modern medical clinic waiting area, her gaze fixed on a tranquil digital nature scene projected on a wall, a health monitoring wristband visible.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, naturally aged to 81 years old as they would realistically look in the future, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 81-year-old Korean person in this moment — Sitting calmly in an ergonomic chair in a modern medical clinic waiting area, her gaze fixed on a tranquil digital nature scene projected on a wall, a health monitoring wristband visible.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 2051 — a future that looks almost exactly like present-day Korea: the same ordinary streets, buildings, interiors, vehicles and fashions as today, nothing futuristic or high-tech looking (no walls of screens, no glowing panels, no robots, no concept-car vehicles); nothing that is already fading from daily life today either (no paper newspapers, no cash, no dated appliances or cars), and absolutely NOT science fiction: no holograms, no flying vehicles, no sleek sci-fi styling — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel-future/rf-9-age81.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 34484
+    },
+    {
+      "idx": 10,
+      "id": "rf-10",
+      "age": 84,
+      "year": 2054,
+      "isPast": false,
+      "scene": "이여진 and her husband, silver-haired, seated side-by-side on a plush sofa, each quietly reading from a personalized, adaptive e-tablet, a soft floor lamp illuminating their hands.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, naturally aged to 84 years old as they would realistically look in the future, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 84-year-old Korean person in this moment — 이여진 and her husband, silver-haired, seated side-by-side on a plush sofa, each quietly reading from a personalized, adaptive e-tablet, a soft floor lamp illuminating their hands.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 2054 — a future that looks almost exactly like present-day Korea: the same ordinary streets, buildings, interiors, vehicles and fashions as today, nothing futuristic or high-tech looking (no walls of screens, no glowing panels, no robots, no concept-car vehicles); nothing that is already fading from daily life today either (no paper newspapers, no cash, no dated appliances or cars), and absolutely NOT science fiction: no holograms, no flying vehicles, no sleek sci-fi styling — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel-future/rf-10-age84.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 39569
+    },
+    {
+      "idx": 11,
+      "id": "rf-11",
+      "age": 87,
+      "year": 2057,
+      "isPast": false,
+      "scene": "Smiling serenely at her grown daughters and young adult grandchildren, gathered around a dining table laden with a simple, home-cooked meal, laughter filling the Seoul apartment.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, naturally aged to 87 years old as they would realistically look in the future, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 87-year-old Korean person in this moment — Smiling serenely at her grown daughters and young adult grandchildren, gathered around a dining table laden with a simple, home-cooked meal, laughter filling the Seoul apartment.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 2057 — a future that looks almost exactly like present-day Korea: the same ordinary streets, buildings, interiors, vehicles and fashions as today, nothing futuristic or high-tech looking (no walls of screens, no glowing panels, no robots, no concept-car vehicles); nothing that is already fading from daily life today either (no paper newspapers, no cash, no dated appliances or cars), and absolutely NOT science fiction: no holograms, no flying vehicles, no sleek sci-fi styling — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel-future/rf-11-age87.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 40315
+    },
+    {
+      "idx": 12,
+      "id": "rf-12",
+      "age": 90,
+      "year": 2060,
+      "isPast": false,
+      "scene": "Seated by a large window overlooking a familiar Seoul street, a warm, custom-designed mug held in her hands, watching a small delivery robot glide silently past below.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, naturally aged to 90 years old as they would realistically look in the future, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 90-year-old Korean person in this moment — Seated by a large window overlooking a familiar Seoul street, a warm, custom-designed mug held in her hands, watching a small delivery robot glide silently past below.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 2060 — a future that looks almost exactly like present-day Korea: the same ordinary streets, buildings, interiors, vehicles and fashions as today, nothing futuristic or high-tech looking (no walls of screens, no glowing panels, no robots, no concept-car vehicles); nothing that is already fading from daily life today either (no paper newspapers, no cash, no dated appliances or cars), and absolutely NOT science fiction: no holograms, no flying vehicles, no sleek sci-fi styling — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel-future/rf-12-age90.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 37965
+    }
+  ]
+}

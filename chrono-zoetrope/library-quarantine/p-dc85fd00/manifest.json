@@ -1,0 +1,350 @@
+{
+  "createdAt": "2026-08-11T08:18:54.515Z",
+  "images": [],
+  "personaId": "p-dc85fd00",
+  "profile": {
+    "firstStatus": "generating",
+    "name": "문근우",
+    "id": "문근우_830301",
+    "job": "무용학원선생님",
+    "birthDate": "1983-03-01",
+    "personaId": "문근우_830301",
+    "photos": [],
+    "age": 44,
+    "first": {
+      "age-14": [
+        {
+          "x": 4,
+          "place": "국기원",
+          "companion": "관장님, 태권도 학원생들",
+          "event": "태권도 겨루기 대회에서 2등",
+          "imageURL": null,
+          "age": 13
+        },
+        {
+          "event": "처음 혼자 멀리 있는 수영장에 갔다가 버스를 잘못 타서 다른 지역 도착. 울면서 집으로 돌아옴",
+          "age": 11,
+          "place": "수영장, 버스",
+          "imageURL": null,
+          "companion": "버스 승객, 친구",
+          "x": 2
+        },
+        {
+          "imageURL": null,
+          "x": 0,
+          "place": "볼링장 앞",
+          "age": 12,
+          "companion": "못생긴 고딩 세 명",
+          "event": "명절에 받은 용돈을 고등학생 형 셋에게 삥 뜯김"
+        }
+      ],
+      "age-48": [
+        {
+          "event": "코로나, 다시 수업",
+          "x": 3,
+          "companion": "학생들",
+          "age": 41,
+          "place": "학원",
+          "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EB%AC%B8%EA%B7%BC%EC%9A%B0_830301%2Fage-48-0.jpg?alt=media&token=a37c0f95-2ad5-49ed-81d1-d694396cf9ad"
+        },
+        {
+          "x": 3,
+          "companion": "학생들, 학부모",
+          "place": "무용실",
+          "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EB%AC%B8%EA%B7%BC%EC%9A%B0_830301%2Fage-48-1.jpg?alt=media&token=189abc4f-e6dd-4023-b925-e29ad297a705",
+          "event": "대학입시, 예고입시",
+          "age": 44
+        }
+      ],
+      "selections": {
+        "influential": {
+          "reason": "무용으로 인생의 전환점이 발생하고 현재까지 이어오고있는 이유",
+          "index": 2,
+          "stageId": "age-19"
+        },
+        "best": {
+          "reason": "나만 잘하면 되던시절 목표와 의욕이 확실한 시점",
+          "index": 2,
+          "stageId": "age-19"
+        },
+        "worst": {
+          "reason": "무용을 시작하지않았다면 지금과 다른삶을살고있을텐데 예체능이 너무 힘들고 박봉의 삶이라 다시돌아간다면 무용을 시작하지않았을것이다",
+          "index": 1,
+          "stageId": "age-19"
+        }
+      },
+      "age-28": [
+        {
+          "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EB%AC%B8%EA%B7%BC%EC%9A%B0_830301%2Fage-28-0.jpg?alt=media&token=b02cb117-cbe6-4b03-9e1a-a0dcccf6b147",
+          "event": "군입대 취사병",
+          "x": 1,
+          "companion": "입영장병들",
+          "age": 24,
+          "place": "306보충대"
+        },
+        {
+          "place": "취사반, 학교입학처, 무용실",
+          "age": 26,
+          "event": "전역과 복학",
+          "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EB%AC%B8%EA%B7%BC%EC%9A%B0_830301%2Fage-28-1.jpg?alt=media&token=05e77a8a-3bb7-4505-8d03-37047fdfedad",
+          "companion": "행보관, 낯선학생과 교수",
+          "x": 4
+        },
+        {
+          "companion": "후배들, 학생들",
+          "place": "공연장, 학원",
+          "x": 4,
+          "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EB%AC%B8%EA%B7%BC%EC%9A%B0_830301%2Fage-28-2.jpg?alt=media&token=590aeac7-64c9-414b-9c7b-ba0199478555",
+          "age": 28,
+          "event": "졸업, 프리랜서의 시작"
+        }
+      ],
+      "myLife": [
+        {
+          "bucketList": "자녀 양육 (결혼)\n스카이다이빙(고소공포증)\n10억 모으기\n내집 마련\n우주 여행, 심해 탐사\n비행기 조종\n\n",
+          "createdAt": "2026-08-11T05:31:27.511Z",
+          "motto": "노력은 배신하지 않는다"
+        }
+      ],
+      "age-19": [
+        {
+          "place": "학교",
+          "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EB%AC%B8%EA%B7%BC%EC%9A%B0_830301%2Fage-19-0.jpg?alt=media&token=b043d348-feb8-44c9-93eb-61fb7a842c6b",
+          "companion": "예전 친구들, 낯선 친구들",
+          "event": "중3 2학기에 다른 지역으로 전학",
+          "age": 16,
+          "x": 1
+        },
+        {
+          "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EB%AC%B8%EA%B7%BC%EC%9A%B0_830301%2Fage-19-1.jpg?alt=media&token=fa87b115-8bc0-4981-8d9e-12c4a788dc89",
+          "age": 16,
+          "event": "예고입시 (2주 완성 스트레칭, 다이어트 10kg, 낯선 타이즈)",
+          "companion": "학원 친구들",
+          "x": 3,
+          "place": "예고입시장"
+        },
+        {
+          "age": 19,
+          "place": "콩쿨장, 입시장",
+          "companion": "학원, 학교 친구들과 선생님",
+          "x": 4,
+          "event": "콩쿨과 대학 입시",
+          "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EB%AC%B8%EA%B7%BC%EC%9A%B0_830301%2Fage-19-2.jpg?alt=media&token=bdccc406-cbd4-440b-b7b9-e01384a32952"
+        }
+      ],
+      "funeral": {
+        "epitaph": "부활을 꿈꾸며 잠들다",
+        "funeralMethod": "장례식장",
+        "chiefMourner": "부모님",
+        "messages": [
+          {
+            "to": "부모님",
+            "text": "감사합니다"
+          },
+          {
+            "to": "무용계로 이끈 친구",
+            "text": "하아..."
+          }
+        ],
+        "burialSite": "납골당"
+      },
+      "age-40": [
+        {
+          "companion": "혼자",
+          "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EB%AC%B8%EA%B7%BC%EC%9A%B0_830301%2Fage-40-0.jpg?alt=media&token=66e42fde-acf1-4a57-82d5-c04c2213781e",
+          "event": "새로운 일의 도전",
+          "x": 1,
+          "age": 36,
+          "place": "공사현장, 영업하며 만난 고객들"
+        },
+        {
+          "event": "공사현장",
+          "x": 1,
+          "place": "터널",
+          "companion": "사촌형",
+          "age": 39,
+          "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EB%AC%B8%EA%B7%BC%EC%9A%B0_830301%2Fage-40-1.jpg?alt=media&token=0106d784-9c95-4c5e-8e25-03b6dd30c24f"
+        }
+      ],
+      "age-10": [
+        {
+          "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EB%AC%B8%EA%B7%BC%EC%9A%B0_830301%2Fage-10-0.jpg?alt=media&token=7e2de3ce-04a0-40a6-8200-63931853cf77",
+          "companion": "시장 아주머니들",
+          "x": 3,
+          "age": 8,
+          "place": "시장",
+          "event": "자전거를 선물 받아서 처음 자전거를 탄 날 시장통의 아주머니들을 치며 죄송하다고 외치며 지나감"
+        },
+        {
+          "companion": "없음",
+          "age": 8,
+          "x": 1,
+          "event": "떡볶이를 먹고 시장에서 엄마를 기다리다 오토바이 마우라에 다리 화상을 입음",
+          "imageURL": null,
+          "place": "시장"
+        }
+      ],
+      "age-33": [
+        {
+          "companion": "대학생,교수님",
+          "x": 3,
+          "event": "대학강사",
+          "age": 29,
+          "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EB%AC%B8%EA%B7%BC%EC%9A%B0_830301%2Fage-33-0.jpg?alt=media&token=837f10da-b731-4dc2-9b14-8a1df2d038d6",
+          "place": "무용실"
+        },
+        {
+          "place": "전국 각지의 공연장과 연습실, 학원",
+          "age": 32,
+          "event": "공연과 수업 일상 ,아르바이트",
+          "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EB%AC%B8%EA%B7%BC%EC%9A%B0_830301%2Fage-33-1.jpg?alt=media&token=6ce2cde1-d4f1-4e89-ac7f-6cd235bcbbfe",
+          "x": 4,
+          "companion": "학생들, 동료들"
+        }
+      ],
+      "age-23": [
+        {
+          "x": 3,
+          "event": "대학 합격&입학, 교수님과 선배 첫대면&군기",
+          "age": 20,
+          "place": "무용실",
+          "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EB%AC%B8%EA%B7%BC%EC%9A%B0_830301%2Fage-23-0.jpg?alt=media&token=35e03252-1b9d-4280-82c6-115ec974e6ca",
+          "companion": "교수님, 학교 선배들"
+        },
+        {
+          "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EB%AC%B8%EA%B7%BC%EC%9A%B0_830301%2Fage-23-1.jpg?alt=media&token=f90b43d4-8405-490c-ac1b-8d79aeeb4202",
+          "event": "군기",
+          "x": 0,
+          "age": 20,
+          "companion": "선배들",
+          "place": "무용실"
+        },
+        {
+          "age": 23,
+          "companion": "무용단 사람들, 학원 학생들",
+          "x": 4,
+          "place": "공연장, 무용실",
+          "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EB%AC%B8%EA%B7%BC%EC%9A%B0_830301%2Fage-23-2.jpg?alt=media&token=56817f84-7bf1-4279-998c-237f17f67197",
+          "event": "교수님 무용단 전국투어 공연, 첫 제자들"
+        }
+      ],
+      "age-6": [
+        {
+          "event": "이사를 많이 다님",
+          "place": "어촌가의 정비공장",
+          "companion": "부모님",
+          "age": 5,
+          "x": 3,
+          "imageURL": "https://firebasestorage.googleapis.com/v0/b/chrono-diving-bell.firebasestorage.app/o/profile-photos%2F%EB%AC%B8%EA%B7%BC%EC%9A%B0_830301%2Fage-6-0.jpg?alt=media&token=6e6b8214-a0e1-473e-b9f8-ee7e933367d1"
+        },
+        {
+          "event": "생일에 전격제트작전키드차량에 나오는 RC카를 선물 받았는데 조작과 동시에 방파제로 수장",
+          "x": 2,
+          "companion": "아버지",
+          "place": "엄마의 가게와 수평선 위에 떠있는 배, 방파제",
+          "imageURL": null,
+          "age": 5
+        },
+        {
+          "companion": "스님, 엄마",
+          "place": "집 근처 절",
+          "event": "집 근처 절에 매일 찾아가 아침마다 스님한테 문안인사 함",
+          "imageURL": null,
+          "age": 2,
+          "x": 4
+        }
+      ]
+    },
+    "createdAt": {
+      "_nanoseconds": 159000000,
+      "_seconds": 1786418351
+    },
+    "firstSubmittedAt": {
+      "_nanoseconds": 477000000,
+      "_seconds": 1786424961
+    },
+    "updatedAt": {
+      "_nanoseconds": 732000000,
+      "_seconds": 1786426287
+    }
+  },
+  "reelPhotos": [
+    {
+      "idx": 0,
+      "id": "r-birth",
+      "age": 0,
+      "year": 1983,
+      "isPast": true,
+      "scene": "birth — mother cradling her newborn in a maternity hospital delivery room",
+      "prompt": "A portrait-orientation candid snapshot photograph (taller than wide) of the very first moment of a life — the first thing a newborn ever sees: a young Korean mother in a hospital delivery room, just after giving birth, cradling her swaddled newborn baby in her arms and gazing down at the baby's face. The photograph is taken from close to the newborn's point of view, looking up at the mother, so the mother's tired, gentle face and the wrapped baby are at the exact CENTER of the frame. The setting is a maternity hospital delivery room in 1980s South Korea, with period-accurate everyday Korean hospital details of that time — warm soft hospital lighting, blankets and simple medical equipment softly out of the way. It must NOT default to American or European looks; everyone present is Korean. Any nurses are only background bystanders. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-birth-age0.png",
+      "referenceKind": "none",
+      "elapsedMs": 41088
+    },
+    {
+      "idx": 1,
+      "id": "r-1",
+      "age": 3,
+      "year": 1986,
+      "isPast": true,
+      "scene": "Watching a remote-controlled car tumbling down the stones of a breakwater towards the shimmering sea, with an adult standing by a shop.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, as they looked at 3 years old, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 3-year-old Korean child in this moment — Watching a remote-controlled car tumbling down the stones of a breakwater towards the shimmering sea, with an adult standing by a shop.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 1986 (the 1980s) — everyday period-accurate details of that exact time and place, with nothing that did not exist yet in 1986 — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-1-age3.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 51017
+    },
+    {
+      "idx": 2,
+      "id": "r-2",
+      "age": 7,
+      "year": 1990,
+      "isPast": true,
+      "scene": "A child on a bicycle weaving through a bustling open-air market, with people and stalls on either side.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, as they looked at 7 years old, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 7-year-old Korean child in this moment — A child on a bicycle weaving through a bustling open-air market, with people and stalls on either side.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 1990 (the 1990s) — everyday period-accurate details of that exact time and place, with nothing that did not exist yet in 1990 — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-2-age7.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 50840
+    },
+    {
+      "idx": 3,
+      "id": "r-3",
+      "age": 10,
+      "year": 1993,
+      "isPast": true,
+      "scene": "Sitting on a low stool next to a market food stall, with a motorcycle parked nearby, steam rising from a tteokbokki pot.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, as they looked at 10 years old, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 10-year-old Korean child in this moment — Sitting on a low stool next to a market food stall, with a motorcycle parked nearby, steam rising from a tteokbokki pot.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 1993 (the 1990s) — everyday period-accurate details of that exact time and place, with nothing that did not exist yet in 1993 — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-3-age10.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 46757
+    },
+    {
+      "idx": 4,
+      "id": "r-4",
+      "age": 14,
+      "year": 1997,
+      "isPast": true,
+      "scene": "A group of students in white doboks practicing synchronized taekwondo stances in a bright studio, overseen by an instructor.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, as they looked at 14 years old, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 14-year-old Korean child in this moment — A group of students in white doboks practicing synchronized taekwondo stances in a bright studio, overseen by an instructor.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 1997 (the 1990s) — everyday period-accurate details of that exact time and place, with nothing that did not exist yet in 1997 — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-4-age14.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 46727
+    },
+    {
+      "idx": 5,
+      "id": "r-5",
+      "age": 18,
+      "year": 2001,
+      "isPast": true,
+      "scene": "A teenager in unfamiliar tights performing a dance sequence on a polished wooden floor in a large, empty audition hall, under bright overhead lights.",
+      "prompt": "The attached photograph is a reference ONLY for this person's facial identity — their face, distinctive features and likeness. Give the main subject of this scene that SAME face and identity, as they looked at 18 years old, unmistakably the same individual. Do NOT copy the photograph's clothing, facial expression, pose, hairstyle or background — those must all follow THIS scene and what the person is actively doing here, not the reference photo. A portrait-orientation candid snapshot photograph (taller than wide) of ONE single person: a 18-year-old Korean person in this moment — A teenager in unfamiliar tights performing a dance sequence on a polished wooden floor in a large, empty audition hall, under bright overhead lights.. A wide shot taken from several meters away — NOT a close-up and NOT a headshot: the person's entire body is visible from head to toe, occupying only a small part of the frame, while the surrounding place fills most of the picture. The person is at the exact CENTER of the frame, actively doing what this moment is about (not posing for the camera); their face, small at this distance, is still unobstructed and recognizable. The setting, clothing and hairstyle authentically reflect Korea in the year 2001 (the 2000s) — everyday period-accurate details of that exact time and place, with nothing that did not exist yet in 2001 — with a distinctly Korean environment (Korean schools, apartment complexes, streets and interiors, never defaulting to American or European looks), UNLESS the scene above explicitly places this moment in another country, in which case depict that country authentically while the person remains Korean. Anyone else present is only a background bystander. candid documentary photograph, soft warm natural light, 35mm film grain, muted colors, deep focus with everything sharp, every visible face rendered clearly and in crisp detail, photorealistic, no text, no watermark Absolutely no text, letters, numbers, words, captions, subtitles, watermarks, signatures or logos anywhere in the image. Any signs, posters, books, screens or clocks must be blank and free of writing or digits.",
+      "file": "_reel/r-5-age18.png",
+      "referenceKind": "anchor",
+      "referenceFile": "_input\\photo-0.jpg",
+      "elapsedMs": 51227
+    }
+  ]
+}
