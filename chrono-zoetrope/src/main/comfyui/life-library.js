@@ -215,6 +215,11 @@ export async function generateLifeLibrary(profile, opts = {}) {
       const memIds = new Set(manifest.images.map((i) => i.id))
       const diskOnly = (disk.images || []).filter((i) => i && !memIds.has(i.id))
       if (diskOnly.length) manifest.images = [...manifest.images, ...diskOnly]
+      // profile lost-update 방지(2026-08-21): 이 흐름의 profile은 Firestore에서 새로 조립한
+      // 얇은 판(name/birthDate/photos/gender)이라, 통째로 덮으면 디스크에만 있던 상세
+      // (인생그래프 백업 등)가 지워졌다 — 8-18 사고 뒤 로컬 manifest가 유일 백업이 될 수
+      // 있음이 확인됨. 키 단위 병합: 디스크에만 있는 키는 보존, 양쪽에 있으면 메모리가 이긴다.
+      if (disk.profile) manifest.profile = { ...disk.profile, ...manifest.profile }
     } catch {
       /* 디스크 판이 없거나 깨졌으면 in-memory 그대로 쓴다 */
     }

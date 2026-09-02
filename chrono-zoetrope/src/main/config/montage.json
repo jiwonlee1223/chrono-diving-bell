@@ -57,7 +57,7 @@
     "reelPlaybackRate": 3
   },
   "ghost": {
-    "$comment": "유령 에이전트 음성 대화. reel 종료 후 'ghost' 국면에서만 유령이 관람객에게 말을 건다(20대 여성·상냥·인간적, 양방향). 목소리 엔진=ElevenLabs Conversational AI(브라우저 SDK — VAD·턴테이킹 포함). API 키는 서버에만 둔다(서버가 서명 URL 발급). 1인칭 진입(IMMERSION)·몽타주 재생 등 다른 국면에선 목소리를 끈다(§1 침묵).",
+    "$comment": "유령 에이전트 음성 대화. reel 종료 후 'ghost' 국면에서만 유령이 관람객에게 말을 건다(젊은 남성·담담·인간적, 양방향 — 실제 목소리는 아래 voiceId가 정한다). 기본 엔진은 bridge: 브라우저 STT → 서버 Gemini(두뇌) → ElevenLabs 순수 TTS. engine을 'convai'로 두면 ElevenLabs Conversational AI(브라우저 SDK — VAD·턴테이킹 포함)를 쓴다. API 키는 서버에만 둔다(서버가 TTS 중계·서명 URL 발급). 1인칭 진입(IMMERSION)·몽타주 재생 등 다른 국면에선 목소리를 끈다(§1 침묵).",
     "voice": {
       "enabled": true,
       "provider": "elevenlabs",

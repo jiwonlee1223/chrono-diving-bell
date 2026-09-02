@@ -423,9 +423,9 @@ const DEMO_FUNERAL_SCENE_MS = montageConfig.demo?.funeralSceneMs ?? 15000
 // 클라이언트 'funeral-done'이 정상 전환 트리거고, 이건 무응답·로드 실패 대비 상한(안전 폴백).
 const DEMO_FUNERAL_MAX_MS = montageConfig.demo?.funeralMaxMs ?? 60000
 
-// ── 장지(안식처) 국면(2026-08-04) — 1차 전용 ─────────────────────────────────
+// ── 장지(안식처) 국면(2026-08-04) ────────────────────────────────────────────
 // 장례식과 장지는 다르다: 장례식(식장) 다음에, 실제로 묻힌 곳(묘비석 파노라마) 영상을 보여준다.
-// 순서: 장례식 → 장지 → 암전 → 주마등(reel). 2차(branched)는 장례식에서 바로 주마등으로 간다.
+// 순서: 장례식 → 장지 → 암전 → 주마등(reel). 1차는 present 판, 2차 체험은 분기 장지(graveBranched)를 튼다.
 // 영상이 없으면(승인·영상화 전) 건너뛴다 — 전시가 멈추지 않는 게 우선이다.
 const DEMO_GRAVE_ENABLED = montageConfig.demo?.grave !== false
 const DEMO_GRAVE_BLACKOUT_MS = montageConfig.demo?.graveBlackoutMs ?? DEMO_FUNERAL_BLACKOUT_MS

@@ -42,8 +42,8 @@ import {
   resetOrphanLifeGraphGenerating,
   updateProfileFields,
   setLifeGraphSessionStatus,
-  deleteProfileDoc,
-  deleteLifeGraphSession,
+  hideProfileRow,
+  hideLifeGraphSessionRow,
   uploadPersonaVideos,
   uploadPersonaVideoClip,
   uploadPersonaFuneral,
@@ -170,6 +170,14 @@ async function writeManifest(pid, manifest, ownKeys = []) {
       if (ownKeys.includes(k)) continue
       if (k in disk) manifest[k] = disk[k]
       else delete manifest[k]
+    }
+    // profile lost-update 방지(2026-08-21): profile은 mirror가 아니라 병합으로 보호한다 —
+    // 소유자(성별 수정·본인 사진 교체, ownKeys에 'profile')가 아니면 디스크 판이 통째로 이기고,
+    // 소유자여도 디스크에만 있는 키(인생그래프 백업 등)는 보존해 얇은 사본이 상세를 지우지 못하게.
+    if (disk.profile) {
+      manifest.profile = ownKeys.includes('profile')
+        ? { ...disk.profile, ...manifest.profile }
+        : disk.profile
     }
   } catch {
     /* 디스크 판 없음/깨짐 — in-memory 그대로 */
@@ -1453,7 +1461,11 @@ function clipStatus(pid, manifest) {
 // 큐 뷰: 아직 안 끝난 것(submitted/generating/error) + 지금 생성 중인 것.
 function queueView() {
   const legacy = profiles
-    .filter((p) => p.id === current || ['submitted', 'generating', 'error'].includes(p.status))
+    .filter(
+      (p) =>
+        p.id === current ||
+        (['submitted', 'generating', 'error'].includes(p.status) && !legacyRowHidden(p))
+    )
     .map((p) => ({
       id: p.id,
       name: p.name || null,
@@ -1479,6 +1491,23 @@ function lifeGraphSessionStatus(p, key) {
   return p[`${key}Status`] || (p[`${key}SubmittedAt`] ? 'submitted' : null)
 }
 
+// 큐 삭제는 데이터를 안 지우고 {key}QueueHiddenAt만 찍는다(firestore-source.js hide* 참조).
+// 숨김 이후 재제출(SubmittedAt이 더 최신)이면 행을 되살린다.
+function lifeGraphRowHidden(p, key) {
+  const hiddenAt = toMillis(p[`${key}QueueHiddenAt`])
+  if (!hiddenAt) return false
+  const submittedAt = toMillis(p[`${key}SubmittedAt`])
+  return !(submittedAt && submittedAt > hiddenAt)
+}
+
+// 옛 occupation 스키마 행의 숨김 판정 — 문서 단위 queueHiddenAt, 재제출은 createdAt 비교.
+function legacyRowHidden(p) {
+  const hiddenAt = toMillis(p.queueHiddenAt)
+  if (!hiddenAt) return false
+  const createdAt = toMillis(p.createdAt)
+  return !(createdAt && createdAt > hiddenAt)
+}
+
 function lifeGraphQueueRows() {
   const rows = []
   for (const p of profiles) {
@@ -1486,6 +1515,7 @@ function lifeGraphQueueRows() {
       const rowId = `${p.id}#${key}`
       const raw = rowId === current ? 'generating' : lifeGraphSessionStatus(p, key)
       if (!['submitted', 'generating', 'error'].includes(raw)) return
+      if (rowId !== current && lifeGraphRowHidden(p, key)) return // 큐에서 숨긴 행(데이터는 보존)
       // 중지로 세워둔 세션은 raw가 submitted여도 '정지됨'으로 보여 재개 버튼을 붙인다(생성 버튼 대신).
       const status = rowId !== current && stoppedIds.has(rowId) ? 'stopped' : raw
       rows.push({
@@ -1508,13 +1538,16 @@ const MAX_GEN_RETRIES = 2
 async function maybeStartNext() {
   if (!firebaseReady || !autoOn || current) return
   // submitted 우선, 없으면 상한 안 넘은 error를 재시도 대상으로.
-  let next = profiles.find((p) => p.status === 'submitted' && !stoppedIds.has(p.id))
+  let next = profiles.find(
+    (p) => p.status === 'submitted' && !stoppedIds.has(p.id) && !legacyRowHidden(p)
+  )
   let isRetry = false
   if (!next) {
     next = profiles.find(
       (p) =>
         p.status === 'error' &&
         !stoppedIds.has(p.id) &&
+        !legacyRowHidden(p) &&
         (genAttempts.get(p.id) || 0) < MAX_GEN_RETRIES
     )
     isRetry = Boolean(next)
@@ -1992,18 +2025,24 @@ const server = http.createServer(async (req, res) => {
       if (current === id || (id.includes('#') ? current === id.split('#')[0] : false))
         return send(res, 400, { error: '생성 중인 항목입니다 — 먼저 중지한 뒤 삭제하세요' })
       try {
+        // 큐 삭제 = 목록에서 숨기기만. Firestore 데이터(세션 본문·문서)는 절대 안 지운다
+        // — 2026-08-18 큐 정리로 이영호 first 인생그래프가 통째로 유실된 사고의 재발 방지.
         let removed
         if (id.includes('#')) {
           const [dpid, dkey] = id.split('#')
           if (!LIFE_GRAPH_SESSION_KEYS.includes(dkey))
             return send(res, 400, { error: `알 수 없는 세션 키: ${dkey}` })
-          removed = await deleteLifeGraphSession(dpid, dkey)
+          removed = await hideLifeGraphSessionRow(dpid, dkey)
         } else {
-          removed = await deleteProfileDoc(id)
+          removed = await hideProfileRow(id)
         }
         stoppedIds.delete(id)
         genAttempts.delete(id)
-        logAction(removed ? `[삭제] 큐에서 삭제: ${id}` : `[삭제] 삭제 요청했으나 이미 없음: ${id}`)
+        logAction(
+          removed
+            ? `[삭제] 큐에서 숨김(데이터는 보존): ${id}`
+            : `[삭제] 숨김 요청했으나 문서 없음: ${id}`
+        )
         return send(res, 200, { deleted: removed, id })
       } catch (err) {
         return send(res, 400, { error: err.message })
@@ -2281,7 +2320,7 @@ const server = http.createServer(async (req, res) => {
         for (const img of manifest.images || [])
           img.prompt =
             prefixForEntry(img) + composeScenePromptFor(manifest.workflow, manifest.profile, img)
-        await writeManifest(pid, manifest)
+        await writeManifest(pid, manifest, ['profile']) // 성별 수정은 profile의 소유자
         if (firebaseReady && manifest.profile.id) {
           await updateProfileFields(manifest.profile.id, { gender }).catch((err) =>
             logAction(`Firestore 성별 역동기화 실패 (${manifest.profile.id}): ${err.message}`)
@@ -2430,7 +2469,7 @@ const server = http.createServer(async (req, res) => {
           bytes: parsed.reduce((s, p) => s + p.buf.length, 0)
         }
         await invalidateFaceCaches()
-        await writeManifest(pid, manifest)
+        await writeManifest(pid, manifest, ['profile']) // 본인 사진 교체는 profile.photos의 소유자
         logAction(
           `${pid}  본인 사진 교체 (${parsed.length}장, ${(manifest.adminFace.bytes / 1024).toFixed(0)}KB) — 영정·나이 앵커 캐시 비움, 이후 생성/재생성은 이 얼굴 기준`
         )

@@ -1465,43 +1465,40 @@ export function toGeneratorProfile(profile, photoPaths) {
   }
 }
 
+// (deleteProfileDoc / deleteLifeGraphSession은 제거됨 — 세션 본문까지 지우는 파괴적 삭제로
+//  2026-08-18 이영호 first 인생그래프 유실의 원인. 큐 삭제는 아래 hide*가 대체한다.)
+
 /**
- * 프로필 문서 삭제 — 어드민 큐에서 잘못 들어온 제출(테스트·중복·오입력)을 명단에서 지운다.
- * profiles 문서만 지우고 생성물(이미지·영상·manifest 컬렉션, 로컬 library/)은 건드리지 않는다.
- * 이미 생성이 끝난 사람은 검토 목록에 그대로 남는다 — 지워지는 건 '제출 큐의 줄'이다.
- * @returns {Promise<boolean>} false = 문서가 원래 없었음
+ * 큐 행 숨김 — 데이터는 절대 지우지 않는다 (2026-08-18 이영호 first 세션 유실 재발 방지).
+ * 세션 본문·상태 필드는 그대로 두고 `${key}QueueHiddenAt`만 찍는다. 어드민 큐 뷰가 이
+ * 타임스탬프를 보고 행을 걸러낸다. 참여자가 다시 제출하면(SubmittedAt이 이 값보다 최신)
+ * 행이 자동으로 되살아난다.
+ * @returns {Promise<boolean>} false = 문서가 없음
  */
-export async function deleteProfileDoc(personaId) {
+export async function hideLifeGraphSessionRow(personaId, sessionKey) {
   const refDoc = db.collection('profiles').doc(personaId)
   const snap = await refDoc.get()
   if (!snap.exists) return false
-  await refDoc.delete()
+  await refDoc.update({
+    [`${sessionKey}QueueHiddenAt`]: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp()
+  })
   return true
 }
 
 /**
- * 인생그래프 세션 하나(first/second/third)만 문서에서 지운다. 문서에는 세션이 최대 3개 들어 있어
- * 문서째 지우면 나머지 세션까지 날아간다 — 큐의 한 줄만 없앨 때는 이쪽을 쓴다.
- * 세션 본문(`${key}`)과 부속 상태 필드(Status/SubmittedAt/GenerationStartedAt/Error)를 모두 제거해
- * lifeGraphQueueRows()의 판정(SubmittedAt만 있어도 submitted)에 되살아나지 않게 한다.
- * @returns {Promise<boolean>} false = 문서가 없거나 그 세션이 원래 비어 있었음
+ * 옛 occupation 스키마 큐 행 숨김 — deleteProfileDoc(문서째 삭제)의 무손실 대체.
+ * 문서에 `queueHiddenAt`만 찍는다. 재제출(createdAt이 더 최신)이면 큐에 다시 나타난다.
+ * @returns {Promise<boolean>} false = 문서가 없음
  */
-export async function deleteLifeGraphSession(personaId, sessionKey) {
+export async function hideProfileRow(personaId) {
   const refDoc = db.collection('profiles').doc(personaId)
   const snap = await refDoc.get()
   if (!snap.exists) return false
-  const data = snap.data()
-  const fields = [
-    sessionKey,
-    `${sessionKey}Status`,
-    `${sessionKey}SubmittedAt`,
-    `${sessionKey}GenerationStartedAt`,
-    `${sessionKey}Error`
-  ].filter((f) => data[f] !== undefined)
-  if (fields.length === 0) return false
-  const patch = { updatedAt: FieldValue.serverTimestamp() }
-  for (const f of fields) patch[f] = FieldValue.delete()
-  await refDoc.update(patch)
+  await refDoc.update({
+    queueHiddenAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp()
+  })
   return true
 }
 
